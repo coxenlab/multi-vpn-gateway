@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-multipart
+docker
+requests
+pysocks
+cryptography
+pyyaml

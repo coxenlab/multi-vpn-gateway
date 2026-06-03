@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>通道总览 · VPN 管理网关</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body data-page="channels">
+  <div class="app">
+    <!-- ════ 侧栏（所有屏一致） ════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+        </span>
+        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
+      </div>
+      <nav class="sidebar-nav">
+        <span class="nav-label">管理</span>
+        <a class="nav-item" data-nav="channels" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          通道总览 <span class="count" id="nav-count">—</span>
+        </a>
+        <a class="nav-item" data-nav="monitor" href="monitor.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          流量监控
+        </a>
+        <a class="nav-item" data-nav="entry" href="clash-config.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
+          入口接入
+        </a>
+        <a class="nav-item" data-nav="env-check" href="env-check.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          环境诊断
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span>
+          <span>mihomo 运行中</span>
+          <span class="k spacer" id="foot-port">:7899</span>
+        </div>
+        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
+      </div>
+    </aside>
+
+    <!-- ════ 主区 ════ -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1>通道总览</h1>
+        <span class="spacer"></span>
+        <span class="sys-chip ok hide-mobile" id="chip-clash"><span class="dot"></span>Clash 已接入</span>
+        <a class="btn btn-primary" href="new-channel.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          新建通道
+        </a>
+      </header>
+
+      <div class="content stack-6">
+        <!-- DNS 命门提示 -->
+        <div class="banner info" data-od-id="dns-note">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+          <div>
+            <div class="bt">内网域名在 VPN 侧解析</div>
+            <p>你的 Clash 对客户域名规则带 <span class="mono">no-resolve</span> 透传，本工具 mihomo 开 <span class="mono">respect-rules + sniffer</span>，由 EC / aTrust 隧道侧解析——这是整条链路最易翻车处，每条通道上线务必实测内网域名能打开。</p>
+          </div>
+        </div>
+
+        <!-- 概览统计 -->
+        <div class="grid-4" id="stats" data-od-id="overview">
+          <div class="stat-tile">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/></svg>通道总数</div>
+            <div class="stat-num" id="s-total">—</div>
+            <div class="stat-foot">每条 = 一个客户 VPN 容器</div>
+          </div>
+          <div class="stat-tile ok">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>已连接</div>
+            <div class="stat-num" id="s-ok">—</div>
+            <div class="stat-foot">SOCKS5 探活通过</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>待登录</div>
+            <div class="stat-num" id="s-wait">—</div>
+            <div class="stat-foot">容器已起、需过登录</div>
+          </div>
+          <div class="stat-tile accent">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>分流规则</div>
+            <div class="stat-num" id="s-dom">—</div>
+            <div class="stat-foot">域名 + IP，命中即走对应通道</div>
+          </div>
+        </div>
+
+        <!-- 通道列表 -->
+        <div data-od-id="channel-list-section">
+          <div class="row-between" style="margin-bottom:16px;">
+            <h2>通道</h2>
+            <span class="t-sm muted">每 8 秒自动刷新状态 · 共 <span class="num" id="ch-count">—</span> 条</span>
+          </div>
+          <div class="grid-2" id="channel-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除确认 -->
+  <div class="overlay" id="del-modal">
+    <div class="modal">
+      <div class="card-head"><h3>删除通道</h3><button class="icon-btn" data-close="del-modal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="card-body stack-4">
+        <p class="muted">将停止并删除容器 <span class="mono" id="del-name"></span>，其 <span class="mono">/root</span> 卷与登录态一并移除，且会从 mihomo 与 Clash 订阅中摘除其域名 / IP 规则（热加载、不断现有连接）。此操作不可撤销。</p>
+        <div class="banner warn">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+          <p style="color:inherit; margin:0;">删除后重建会用同一 MAC / 卷 / hostname，但深信服仍可能要求重新过验证码。</p>
+        </div>
+      </div>
+      <div class="card-foot" style="justify-content:flex-end;">
+        <button class="btn btn-secondary" data-close="del-modal">取消</button>
+        <button class="btn btn-danger" id="del-confirm">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    let chs = [];
+    let sys = {};
+    const ruleCount = (c) => c.domains.length + (c.ips ? c.ips.length : 0);
+
+    async function load() {
+      [chs, sys] = await Promise.all([api.channels(), api.system()]);
+      paint();
+    }
+
+    // 通道卡片
+    function actionsFor(c) {
+      // 无头通道(oss,如 openfortivpn):无交互登录,不显示登录/重新登录按钮
+      const headless = c.login_method === "headless";
+      const login = headless ? ""
+        : (c.status === "logged_in"
+            ? `<a class="btn btn-sm btn-secondary" href="channel.html?id=${c.id}#login">重新登录</a>`
+            : `<a class="btn btn-sm btn-primary" href="channel.html?id=${c.id}#login">登录</a>`);
+      const probe = c.status === "stopped"
+        ? `<button class="btn btn-sm btn-secondary" disabled>已停止</button>`
+        : `<button class="btn btn-sm btn-secondary" onclick="probe('${c.id}', this)">检测连通</button>`;
+      return `${login}${probe}
+        <a class="btn btn-sm btn-secondary" href="channel.html?id=${c.id}">详情</a>
+        <button class="btn btn-sm btn-danger spacer" onclick="askDel('${c.id}')">删除</button>`;
+    }
+    function cardHTML(c) {
+      const k = kindMeta(c.vpn_type);
+      const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "—";
+      const tags = [];
+      c.domains.forEach(d => tags.push(`<span class="tag mono">${d.pattern}${d.enabled ? "" : " · 停用"}</span>`));
+      (c.ips || []).forEach(d => tags.push(`<span class="tag mono ip">${d.pattern}${d.enabled ? "" : " · 停用"}</span>`));
+      const doms = tags.length ? tags.join("") : `<span class="t-sm muted">未绑定规则</span>`;
+      return `<article class="ch-card" data-od-id="ch-${c.id}">
+        <div class="ch-top">
+          <div class="grow">
+            <div class="ch-name">${c.name}</div>
+            <div class="ch-meta">${k.label}${c.ec_ver ? " " + c.ec_ver : ""} · id ${c.id} · ${c.server.replace("https://","")}</div>
+          </div>
+          ${badgeHTML(c.status)}
+        </div>
+        <div class="ch-grid">
+          <div class="kv"><div class="k">SOCKS5 出口</div><div class="v">${c.socks_endpoint}</div></div>
+          <div class="kv"><div class="k">隧道延迟</div><div class="v">${lat}</div></div>
+          <div class="kv"><div class="k">运行时长</div><div class="v">${c.uptime != null ? c.uptime : "—"}</div></div>
+        </div>
+        <div class="ch-domains">${doms}</div>
+        <form class="row" style="margin-bottom:14px; gap:8px;" onsubmit="return bindRule('${c.id}', this)">
+          <input class="input" name="pat" placeholder="绑定域名或 IP/网段，可多个" style="flex:1;" />
+          <button class="btn btn-sm btn-secondary" type="submit">绑定 → 走这条</button>
+        </form>
+        <div class="ch-actions">${actionsFor(c)}</div>
+      </article>`;
+    }
+
+    function paint() {
+      $("#channel-list").innerHTML = chs.map(cardHTML).join("");
+      $("#s-total").textContent = chs.length;
+      $("#s-ok").textContent = chs.filter(c => c.status === "logged_in").length;
+      $("#s-wait").textContent = chs.filter(c => c.status === "running" || c.status === "starting").length;
+      $("#s-dom").textContent = chs.reduce((n, c) => n + ruleCount(c), 0);
+      $("#ch-count").textContent = chs.length;
+      $("#nav-count").textContent = chs.length;
+      $("#foot-port").textContent = ":" + sys.mihomo_port;
+      const linked = chs.some(c => (c.domains || []).length + (c.ips || []).length > 0);
+      if (!linked) { $("#chip-clash").classList.remove("ok"); $("#chip-clash").lastChild.textContent = "Clash 未接入"; }
+    }
+
+    // 交互：检测连通（后端 SOCKS5 探活）
+    window.probe = async function (id, btn) {
+      btn.textContent = "检测中…"; btn.disabled = true;
+      try {
+        const r = await api.status(id);
+        await load();
+        toast(r.connected ? `隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录` : "探活失败：未连通", r.connected);
+      } catch (e) { toast("探活出错：" + e.message, false); }
+      finally { btn.disabled = false; btn.textContent = "检测连通"; }
+    };
+    // 快绑：一次可粘多条，后端自动识别 IP/网段（走 IP-CIDR）与域名（走 DOMAIN-SUFFIX）
+    window.bindRule = async function (id, form) {
+      const toks = parseTokens(form.pat.value);
+      if (!toks.length) { toast("请填写域名或 IP", false); return false; }
+      try {
+        const r = await api.addRules(id, toks);
+        form.pat.value = ""; await load();
+        if (r.added.domain || r.added.ip)
+          toast(`已绑定 ${r.added.domain} 域名 / ${r.added.ip} IP → 热加载生效`);
+        else if (r.rejected.length) toast("格式无法识别：" + r.rejected.join(", "), false);
+        else toast("这些规则已绑定", false);
+      } catch (e) { toast("绑定出错：" + e.message, false); }
+      return false;
+    };
+    let pendingDel = null;
+    window.askDel = function (id) { pendingDel = id; $("#del-name").textContent = "vpn-" + id; openOverlay("del-modal"); };
+    $("#del-confirm").addEventListener("click", async () => {
+      try {
+        await api.remove(pendingDel); closeOverlay("del-modal"); await load();
+        toast("已删除 vpn-" + pendingDel);
+      } catch (e) { toast("删除出错：" + e.message, false); }
+    });
+
+    load();
+    setInterval(load, 8000);
+  </script>
+</body>
+</html>

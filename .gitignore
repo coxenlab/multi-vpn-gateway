@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+
+# 机密 / 运行态(每台机器各自生成,绝不入库)
+.env
+# 由 config.template.yaml 渲染,含 mihomo 密钥
+mihomo/config.yaml
+# mihomo 运行缓存
+mihomo/cache.db
+
+# macOS
+.DS_Store
+
+# 测试 venv + pytest 缓存
+.venv/
+.pytest_cache/
+
+# 本地 AI 开发辅助:不纳入版本控制,本地保留即可
+/CLAUDE.md
+/docs/superpowers/

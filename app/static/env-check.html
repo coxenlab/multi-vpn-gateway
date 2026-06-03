@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>环境诊断 · VPN 管理网关</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body data-page="env-check">
+  <div class="app">
+    <!-- ════ 侧栏（所有屏一致） ════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+        </span>
+        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
+      </div>
+      <nav class="sidebar-nav">
+        <span class="nav-label">管理</span>
+        <a class="nav-item" data-nav="channels" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          通道总览 <span class="count" id="nav-count">—</span>
+        </a>
+        <a class="nav-item" data-nav="monitor" href="monitor.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          流量监控
+        </a>
+        <a class="nav-item" data-nav="entry" href="clash-config.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
+          入口接入
+        </a>
+        <a class="nav-item" data-nav="env-check" href="env-check.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          环境诊断
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span>
+          <span>mihomo 运行中</span>
+          <span class="k spacer" id="foot-port">:7899</span>
+        </div>
+        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
+      </div>
+    </aside>
+
+    <!-- ════ 主区 ════ -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1>环境诊断</h1>
+        <span class="spacer"></span>
+        <a class="btn btn-secondary" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+          返回总览
+        </a>
+      </header>
+
+      <div class="content content-narrow stack-6">
+        <!-- 页头说明 -->
+        <div class="page-head">
+          <div class="crumb">设置 / 环境诊断</div>
+          <h1>环境诊断</h1>
+          <p>检测本机 Docker 环境、网络连通性、镜像可达性等依赖条件，发现问题可一键修复。</p>
+        </div>
+
+        <!-- 卡片 + 两个 tab -->
+        <div class="card card-pad">
+          <div data-tabscope>
+            <div class="tabs" data-tabs>
+              <button class="tab active" data-tab="diag">诊断</button>
+              <button class="tab" data-tab="mirrors">镜像源</button>
+            </div>
+
+            <!-- ─── Tab 诊断 ─── -->
+            <div class="tabpanel active" data-panel="diag" style="padding-top:var(--space-5);">
+              <div style="display:flex; align-items:center; gap:var(--space-3); margin-bottom:var(--space-4); flex-wrap:wrap;">
+                <select id="diag-type" class="input" style="flex:1; min-width:180px; max-width:320px;">
+                  <option value="">(只查环境，不挑类型)</option>
+                </select>
+                <button class="btn btn-primary" id="diag-run">全量体检</button>
+              </div>
+              <div id="diag-host"></div>
+            </div>
+
+            <!-- ─── Tab 镜像源 ─── -->
+            <div class="tabpanel" data-panel="mirrors" style="padding-top:var(--space-5);">
+              <div id="mir-panel">
+                <div class="row" style="gap:var(--space-2); margin-bottom:var(--space-3);">
+                  <input id="mir-host" class="input" placeholder="docker.example.com" style="flex:1;">
+                  <button class="btn btn-primary" id="mir-add">添加</button>
+                </div>
+                <div id="mir-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/preflightPanel.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    api.vpnTypes().then(function (list) {
+      const sel = document.getElementById("diag-type");
+      list.forEach(function (a) {
+        const o = document.createElement("option");
+        o.value = a.key;
+        o.textContent = a.label;
+        sel.appendChild(o);
+      });
+    }).catch(function () {});
+
+    document.getElementById("diag-run").addEventListener("click", function () {
+      const t = document.getElementById("diag-type").value;
+      PreflightPanel(document.getElementById("diag-host"), { vpnType: t || undefined, scope: "full" }).run();
+    });
+
+    api.system().then(function (sys) {
+      const fp = document.getElementById("foot-port");
+      if (fp && sys.mihomo_port) fp.textContent = ":" + sys.mihomo_port;
+    }).catch(function () {});
+
+    async function renderMirrors() {
+      let ms;
+      try { ms = await api.mirrors(); } catch (e) { return; }
+      const box = document.getElementById("mir-list");
+      box.innerHTML = ms.map(m => `
+        <div class="chk" data-id="${m.id}">
+          <label class="row" style="gap:6px;flex:1;"><input type="checkbox" ${m.enabled ? "checked" : ""} data-toggle> ${m.host}</label>
+          <span class="chk-detail" data-lat>p${m.priority}</span>
+          <div class="chk-act">
+            <button class="btn btn-secondary btn-sm" data-test>测速</button>
+            <button class="btn btn-secondary btn-sm" data-up>↑</button>
+            <button class="btn btn-danger btn-sm" data-del>删</button>
+          </div></div>`).join("");
+      box.querySelectorAll(".chk").forEach((row, idx) => {
+        const id = +row.dataset.id;
+        row.querySelector("[data-toggle]").addEventListener("change", e =>
+          api.patchMirror(id, { enabled: e.target.checked }).then(renderMirrors));
+        row.querySelector("[data-del]").addEventListener("click", () =>
+          api.delMirror(id).then(renderMirrors));
+        row.querySelector("[data-up]").addEventListener("click", () => {
+          if (idx === 0) return;
+          const prev = ms[idx - 1];
+          Promise.all([api.patchMirror(id, { priority: prev.priority }),
+                       api.patchMirror(prev.id, { priority: ms[idx].priority })]).then(renderMirrors);
+        });
+        row.querySelector("[data-test]").addEventListener("click", async (e) => {
+          e.target.textContent = "测速中…";
+          const r = await api.testMirror(ms[idx].host);
+          row.querySelector("[data-lat]").textContent = r.reachable ? `${r.latency_ms}ms` : "不可达";
+          e.target.textContent = "测速";
+        });
+      });
+    }
+    document.getElementById("mir-add").addEventListener("click", () => {
+      const h = document.getElementById("mir-host").value.trim();
+      if (h) api.addMirror(h).then(() => { document.getElementById("mir-host").value = ""; renderMirrors(); })
+              .catch(e => toast("添加失败:" + e.message, false));
+    });
+    renderMirrors();
+  </script>
+</body>
+</html>

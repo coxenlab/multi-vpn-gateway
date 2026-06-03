@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>安装 / 启动 Docker</title>
+  <link rel="stylesheet" href="../css/app.css" />
+</head>
+<body>
+  <div style="max-width:720px; margin:0 auto; padding:var(--space-6) var(--space-5);">
+
+    <a href="../env-check.html" style="display:inline-flex; align-items:center; gap:6px; color:var(--accent); text-decoration:none; font-size:var(--text-sm); margin-bottom:var(--space-5);">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;flex-shrink:0;"><path d="M15 18l-6-6 6-6"/></svg>
+      返回环境诊断
+    </a>
+
+    <h1 style="margin:0 0 var(--space-2);">安装 / 启动 Docker</h1>
+    <p style="margin:0 0 var(--space-6); color:var(--muted);">本工具全程依赖 Docker，需常驻运行。以下是各平台的安装步骤。</p>
+
+    <div data-tabscope>
+      <div class="tabs" data-tabs style="margin-bottom:var(--space-5);">
+        <button class="tab active" data-tab="mac">macOS</button>
+        <button class="tab" data-tab="win">Windows</button>
+      </div>
+
+      <!-- ─── macOS ─── -->
+      <div class="tabpanel active" data-panel="mac">
+
+        <div class="banner info" style="margin-bottom:var(--space-5);">
+          Apple 芯片(M1/M2/M3/M4)下，EasyConnect / aTrust 镜像走原生 arm64，无需 Rosetta。Intel Mac 同样支持。
+        </div>
+
+        <ol style="padding-left:var(--space-5); margin:0; display:flex; flex-direction:column; gap:var(--space-5);">
+
+          <li>
+            <strong>判断芯片，下载对应安装包</strong>
+            <p style="margin:var(--space-2) 0 0;">
+              点击左上角苹果菜单 → <strong>关于本机</strong>，查看「芯片」栏。
+            </p>
+            <ul style="margin:var(--space-2) 0 0; padding-left:var(--space-4);">
+              <li>显示 <strong>Apple M…</strong> → 下载 <strong>Apple Silicon</strong> 版</li>
+              <li>显示 <strong>Intel</strong> → 下载 <strong>Intel Chip</strong> 版</li>
+            </ul>
+            <p style="margin:var(--space-2) 0 0;">
+              下载地址：<a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener" style="color:var(--accent);">docker.com/products/docker-desktop</a>
+            </p>
+          </li>
+
+          <li>
+            <strong>安装并启动</strong>
+            <p style="margin:var(--space-2) 0 0;">
+              打开下载的 <code>.dmg</code>，把 <strong>Docker.app</strong> 拖入「应用程序」文件夹，然后双击启动。等待菜单栏右上角的鲸鱼图标不再闪烁、变为稳定状态，即表示 Docker 已就绪。
+            </p>
+          </li>
+
+          <li>
+            <strong>终端验证</strong>
+            <p style="margin:var(--space-2) 0 0;">打开「终端」，运行：</p>
+            <pre style="margin:var(--space-2) 0 0;"><code>docker version</code></pre>
+            <p style="margin:var(--space-2) 0 0;">
+              正常输出包含 <code>Client</code> 和 <code>Server</code> 两段版本信息，说明 Docker Daemon 已正常连接。
+            </p>
+          </li>
+
+          <li>
+            <strong>保持 Docker 常驻</strong>
+            <p style="margin:var(--space-2) 0 0;">
+              本工具运行时需要 Docker 一直开着。建议在 Docker Desktop → Settings → General 中勾选
+              <strong>Start Docker Desktop when you sign in to your computer</strong>，避免每次手动启动。
+            </p>
+          </li>
+
+        </ol>
+      </div>
+
+      <!-- ─── Windows ─── -->
+      <div class="tabpanel" data-panel="win">
+
+        <div class="banner info" style="margin-bottom:var(--space-5);">
+          Windows 版 Docker Desktop 依赖 WSL 2 作为后端，需先完成 WSL 2 初始化。
+        </div>
+
+        <ol style="padding-left:var(--space-5); margin:0; display:flex; flex-direction:column; gap:var(--space-5);">
+
+          <li>
+            <strong>启用 WSL 2</strong>
+            <p style="margin:var(--space-2) 0 0;">
+              以<strong>管理员</strong>身份打开 PowerShell，运行：
+            </p>
+            <pre style="margin:var(--space-2) 0 0;"><code>wsl --install</code></pre>
+            <p style="margin:var(--space-2) 0 0;">
+              命令会自动启用虚拟化功能并安装 Ubuntu 子系统。安装完成后<strong>重启电脑</strong>。
+            </p>
+          </li>
+
+          <li>
+            <strong>下载并安装 Docker Desktop for Windows</strong>
+            <p style="margin:var(--space-2) 0 0;">
+              前往 <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener" style="color:var(--accent);">docker.com/products/docker-desktop</a>，下载 Windows 安装包（<code>Docker Desktop Installer.exe</code>）。运行安装向导，保持默认选项（Use WSL 2 based engine）即可。
+            </p>
+          </li>
+
+          <li>
+            <strong>启动并等待就绪</strong>
+            <p style="margin:var(--space-2) 0 0;">
+              安装完成后启动 Docker Desktop。等待任务栏托盘区鲸鱼图标稳定，点击图标可看到状态显示 <strong>Docker Desktop is running</strong>。
+            </p>
+          </li>
+
+          <li>
+            <strong>终端验证</strong>
+            <p style="margin:var(--space-2) 0 0;">打开 PowerShell 或 Windows 终端，运行：</p>
+            <pre style="margin:var(--space-2) 0 0;"><code>docker version</code></pre>
+            <p style="margin:var(--space-2) 0 0;">
+              正常输出包含 <code>Client</code> 和 <code>Server</code> 两段版本信息，说明 Docker Daemon 已正常连接。
+            </p>
+          </li>
+
+        </ol>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="../js/app.js"></script>
+</body>
+</html>

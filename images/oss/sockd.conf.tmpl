@@ -1,0 +1,16 @@
+# 安全前提:1080 仅在 docker 内网暴露(_build_oss 不映射 host 端口,命门 #4)。
+# 故此处零认证放行(socksmethod: none);切勿把容器 1080 映射到 host,否则即开放代理。
+logoutput: stderr
+internal: 0.0.0.0 port = 1080
+external: __VPN_IFACE__
+socksmethod: none
+clientmethod: none
+user.privileged: root
+user.unprivileged: nobody
+
+client pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+}
+socks pass {
+    from: 0.0.0.0/0 to: 0.0.0.0/0
+}

@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>通道详情 · VPN 管理网关</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+  <style>
+    /* ── 屏内独有样式：只用 var(--*) 或与 black/white/transparent 的 color-mix ── */
+    .act-bar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+    .health-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) 0; }
+    .health-row + .health-row { border-top: 1px solid var(--border); }
+    .health-row .hl { color: var(--muted); font-size: var(--text-sm); }
+    .health-row .hv { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--text-sm); }
+    .kv-list dd .copyable { display: inline-flex; align-items: center; gap: 6px; }
+    .kv-list dd .icon-copy { width: 26px; height: 26px; }
+    .kv-list dd .icon-copy svg { width: 13px; height: 13px; }
+    .note { font-size: var(--text-xs); color: var(--muted); margin-top: 3px; line-height: 1.5; }
+    .pw-mask { letter-spacing: 0.12em; }
+
+    /* 仿深信服企业登录页（高保真，纯 CSS 占位，不调外网） */
+    .portal { width: 100%; max-width: 392px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--elev-raised); overflow: hidden; }
+    .portal-bar { height: 4px; background: var(--accent); }
+    .portal-body { padding: var(--space-6) var(--space-6) var(--space-5); }
+    .portal-brand { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-5); }
+    .portal-logo { width: 34px; height: 34px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-on); display: grid; place-items: center; flex: none; }
+    .portal-logo svg { width: 19px; height: 19px; }
+    .portal-brand .pt { font-family: var(--font-display); font-weight: 600; font-size: var(--text-base); }
+    .portal-brand .ps { font-size: var(--text-xs); color: var(--muted); margin-top: 1px; }
+    .portal-tabs { display: flex; gap: var(--space-4); border-bottom: 1px solid var(--border); margin-bottom: var(--space-5); }
+    .portal-tabs button { background: none; border: 0; padding: 0 0 9px; font-size: var(--text-sm); font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    .portal-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+    .pfield { margin-bottom: var(--space-3); }
+    .pfield label { display: block; font-size: var(--text-xs); color: var(--muted); margin-bottom: 5px; }
+    .pinput { display: flex; align-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 0 11px; }
+    .pinput svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+    .pinput input { border: 0; outline: none; background: none; font: inherit; font-size: var(--text-sm); color: var(--fg); padding: 9px; flex: 1; min-width: 0; }
+    .pinput .sms-btn { border: 0; background: none; color: var(--accent); font-size: var(--text-xs); font-weight: 500; white-space: nowrap; padding: 4px 0 4px 8px; border-left: 1px solid var(--border); }
+    .pinput .sms-btn[disabled] { color: var(--muted); }
+    .psubmit { width: 100%; margin-top: var(--space-2); padding: 10px; border: 0; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-on); font-size: var(--text-sm); font-weight: 600; }
+    .psubmit:hover { background: var(--accent-hover); }
+    .portal-foot { display: flex; align-items: center; justify-content: space-between; margin-top: var(--space-4); font-size: var(--text-xs); color: var(--muted); }
+    .qr { width: 168px; height: 168px; margin: var(--space-2) auto var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-sm); display: grid; place-items: center; background: var(--surface-2); }
+    .qr svg { width: 132px; height: 132px; color: var(--fg); }
+    .scan-hint { text-align: center; font-size: var(--text-sm); color: var(--muted); }
+    .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+    .seg button { background: var(--surface); border: 0; padding: 5px 12px; font-size: var(--text-xs); color: var(--muted); }
+    .seg button + button { border-left: 1px solid var(--border); }
+    .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .switch { position: relative; width: 38px; height: 22px; border-radius: var(--radius-pill); background: var(--surface-2); border: 1px solid var(--border); flex: none; transition: background var(--motion-fast); cursor: pointer; }
+    .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: var(--elev-raised); transition: left var(--motion-fast) var(--ease-standard); }
+    .switch.on { background: var(--success); border-color: var(--success); }
+    .switch.on::after { left: 18px; }
+    .code .ts { color: color-mix(in oklab, var(--on-ink), transparent 45%); }
+    .code .ok { color: color-mix(in oklab, var(--success), white 35%); }
+    .code .wn { color: color-mix(in oklab, var(--warn), white 30%); }
+  </style>
+</head>
+<body data-page="channels">
+  <div class="app">
+    <!-- ════ 侧栏（所有屏一致） ════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+        </span>
+        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
+      </div>
+      <nav class="sidebar-nav">
+        <span class="nav-label">管理</span>
+        <a class="nav-item" data-nav="channels" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          通道总览 <span class="count" id="nav-count">—</span>
+        </a>
+        <a class="nav-item" data-nav="monitor" href="monitor.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          流量监控
+        </a>
+        <a class="nav-item" data-nav="entry" href="clash-config.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
+          入口接入
+        </a>
+        <a class="nav-item" data-nav="env-check" href="env-check.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          环境诊断
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span>
+          <span>mihomo 运行中</span>
+          <span class="k spacer" id="foot-port">:7899</span>
+        </div>
+        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
+      </div>
+    </aside>
+
+    <!-- ════ 主区 ════ -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <a class="icon-btn hide-mobile" href="index.html" aria-label="返回通道总览">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+        </a>
+        <h1 id="top-title">通道详情</h1>
+        <span id="top-badge"></span>
+        <span class="spacer"></span>
+        <a class="btn btn-secondary hide-mobile" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+          通道总览
+        </a>
+      </header>
+
+      <div class="content stack-6">
+        <!-- 面包屑 + 标识 -->
+        <div class="page-head" data-od-id="ch-head" style="margin-bottom:0;">
+          <div class="crumb"><a href="index.html">通道总览</a> / <span id="crumb-name">—</span></div>
+          <div class="row-between" style="margin-top:6px;">
+            <div class="row" style="gap:var(--space-3);">
+              <h1 id="ch-title">—</h1>
+              <span id="ch-kind"></span>
+            </div>
+            <span class="t-sm muted mono" id="ch-ident">—</span>
+          </div>
+        </div>
+
+        <!-- 顶部操作区 -->
+        <div class="card card-pad" data-od-id="ch-actions">
+          <div class="row-between">
+            <div class="act-bar">
+              <button class="btn btn-primary" id="act-relogin">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/></svg>
+                重新登录
+              </button>
+              <button class="btn btn-secondary" id="act-probe">检测连通</button>
+              <button class="btn btn-secondary" id="act-restart">重启容器</button>
+              <button class="btn btn-secondary" id="act-power">停止</button>
+              <span class="spacer"></span>
+              <button class="btn btn-danger" data-open="del-modal">删除</button>
+            </div>
+          </div>
+          <p class="note" style="margin-top:12px;">设备重绑风险下「重新登录」是一等公民——重建容器会用同一 MAC / 卷 / hostname，但深信服仍可能要求重过验证码，随时点此回到登录页即可。</p>
+        </div>
+
+        <!-- Tab 容器 -->
+        <div data-tabscope data-od-id="ch-tabs">
+          <div class="tabs" data-tabs>
+            <button class="tab active" data-tab="overview">概览</button>
+            <button class="tab" data-tab="login">登录</button>
+            <button class="tab" data-tab="domains">分流规则</button>
+            <button class="tab" data-tab="logs">日志</button>
+          </div>
+
+          <!-- ─── 概览 ─── -->
+          <div class="tabpanel active" data-panel="overview" style="padding-top:var(--space-6);">
+            <div class="grid-2-1">
+              <div class="stack-6">
+                <div class="card">
+                  <div class="card-head"><h3>容器配置</h3><span class="pill" id="cfg-kind">—</span><button class="btn btn-sm btn-ghost" id="cfg-edit" type="button" style="margin-left:auto;">编辑</button></div>
+                  <div class="card-body">
+                    <dl class="kv-list" id="cfg-list"></dl>
+                    <form id="cfg-edit-form" style="display:none;">
+                      <div class="stack-3">
+                        <div class="field"><label>名称</label><input class="input" id="e-name" type="text" autocomplete="off"></div>
+                        <div class="field"><label>VPN 网关</label><input class="input mono" id="e-server" type="text" autocomplete="off" placeholder="host:port"></div>
+                        <div class="field"><label>账号</label><input class="input mono" id="e-username" type="text" autocomplete="off"></div>
+                        <div class="field"><label>密码</label><input class="input" id="e-password" type="password" autocomplete="new-password" placeholder="留空则不修改"></div>
+                        <div class="field"><label>内网探测 URL</label><input class="input mono" id="e-probe" type="text" autocomplete="off"></div>
+                      </div>
+                      <p class="note" id="e-note" style="margin-top:var(--space-3);">改网关/账号/密码会重建容器并重新连接;只改名称或探测 URL 不影响连接。</p>
+                      <div style="display:flex; gap:var(--space-2); margin-top:var(--space-3);">
+                        <button class="btn btn-primary btn-sm" id="e-save" type="submit">保存</button>
+                        <button class="btn btn-ghost btn-sm" id="e-cancel" type="button">取消</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+
+                <div class="banner warn" data-od-id="rebind-note">
+                  <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+                  <div>
+                    <div class="bt">设备重绑：把「重新登录」当常规操作</div>
+                    <p>重建容器复用同一 <span class="mono">FAKE_HWADDR</span> / <span class="mono">/root</span> 卷 / hostname，多数情况会保住登录态；但 aTrust / EasyConnect 的设备指纹不止 MAC，服务端仍可能要求重新过验证码。本工具因此内建「重新登录」通路——触发重绑时在登录页过一次即可，不卡死。</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" data-od-id="ch-health">
+                <div class="card-head"><h3>健康状态</h3><button class="icon-btn" id="health-refresh" aria-label="刷新"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/></svg></button></div>
+                <div class="card-body">
+                  <div class="metric" style="margin-bottom:var(--space-4);">
+                    <div class="ml">隧道延迟（SOCKS5 探活）</div>
+                    <div class="mv" id="h-lat">— <span class="unit">ms</span></div>
+                    <div class="lat-bar" id="h-lat-bar" style="margin-top:10px;"><i style="width:0;"></i></div>
+                  </div>
+                  <div class="health-row"><span class="hl">当前状态</span><span class="hv" id="h-status">—</span></div>
+                  <div class="health-row"><span class="hl">运行时长</span><span class="hv" id="h-uptime">—</span></div>
+                  <div class="health-row"><span class="hl">上次探活</span><span class="hv" id="h-last">刚刚</span></div>
+                  <div class="health-row"><span class="hl">判据</span><span class="hv">SOCKS5 探活</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ─── 登录 ─── -->
+          <div class="tabpanel" data-panel="login" id="login" style="padding-top:var(--space-6);">
+            <div class="grid-2-1">
+              <div class="stack-4">
+                <div class="vnc-frame" data-od-id="vnc">
+                  <div class="vnc-bar">
+                    <span class="vdot"></span>
+                    <span>noVNC · websockify</span>
+                    <span class="mono" id="vnc-addr">127.0.0.1:18080</span>
+                    <span class="vbtns"><span></span><span></span><span></span></span>
+                  </div>
+                  <div class="vnc-stage">
+                    <!-- 仿深信服企业登录页（高保真占位） -->
+                    <div class="portal" id="portal">
+                      <div class="portal-bar"></div>
+                      <div class="portal-body">
+                        <div class="portal-brand">
+                          <span class="portal-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg></span>
+                          <div>
+                            <div class="pt" id="portal-title">企业安全接入</div>
+                            <div class="ps" id="portal-host">sslvpn.example.com</div>
+                          </div>
+                        </div>
+                        <div class="portal-tabs">
+                          <button class="on" data-ptab="account">账号登录</button>
+                          <button data-ptab="sms">短信验证码</button>
+                          <button data-ptab="qr">扫码登录</button>
+                        </div>
+
+                        <div data-pview="account">
+                          <div class="pfield">
+                            <label>用户名</label>
+                            <div class="pinput">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+                              <input type="text" placeholder="域账号 / 工号" autocomplete="off" />
+                            </div>
+                          </div>
+                          <div class="pfield">
+                            <label>密码</label>
+                            <div class="pinput">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+                              <input type="password" placeholder="登录密码" autocomplete="off" />
+                            </div>
+                          </div>
+                          <button class="psubmit" type="button">登 录</button>
+                        </div>
+
+                        <div data-pview="sms" hidden>
+                          <div class="pfield">
+                            <label>手机号</label>
+                            <div class="pinput">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg>
+                              <input type="text" placeholder="已绑定手机号" autocomplete="off" />
+                            </div>
+                          </div>
+                          <div class="pfield">
+                            <label>验证码</label>
+                            <div class="pinput">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h5"/></svg>
+                              <input type="text" placeholder="6 位短信码" autocomplete="off" />
+                              <button class="sms-btn" id="sms-send" type="button">获取验证码</button>
+                            </div>
+                          </div>
+                          <button class="psubmit" type="button">登 录</button>
+                        </div>
+
+                        <div data-pview="qr" hidden>
+                          <div class="qr">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z" fill="currentColor" fill-opacity="0.08"/><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/><path d="M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z" fill="currentColor"/><path d="M6 6h2v2H6zM16 6h2v2h-2zM6 16h2v2H6z" fill="currentColor"/></svg>
+                          </div>
+                          <p class="scan-hint">打开深信服 aTrust App 扫码授权登录</p>
+                        </div>
+
+                        <div class="portal-foot">
+                          <span>遇到问题？联系企业管理员</span>
+                          <span class="mono">aTrust 信任接入</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="banner info" data-od-id="login-note">
+                  <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                  <div>
+                    <div class="bt">唯一可靠判据 = 后端 SOCKS5 探活</div>
+                    <p>noVNC 与管理界面不同源，父页读不到 iframe 内的 RFB 事件，也没有 postMessage 跨源桥。所以「VNC 连上」只代表看到了登录页，<span class="strong">不等于</span>隧道真通。MVP 一律以后端在容器内 <span class="mono">curl --socks5-hostname</span> 探测内网 URL 的结果为准。</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" data-od-id="login-side">
+                <div class="card-head"><h3>登录控制</h3></div>
+                <div class="card-body stack-3">
+                  <button class="btn btn-secondary btn-block" id="vnc-reload">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/></svg>
+                    刷新窗口
+                  </button>
+                  <button class="btn btn-primary btn-block" id="vnc-relogin">
+                    重新登录
+                  </button>
+                  <hr class="divider" />
+                  <dl class="kv-list" style="grid-template-columns:max-content 1fr; gap:var(--space-2) var(--space-4);">
+                    <dt>登录方式</dt><dd id="li-method">—</dd>
+                    <dt>noVNC 端口</dt><dd id="li-port">—</dd>
+                    <dt>探测 URL</dt><dd class="t-xs" id="li-probe">—</dd>
+                  </dl>
+                  <p class="note">登录成功后会触发一次自动探活；也可随时切到「概览」点刷新或在此点「检测连通」。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ─── 分流规则：域名 + IP/网段 ─── -->
+          <div class="tabpanel" data-panel="domains" style="padding-top:var(--space-6);">
+            <!-- 域名规则（DOMAIN-SUFFIX） -->
+            <div class="card" data-od-id="ch-domains" style="margin-bottom:var(--space-5);">
+              <div class="card-head">
+                <h3>分流域名</h3>
+                <span class="t-sm muted">命中 = <span class="mono">DOMAIN-SUFFIX</span> → 走本通道</span>
+              </div>
+              <div class="card-body">
+                <form class="row wrap" id="add-domain" style="gap:var(--space-3); margin-bottom:var(--space-5);">
+                  <input class="input" name="pat" placeholder="可一次粘多个，用空格/逗号/换行分隔，如 +.crm-a.com  fp.内网" style="flex:1; min-width:240px;" />
+                  <button class="btn btn-secondary" type="submit">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                    批量绑定
+                  </button>
+                </form>
+                <table class="table" data-od-id="domain-table">
+                  <thead>
+                    <tr><th>域名 pattern</th><th>命中规则</th><th style="width:96px;">启用</th><th class="r" style="width:64px;">操作</th></tr>
+                  </thead>
+                  <tbody id="domain-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- IP / 网段规则（IP-CIDR · no-resolve） -->
+            <div class="card" data-od-id="ch-ips">
+              <div class="card-head">
+                <h3>分流 IP / 网段</h3>
+                <span class="t-sm muted">命中 = <span class="mono">IP-CIDR</span> + <span class="mono">no-resolve</span> → 走本通道</span>
+              </div>
+              <div class="card-body">
+                <form class="row wrap" id="add-ip" style="gap:var(--space-3); margin-bottom:var(--space-5);">
+                  <input class="input mono" name="pat" placeholder="单 IP 自动补 /32，可多个：10.20.0.0/16  192.168.30.40  fd00::/8" style="flex:1; min-width:240px;" />
+                  <button class="btn btn-secondary" type="submit">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                    批量绑定
+                  </button>
+                </form>
+                <table class="table" data-od-id="ip-table">
+                  <thead>
+                    <tr><th>IP / CIDR</th><th>命中规则</th><th style="width:96px;">启用</th><th class="r" style="width:64px;">操作</th></tr>
+                  </thead>
+                  <tbody id="ip-body"></tbody>
+                </table>
+              </div>
+              <div class="card-foot" style="display:block;">
+                <div class="note-line" style="margin:0;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                  <span><span class="mono">IP-CIDR</span> 规则强制带 <span class="mono">no-resolve</span>：按目的 IP 直接命中、不触发本地 DNS——给没有域名的内网主机（数据库 / SMB / 打印机 / 堡垒机）用。绑定/停用/删除会写 <span class="mono">./prov/chan{id}.yaml</span> 并 <span class="mono">PUT /providers/rules/{ch}</span> 热重载，即时生效、不断现有连接，同时并入 <span class="mono">/clash/vpn-rules.yaml</span> 供你的 Clash 订阅同步。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ─── 日志 ─── -->
+          <div class="tabpanel" data-panel="logs" style="padding-top:var(--space-6);">
+            <div data-od-id="ch-logs">
+              <div class="code-head">
+                <span id="logs-title">docker logs · 容器</span>
+                <button class="btn btn-sm btn-ghost" id="logs-refresh" style="color:var(--on-ink);">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/></svg>
+                  刷新
+                </button>
+              </div>
+              <div class="code" id="logs-body" style="max-height:60vh; overflow:auto;"></div>
+              <p class="note" style="margin-top:10px;">容器内 EC / aTrust 启动 + danted SOCKS 监听 + 隧道建立日志（最近 500 行）。连续重复的行已折叠为一行，只留真信号。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除确认 -->
+  <div class="overlay" id="del-modal">
+    <div class="modal">
+      <div class="card-head"><h3>删除通道</h3><button class="icon-btn" data-close="del-modal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+      <div class="card-body stack-4">
+        <p class="muted">将停止并删除容器 <span class="mono" id="del-name"></span>，其 <span class="mono">/root</span> 卷与登录态一并移除，且会从 mihomo 与 Clash 订阅中摘除其域名 / IP 规则（热加载、不断现有连接）。此操作不可撤销。</p>
+        <div class="banner warn">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+          <p style="color:inherit; margin:0;">删除后重建会用同一 MAC / 卷 / hostname，但深信服仍可能要求重新过验证码。</p>
+        </div>
+      </div>
+      <div class="card-foot" style="justify-content:flex-end;">
+        <button class="btn btn-secondary" data-close="del-modal">取消</button>
+        <button class="btn btn-danger" id="del-confirm">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    // ── 选通道：?id= 命中 channels，缺省取第一个；数据来自真实后端 ──
+    const params = new URLSearchParams(location.search);
+    const wantId = params.get("id");
+    let ch, sys;
+    let k, kindLabel, containerId, hostName, methodLabel;
+    let pwShown = false;
+
+    async function boot() {
+      const list = await api.channels();
+      ch = list.find(c => c.id === wantId) || list[0];
+      sys = await api.system();
+      if (!ch) { toast("通道不存在", false); return; }
+
+      $("#nav-count").textContent = list.length;
+      $("#foot-port").textContent = ":" + sys.mihomo_port;
+
+      k = kindMeta(ch.vpn_type);
+      kindLabel = k.label + (ch.ec_ver ? " " + ch.ec_ver : "");
+      containerId = "vpn-" + ch.id;
+      hostName = ch.server.replace("https://", "").replace("http://", "");
+      methodLabel = (ch.login_method === "headless" || ch.login_method === "password")
+        ? "无头（账号密码 CLI 注入）" : "交互登录（noVNC）";
+
+      renderAll();
+    }
+
+    function renderAll() {
+      // ── 顶栏 / 面包屑 / 标识 ──
+      $("#top-title").textContent = ch.name;
+      $("#top-badge").innerHTML = badgeHTML(ch.status);
+      $("#crumb-name").textContent = ch.name;
+      $("#ch-title").textContent = ch.name;
+      $("#ch-kind").innerHTML = `<span class="kind-tag ${k.cls}">${k.label}</span>`;
+      $("#ch-ident").textContent = `id ${ch.id} · ${hostName}`;
+
+      $("#cfg-kind").textContent = kindLabel;
+      renderConfig();
+      renderHealth();
+      renderLoginPanel();
+      renderRuleTables();
+      $("#del-name").textContent = containerId;
+      syncStatus();
+      // 无头通道(oss,如 openfortivpn):无交互登录 → 隐藏「登录」tab 与「重新登录」按钮
+      const headless = ch.login_method === "headless";
+      const loginTabBtn = document.querySelector('.tab[data-tab="login"]');
+      if (loginTabBtn) loginTabBtn.style.display = headless ? "none" : "";
+      const relogin = $("#act-relogin");
+      if (relogin) relogin.style.display = headless ? "none" : "";
+    }
+
+    // ── 概览：容器配置 kv-list ──
+    function rowsConfig() {
+      return [
+        ["VPN 网关", `<span class="copyable"><span>${hostName}</span></span>`],
+        ["类型 / 版本", kindLabel],
+        ["登录方式", methodLabel],
+        ["SOCKS5 出口", `${ch.socks_endpoint}<span class="note">仅 Docker 内网暴露，本机绑 127.0.0.1</span>`],
+        ["noVNC 端口", `:${ch.novnc_port}<span class="note">交互登录用，绑 127.0.0.1</span>`],
+        ["fake_hwaddr", `${ch.mac}<span class="note">建通道时生成、落库；重建复用以降低重绑</span>`],
+        ["卷名", `${ch.volume_name}<span class="note">挂载到 /root，持久化登录态</span>`],
+        ["VNC 密码", `<span class="copyable"><span id="vnc-pw" class="pw-mask">${pwShown ? ch.vnc_password : "••••••••"}</span><button class="btn btn-sm btn-ghost" id="pw-toggle" type="button">${pwShown ? "隐藏" : "显示"}</button></span><span class="note">≤ 8 字符（tigervnc 上限，超长静默截断）</span>`],
+        ["容器 id", `<span class="copyable"><span>${containerId}</span><button class="icon-btn icon-copy" id="copy-cid" type="button" aria-label="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button></span>`],
+        ["内网探测 URL", `<span class="t-xs">${ch.probe_url}</span><span class="note">SOCKS5 探活目标，登录成功判据</span>`],
+      ];
+    }
+    function renderConfig() {
+      $("#cfg-list").innerHTML = rowsConfig().map(([dt, dd]) => `<dt>${dt}</dt><dd>${dd}</dd>`).join("");
+      const t = $("#pw-toggle"); if (t) t.addEventListener("click", () => { pwShown = !pwShown; renderConfig(); });
+      const cc = $("#copy-cid"); if (cc) cc.addEventListener("click", () => copyText(containerId, "已复制容器 id"));
+    }
+
+    // ── 健康卡片 ──
+    function renderHealth() {
+      const lat = ch.latency_ms;
+      $("#h-lat").innerHTML = (lat != null ? lat : "—") + ` <span class="unit">ms</span>`;
+      const bar = $("#h-lat-bar"), cls = latClass(lat);
+      bar.className = "lat-bar" + (cls ? " " + cls : "");
+      bar.querySelector("i").style.width = lat != null ? Math.min(100, Math.round(lat / 1.8)) + "%" : "0";
+      $("#h-status").innerHTML = badgeHTML(ch.status);
+      $("#h-uptime").textContent = ch.uptime != null ? ch.uptime : "—";
+    }
+
+    function setLastProbe() { $("#h-last").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false }); }
+
+    // ── 登录面板填充 ──
+    function renderLoginPanel() {
+      $("#vnc-addr").textContent = `${sys.bound_ip}:${ch.novnc_port}`;
+      $("#portal-title").textContent = k.label === "aTrust" ? "aTrust 信任接入" : "EasyConnect 企业接入";
+      $("#portal-host").textContent = hostName;
+      $("#li-method").textContent = methodLabel;
+      $("#li-port").innerHTML = `<span class="mono">:${ch.novnc_port}</span>`;
+      $("#li-probe").innerHTML = `<span class="mono">${ch.probe_url}</span>`;
+    }
+
+    // ── 登录 tab：真 noVNC iframe（进入 login tab 时拉 url）──
+    async function loadVnc() {
+      try {
+        const res = await api.login(ch.id);
+        if (res.login_mode === "headless" || !res.url) {
+          const slot = $("#vnc-frame") || $("#portal");
+          if (slot) slot.outerHTML = `<div class="banner" style="margin:var(--space-4);">
+            <div>该通道为<strong>无头类型</strong>,无交互登录界面。凭据已在容器内经 CLI 注入,
+            是否连通以「检测连通」(SOCKS5 探活)为准。</div></div>`;
+          return;
+        }
+        const { url } = res;
+        let f = $("#vnc-frame");
+        if (!f) {
+          f = document.createElement("iframe");
+          f.id = "vnc-frame"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
+          const portal = $("#portal");
+          if (portal) portal.replaceWith(f);   // 用 iframe 替换仿真 portal 容器
+        }
+        f.src = url;
+      } catch (e) { toast("拉取登录窗失败：" + e.message, false); }
+    }
+
+    function syncStatus() {
+      const stopped = ch.status === "stopped";
+      $("#top-badge").innerHTML = badgeHTML(ch.status);
+      $("#h-status").innerHTML = badgeHTML(ch.status);
+      $("#act-power").textContent = stopped ? "启动" : "停止";
+      // 容器已停：SOCKS5 不监听、状态机不能直接登录 → 探活/重新登录均不可用
+      $("#act-probe").disabled = stopped;
+      $("#act-relogin").disabled = stopped;
+      // 已停时「重启容器」语义即「启动容器」
+      $("#act-restart").textContent = stopped ? "启动容器" : "重启容器";
+    }
+
+    // ── 顶部操作 ──
+    function goLogin() {
+      const loginTab = document.querySelector('.tab[data-tab="login"]');
+      if (loginTab) loginTab.click();   // 触发下方登录 tab 的 click 监听 → loadVnc()
+    }
+    $("#act-relogin").addEventListener("click", () => { goLogin(); toast("已打开登录窗口，请在窗口内重新过验证"); });
+    $("#vnc-relogin").addEventListener("click", () => { loadVnc(); toast("已请求重新登录：请在上方窗口完成验证，完成后将自动探活"); });
+    $("#vnc-reload").addEventListener("click", () => { loadVnc(); toast("noVNC 窗口已刷新"); });
+
+    // ── 共享动作：检测连通（后端 SOCKS5 探活）──
+    async function doProbe(btn) {
+      // 纯图标按钮（含 <svg> 或无文本）只切 disabled 态，避免文案覆盖把图标清掉
+      const isIcon = btn && (btn.querySelector("svg") || !btn.textContent.trim());
+      const orig = btn && !isIcon ? btn.textContent : null;
+      if (btn) { if (!isIcon) btn.textContent = "检测中…"; btn.disabled = true; }
+      try {
+        const r = await api.status(ch.id);
+        await boot();
+        setLastProbe();
+        toast(r.connected ? `隧道真通 · ${r.latency_ms ?? "?"} ms · SOCKS5 探活通过` : "探活失败：未连通", r.connected);
+      } catch (e) { toast("探活出错：" + e.message, false); }
+      finally { if (btn) { btn.disabled = false; if (!isIcon && orig != null) btn.textContent = orig; } }
+    }
+    $("#act-probe").addEventListener("click", (e) => doProbe(e.currentTarget));
+    $("#health-refresh").addEventListener("click", (e) => doProbe(e.currentTarget));
+
+    // ── 概览:编辑通道信息 ──
+    function openEdit() {
+      $("#e-name").value = ch.name || "";
+      $("#e-server").value = ch.server || (ch.config && ch.config.server) || "";
+      $("#e-username").value = ch.username || (ch.config && ch.config.username) || "";
+      $("#e-password").value = "";
+      $("#e-probe").value = ch.probe_url || "";
+      $("#cfg-list").style.display = "none";
+      $("#cfg-edit").style.display = "none";
+      $("#cfg-edit-form").style.display = "";
+    }
+    function closeEdit() {
+      $("#cfg-edit-form").style.display = "none";
+      $("#cfg-list").style.display = "";
+      $("#cfg-edit").style.display = "";
+    }
+    $("#cfg-edit").addEventListener("click", openEdit);
+    $("#e-cancel").addEventListener("click", closeEdit);
+    $("#cfg-edit-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = {
+        name: $("#e-name").value,
+        server: $("#e-server").value,
+        username: $("#e-username").value,
+        probe_url: $("#e-probe").value,
+      };
+      const pw = $("#e-password").value;
+      if (pw) body.password = pw;   // 留空则不改密码
+      const connChanged = body.server !== (ch.server || "") ||
+        body.username !== (ch.username || (ch.config && ch.config.username) || "") || !!pw;
+      const btn = $("#e-save");
+      btn.disabled = true; btn.textContent = connChanged ? "保存并重连中…" : "保存中…";
+      try {
+        await api.update(ch.id, body);
+        toast(connChanged ? "已保存,正在按新信息重连" : "已保存");
+        location.reload();
+      } catch (err) {
+        toast("保存失败:" + err.message, false);
+        btn.disabled = false; btn.textContent = "保存";
+      }
+    });
+
+    $("#act-restart").addEventListener("click", async (e) => {
+      const btn = e.currentTarget, orig = btn.textContent;
+      btn.textContent = "重启中…"; btn.disabled = true;
+      try {
+        await api.stop(ch.id);
+        await api.start(ch.id);
+        await boot();
+        toast("容器已重启 · SOCKS5 监听就绪，请登录后探活");
+      } catch (err) { toast("重启出错：" + err.message, false); }
+      finally { btn.disabled = false; btn.textContent = orig; }
+    });
+    $("#act-power").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        if (ch.status === "stopped") { await api.start(ch.id); await boot(); toast("已启动，请登录后探活"); }
+        else { await api.stop(ch.id); await boot(); toast("容器已停止"); }
+      } catch (err) { toast("操作出错：" + err.message, false); }
+      finally { btn.disabled = false; }
+    });
+
+    // ── 删除 ──
+    $("#del-confirm").addEventListener("click", async () => {
+      closeOverlay("del-modal");
+      try {
+        await api.remove(ch.id);
+        toast(`已删除 ${ch.name} · 域名规则已从 mihomo / Clash 摘除`);
+        setTimeout(() => location.href = "index.html", 900);
+      } catch (e) { toast("删除出错：" + e.message, false); }
+    });
+
+    // ── 分流规则：域名（DOMAIN-SUFFIX）+ IP/网段（IP-CIDR·no-resolve）──
+    function ruleRow(type, d) {
+      const meta = type === "IP-CIDR"
+        ? `<td class="muted t-xs">IP-CIDR · <span class="mono">no-resolve</span></td>`
+        : `<td class="muted t-xs">DOMAIN-SUFFIX</td>`;
+      return `<tr data-id="${d.id}">
+        <td class="mono">${d.pattern}</td>
+        ${meta}
+        <td><span class="switch ${d.enabled ? "on" : ""}" role="switch" aria-checked="${!!d.enabled}" data-toggle="${d.id}"></span></td>
+        <td class="r"><button class="btn btn-sm btn-danger" data-del="${d.id}" aria-label="删除">删除</button></td>
+      </tr>`;
+    }
+    function wireRuleTable(o) {
+      const body = $(o.bodySel);
+      function render() {
+        if (!o.list.length) {
+          body.innerHTML = `<tr><td colspan="4"><div class="empty" style="padding:var(--space-6);">${o.empty}</div></td></tr>`;
+          return;
+        }
+        body.innerHTML = o.list.map((d) => ruleRow(o.type, d)).join("");
+        $$(`${o.bodySel} [data-toggle]`).forEach(sw => sw.addEventListener("click", async () => {
+          const d = o.list.find(x => String(x.id) === sw.dataset.toggle);
+          if (!d) return;
+          try {
+            await api.toggleRule(ch.id, d.id, !d.enabled);
+            d.enabled = d.enabled ? 0 : 1; render();
+            toast(`${d.pattern} 已${d.enabled ? "启用" : "停用"} → 热重载 chan${ch.id} 规则`);
+          } catch (e) { toast("操作出错：" + e.message, false); }
+        }));
+        $$(`${o.bodySel} [data-del]`).forEach(b => b.addEventListener("click", async () => {
+          const d = o.list.find(x => String(x.id) === b.dataset.del);
+          if (!d) return;
+          try {
+            await api.delRule(ch.id, d.id);
+            o.list.splice(o.list.indexOf(d), 1); render();
+            toast(`已删除 ${d.pattern} → PUT /providers/rules/chan${ch.id} 热重载`);
+          } catch (e) { toast("删除出错：" + e.message, false); }
+        }));
+      }
+      o.render = render;
+      $(o.formSel).addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const toks = parseTokens(e.target.pat.value);
+        if (!toks.length) { toast(`请填写${o.label}`, false); return; }
+        try {
+          const r = await api.addRules(ch.id, toks, o.kind);
+          e.target.pat.value = "";
+          o.list = o.kind === "ip" ? r.ips : r.domains;
+          render();
+          const n = o.kind === "ip" ? r.added.ip : r.added.domain;
+          if (n) toast(`已绑定 ${n} 条${o.label} → 写 ./prov/chan${ch.id}.yaml 热重载，不断现有连接`);
+          else if (r.rejected.length) toast(`格式无法识别：${r.rejected.join("，")}`, false);
+          else toast(`这些${o.label}已绑定`, false);
+        } catch (err) { toast("绑定出错：" + err.message, false); }
+      });
+      render();
+    }
+    const domainTable = { type: "DOMAIN-SUFFIX", kind: "domain", bodySel: "#domain-body", formSel: "#add-domain", label: "域名", empty: "尚未绑定域名，命中本通道的客户域名会从这里走 VPN 出口" };
+    const ipTable = { type: "IP-CIDR", kind: "ip", bodySel: "#ip-body", formSel: "#add-ip", label: "IP / 网段", empty: "尚未绑定 IP / 网段，没有域名的内网主机可按目的 IP 直接分流" };
+    let rulesWired = false;
+    function renderRuleTables() {
+      domainTable.list = ch.domains || [];
+      ipTable.list = ch.ips || [];
+      if (!rulesWired) {
+        wireRuleTable(domainTable);
+        wireRuleTable(ipTable);
+        rulesWired = true;
+      } else {
+        domainTable.render(); ipTable.render();
+      }
+    }
+
+    // ── 日志（真 docker logs）──
+    async function loadLogs() {
+      $("#logs-title").textContent = `docker logs · ${containerId}`;
+      try {
+        const { lines } = await api.logs(ch.id, 500);
+        $("#logs-body").textContent = lines.join("\n");
+      } catch (e) {
+        $("#logs-body").textContent = "<拉取日志失败：" + e.message + ">";
+      }
+      $("#logs-body").scrollTop = $("#logs-body").scrollHeight;
+    }
+    $("#logs-refresh").addEventListener("click", () => { loadLogs(); toast("已刷新日志"); });
+    // 切到日志 tab 时拉真日志
+    const logsTab = document.querySelector('.tab[data-tab="logs"]');
+    if (logsTab) logsTab.addEventListener("click", () => loadLogs());
+    // 切到登录 tab 时拉真 noVNC 窗口
+    const loginTab = document.querySelector('.tab[data-tab="login"]');
+    if (loginTab) loginTab.addEventListener("click", () => loadVnc());
+
+    // ── 自动探活：打开详情页即探活一次，并每 8s 自愈（running 真连通 → logged_in）──
+    //    静默版（不弹 toast / 不动按钮态），区别于手动「检测连通」doProbe。
+    async function refreshStatus() {
+      if (!ch || ch.status === "stopped") return;   // 已停容器不探活，避免被刷回 running
+      try {
+        const r = await api.status(ch.id);
+        setLastProbe();
+        if (r.status !== ch.status || r.latency_ms != ch.latency_ms) {
+          ch.status = r.status;
+          if (r.latency_ms != null) ch.latency_ms = r.latency_ms;
+          syncStatus();
+          renderHealth();
+        }
+      } catch (e) {}
+    }
+
+    // 启动：加载真实数据后渲染整屏
+    boot().then(() => {
+      // 兑现 index.html「登录/重新登录」跳转 channel.html?id=X#login 的意图
+      if (location.hash === "#login") goLogin();
+      refreshStatus();                    // 打开即探活一次（徽章不再卡在“待登录”）
+      setInterval(refreshStatus, 8000);   // 之后每 8s 自愈：登录态变化 / 掉线都跟得上
+    });
+  </script>
+</body>
+</html>

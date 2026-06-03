@@ -1,0 +1,18 @@
+# Python 运行态
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 本地数据库 / 密钥 —— 绝不进镜像层
+*.db
+*.sqlite3
+.env
+master.key
+
+# 系统垃圾
+.DS_Store
+
+# Docker 自身
+Dockerfile
+.dockerignore

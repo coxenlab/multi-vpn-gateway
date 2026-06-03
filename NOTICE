@@ -1,0 +1,47 @@
+VPN Management Gateway — Third-Party & Proprietary Software Notice
+================================================================
+
+The MIT License in `LICENSE` covers only this project's own source code
+(the FastAPI backend, the orchestration logic, the static frontend, and the
+self-built `images/oss` and `images/byo` container images).
+
+This project does NOT distribute, bundle, or relicense any proprietary VPN
+client. In particular:
+
+  * EasyConnect / aTrust are proprietary software owned by Sangfor
+    Technologies. This project does not ship their installers or binaries; it
+    only orchestrates third-party Docker images (e.g. `hagb/docker-easyconnect`,
+    `hagb/docker-atrust`) that are pulled at runtime. Those upstream images and
+    their contents are governed by their own respective terms.
+  * Other vendor clients (Cisco AnyConnect, GlobalProtect, Fortinet, Pulse/
+    Ivanti, etc.) are likewise the property of their respective owners and are
+    not distributed by this project.
+
+Product and company names are used only to describe compatibility (nominative
+use); no affiliation, sponsorship, or endorsement is implied.
+
+You are responsible for holding valid licenses for any proprietary VPN client
+you run with this tool, and for complying with the applicable vendor terms
+(including any End User License Agreement). Use at your own risk.
+
+--------------------------------------------------------------------------------
+
+第三方与闭源软件声明
+====================
+
+`LICENSE` 中的 MIT 协议仅覆盖本项目自有的源代码(FastAPI 后端、编排逻辑、
+静态前端,以及自建的 `images/oss`、`images/byo` 容器镜像)。
+
+本项目不分发、不打包、不转授任何闭源 VPN 客户端。具体而言:
+
+  * EasyConnect / aTrust 是深信服(Sangfor)的闭源软件。本项目不附带其安装包
+    或二进制,仅在运行时编排第三方 Docker 镜像(如 `hagb/docker-easyconnect`、
+    `hagb/docker-atrust`);这些上游镜像及其内容受各自条款约束。
+  * 其它厂商客户端(Cisco AnyConnect、GlobalProtect、Fortinet、Pulse/Ivanti
+    等)同属各自所有者,本项目不分发。
+
+文中出现的产品与公司名称仅用于描述兼容性(指称性使用),不暗示任何关联、
+赞助或背书。
+
+使用本工具运行任何闭源 VPN 客户端时,你须自行持有合法授权,并遵守相应厂商
+条款(含 EULA)。风险自负。

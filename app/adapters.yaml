@@ -1,0 +1,206 @@
+# 适配器注册表。Phase 1 只含 R1 hagb 家族(EC/aTrust)。
+# env 值里的 {mac}/{vnc_password}/{version} 由 RuntimeHagb 运行时替换。
+adapters:
+  easyconnect:
+    label: EasyConnect
+    desc: 深信服 EC,支持账密无头或交互登录
+    runtime: hagb
+    image: "hagb/docker-easyconnect:{version}"
+    versioned: true
+    version_repo: hagb/docker-easyconnect
+    fallback_versions: ["7.6.3", "7.6.7"]
+    arch: [amd64, arm64]
+    login_modes: [headless, gui]
+    inputs:
+      - {key: server,   label: 网关地址, type: url}
+      - {key: username, label: 账号,     type: text}
+      - {key: password, label: 密码,     type: password, secret: true}
+    env:
+      USE_NOVNC: "1"
+      PASSWORD: "{vnc_password}"
+      EXIT: ""
+      FAKE_HWADDR: "{mac}"
+      EC_VER: "{version}"
+      DISABLE_PKG_VERSION_XML: "1"
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {}
+
+  atrust:
+    label: aTrust
+    desc: arm64 原生镜像,仅支持交互登录
+    runtime: hagb
+    image: "hagb/docker-atrust:latest"   # 上游无版本 tag(只有 latest/vncless)
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [gui]
+    inputs:
+      - {key: server,   label: 网关地址, type: url}
+    env:
+      USE_NOVNC: "1"
+      PASSWORD: "{vnc_password}"
+      EXIT: ""
+      FAKE_HWADDR: "{mac}"
+      DISABLE_PKG_VERSION_XML: "1"
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.conf.default.route_localnet": "1"}
+
+  # ── R2 oss 无头家族(共用自建镜像 vpnmgr/oss-vpn:latest)──
+  # 密钥经 stdin/临时文件注入容器,绝不进命令行(命门 #5)。无 noVNC。
+  anyconnect:
+    label: Cisco AnyConnect
+    desc: openconnect --protocol=anyconnect,账密/证书无头
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: anyconnect
+    inputs:
+      - {key: server,   label: 网关地址, type: url,      required: true}
+      - {key: username, label: 账号,     type: text,     required: true}
+      - {key: password, label: 密码,     type: password, secret: true}
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.ip_forward": "1"}
+
+  globalprotect:
+    label: GlobalProtect
+    desc: openconnect --protocol=gp,账密无头(SAML/SSO 须改用交互)
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: gp
+    inputs:
+      - {key: server,   label: 网关地址, type: url,      required: true}
+      - {key: username, label: 账号,     type: text,     required: true}
+      - {key: password, label: 密码,     type: password, secret: true}
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.ip_forward": "1"}
+
+  fortinet-oc:
+    label: Fortinet (openconnect)
+    desc: openconnect --protocol=fortinet,账密无头
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: fortinet
+    inputs:
+      - {key: server,   label: 网关地址, type: url,      required: true}
+      - {key: username, label: 账号,     type: text,     required: true}
+      - {key: password, label: 密码,     type: password, secret: true}
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.ip_forward": "1"}
+
+  juniper:
+    label: Juniper / Pulse (nc)
+    desc: openconnect --protocol=nc(Network Connect),账密无头
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: nc
+    inputs:
+      - {key: server,   label: 网关地址, type: url,      required: true}
+      - {key: username, label: 账号,     type: text,     required: true}
+      - {key: password, label: 密码,     type: password, secret: true}
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.ip_forward": "1"}
+
+  pulse:
+    label: Pulse / Ivanti
+    desc: openconnect --protocol=pulse,账密无头
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: pulse
+    inputs:
+      - {key: server,   label: 网关地址, type: url,      required: true}
+      - {key: username, label: 账号,     type: text,     required: true}
+      - {key: password, label: 密码,     type: password, secret: true}
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.ip_forward": "1"}
+
+  openfortivpn:
+    label: openfortivpn
+    desc: Fortinet SSL VPN(openfortivpn),账密经 -c 配置文件注入(密码不进 argv)
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: openfortivpn
+    inputs:
+      - {key: server,   label: 网关地址, type: text,     required: true}
+      - {key: username, label: 账号,     type: text,     required: true}
+      - {key: password, label: 密码,     type: password, secret: true}
+    caps: [NET_ADMIN, MKNOD]                  # MKNOD:entrypoint 建 /dev/ppp(pppd 用)
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    device_cgroup_rules: ["c 108:* rwm"]      # 放行 PPP 字符设备 major 108(否则打不开 /dev/ppp)
+    sysctls: {"net.ipv4.ip_forward": "1"}
+
+  openvpn:
+    label: OpenVPN
+    desc: 上传 .ovpn 配置;可选账密
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: openvpn
+    inputs:
+      - {key: config_file, label: .ovpn 配置, type: file,     required: true, secret: true}
+      - {key: username,    label: 账号(可选), type: text}
+      - {key: password,    label: 密码(可选), type: password, secret: true}
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.ip_forward": "1"}
+
+  wireguard:
+    label: WireGuard
+    desc: 上传 wg .conf;无内核模块时退 wireguard-go 用户态
+    runtime: oss
+    image: "vpnmgr/oss-vpn:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [headless]
+    protocol: wireguard
+    inputs:
+      - {key: config_file, label: wg .conf, type: file, required: true, secret: true}
+    caps: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {"net.ipv4.ip_forward": "1"}
+  # strongSwan / IKEv2 推迟到后续:纯 IPsec 无具名 tun,dante 难以 pin egress;
+  # 需 route-based VTI/XFRMi 才能可靠 SOCKS-egress。本阶段不收。
+
+  # ── R3 byo 兜底家族(自建桌面镜像 vpnmgr/byo-desktop:latest)──
+  # 一台带 tun+SOCKS5 的 Linux 桌面,用户经 noVNC 手动装任意 VPN GUI 客户端并登录。
+  # 不注入凭据(无 connect);登录成功唯一判据仍是 SOCKS5 探活(命门 #1)。尽力而为。
+  custom:
+    label: 自定义 / BYO
+    desc: 桌面容器,自己装任意 VPN 客户端 GUI(经 noVNC);尽力而为
+    runtime: byo
+    image: "vpnmgr/byo-desktop:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [byo]
+    inputs:
+      - {key: package, label: "安装包(可选,.deb/.rpm/.run/.AppImage)", type: file, required: false}
+    env:
+      USE_NOVNC: "1"
+      PASSWORD: "{vnc_password}"
+    caps: [NET_ADMIN, MKNOD]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {}

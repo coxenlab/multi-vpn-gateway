@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>新建通道 · VPN 管理网关</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+  <style>
+    /* 屏内独有样式 —— 仅用 var(--*) 或与 black/white/transparent 的 color-mix */
+    .wizard-grid { display: grid; grid-template-columns: 2fr 1fr; gap: var(--space-8); align-items: start; }
+    @media (max-width: 920px) { .wizard-grid { grid-template-columns: 1fr; } }
+
+    /* 步骤面板：一次只显示一步 */
+    .step-panel { display: none; }
+    .step-panel.active { display: block; }
+
+    /* 摘要卡随窄屏自然落到下方 */
+    .summary-sticky { position: sticky; top: calc(var(--topbar-h) + var(--space-6)); }
+    @media (max-width: 920px) { .summary-sticky { position: static; } }
+
+    /* 进度日志流：在深底 .code 上逐行追加 */
+    .log-stream { max-height: 168px; overflow-y: auto; }
+    .log-stream .ln { display: block; }
+    .log-stream .ln.warn { color: color-mix(in oklab, var(--warn), white 24%); }
+    .log-stream .ln.ok { color: color-mix(in oklab, var(--success), white 32%); }
+
+    /* noVNC 加载占位（真 iframe 加载后被替换） */
+    .vnc-placeholder {
+      width: 100%; min-height: 320px;
+      display: grid; place-items: center;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--muted); font-size: var(--text-sm);
+    }
+
+    /* 探测结果占位 */
+    .probe-result { display: none; }
+    .probe-result.show { display: block; }
+    .spinner {
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .summary-kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); align-items: baseline; }
+    .summary-kv dt { color: var(--muted); font-size: var(--text-xs); }
+    .summary-kv dd { margin: 0; font-family: var(--font-mono); font-size: var(--text-xs); text-align: right; word-break: break-all; }
+
+    .stepper-wrap { overflow-x: auto; padding-bottom: 2px; }
+
+    /* 账密选项禁用态（aTrust 仅交互登录时） */
+    .choice.disabled { opacity: .45; pointer-events: none; }
+  </style>
+</head>
+<body data-page="channels">
+  <div class="app">
+    <!-- ════ 侧栏（所有屏一致） ════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+        </span>
+        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
+      </div>
+      <nav class="sidebar-nav">
+        <span class="nav-label">管理</span>
+        <a class="nav-item" data-nav="channels" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          通道总览 <span class="count" id="nav-count">—</span>
+        </a>
+        <a class="nav-item" data-nav="monitor" href="monitor.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          流量监控
+        </a>
+        <a class="nav-item" data-nav="entry" href="clash-config.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
+          入口接入
+        </a>
+        <a class="nav-item" data-nav="env-check" href="env-check.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          环境诊断
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span>
+          <span>mihomo 运行中</span>
+          <span class="k spacer" id="foot-port">:7899</span>
+        </div>
+        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
+      </div>
+    </aside>
+
+    <!-- ════ 主区 ════ -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1>新建通道</h1>
+        <span class="spacer"></span>
+        <a class="btn btn-ghost hide-mobile" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
+          返回总览
+        </a>
+      </header>
+
+      <div class="content stack-6">
+        <!-- 面包屑 + 标题 -->
+        <div class="page-head" data-od-id="page-head">
+          <div class="crumb"><a href="index.html">通道总览</a> / 新建通道</div>
+          <p>按状态机分步走：填通道信息 → 起容器 → 过登录 → SOCKS5 探活 → 绑分流规则（域名 + IP）。建通道时落库 MAC / 端口 / 卷，后续重建复用、不触发重绑。</p>
+        </div>
+
+        <!-- 步骤指示器 -->
+        <div class="card card-pad stepper-wrap" data-od-id="stepper">
+          <div class="stepper" id="stepper">
+            <div class="step active" data-step="1"><span class="snum">1</span><span class="lbl">通道信息</span></div>
+            <div class="bar"></div>
+            <div class="step" data-step="2"><span class="snum">2</span><span class="lbl">启动容器</span></div>
+            <div class="bar"></div>
+            <div class="step" data-step="3"><span class="snum">3</span><span class="lbl">登录验证</span></div>
+            <div class="bar"></div>
+            <div class="step" data-step="4"><span class="snum">4</span><span class="lbl">连通探测</span></div>
+            <div class="bar"></div>
+            <div class="step" data-step="5"><span class="snum">5</span><span class="lbl">绑定规则</span></div>
+          </div>
+        </div>
+
+        <!-- 主体：左步骤面板 + 右摘要 -->
+        <div class="wizard-grid" data-od-id="wizard">
+          <!-- ─────────── 左：步骤面板 ─────────── -->
+          <div class="stack-6">
+
+            <!-- ① 通道信息 -->
+            <section class="step-panel active" data-panel="1" data-od-id="panel-info">
+              <div class="card">
+                <div class="card-head"><h3>① 通道信息</h3><span class="t-xs muted">建通道时落库，后续重建复用</span></div>
+                <div class="card-body stack-6">
+                  <form class="form-grid" id="ch-form" onsubmit="return false;">
+                    <div class="field col-span">
+                      <label>客户名称 <span class="req">*</span></label>
+                      <input class="input" id="f-name" placeholder="如 维度 CRM（客户A）" autocomplete="off" />
+                    </div>
+
+                    <div class="field col-span">
+                      <label>通道类型 <span class="req">*</span></label>
+                      <div class="choice-grid" id="type-grid">
+                        <label class="choice sel" data-type="easyconnect">
+                          <div class="ct">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+                            EasyConnect
+                          </div>
+                          <div class="cd">深信服 EC，支持账密无头或交互登录</div>
+                        </label>
+                        <label class="choice" data-type="atrust">
+                          <div class="ct">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+                            aTrust
+                          </div>
+                          <div class="cd">arm64 原生镜像，仅支持交互登录</div>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="field" id="ecver-field">
+                      <label>EC 版本</label>
+                      <select class="select" id="f-ecver">
+                        <option value="7.6.3" selected>7.6.3</option>
+                        <option value="7.6.7">7.6.7</option>
+                      </select>
+                      <span class="help">仅 EasyConnect 需要，默认 7.6.3</span>
+                    </div>
+
+                    <div class="field" id="login-field">
+                      <label>登录方式 <span class="req">*</span></label>
+                      <div class="choice-grid" id="login-grid">
+                        <label class="choice sel" data-login="password">
+                          <div class="ct">账号密码</div>
+                          <div class="cd">CLI 无头注入</div>
+                        </label>
+                        <label class="choice" data-login="interactive">
+                          <div class="ct">交互登录</div>
+                          <div class="cd">noVNC 过短信 / SSO</div>
+                        </label>
+                      </div>
+                      <span class="help" id="login-help" style="display:none;">aTrust 仅支持交互登录</span>
+                    </div>
+
+                    <div id="dyn-fields"></div>
+
+                    <div class="field col-span">
+                      <label>内网探测 URL <span class="req">*</span></label>
+                      <input class="input mono" id="f-probe" placeholder="http://crm.内网/login" autocomplete="off" />
+                      <span class="help">只在该 VPN 侧可达的地址，用于登录成功判定与隧道健康检查 —— SOCKS5 探活的前提。</span>
+                    </div>
+                  </form>
+
+                  <div class="banner info" data-od-id="alloc-banner">
+                    <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                    <div>
+                      <div class="bt">建通道时将自动分配并落库</div>
+                      <p>SOCKS5 出口 <span class="mono" id="alloc-socks">:10804</span> · noVNC <span class="mono" id="alloc-novnc">:18084</span>，生成稳定 <span class="mono">fake_hwaddr</span>（MAC）与独立 <span class="mono">/root</span> 卷。这些标识落库后供重建复用，不触发设备重绑，也不会改动你现有的 Clash。</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-foot" style="justify-content:flex-end;">
+                  <a class="btn btn-secondary" href="index.html">取消</a>
+                  <button class="btn btn-primary" id="go-2">下一步：起容器</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- ② 启动容器 -->
+            <section class="step-panel" data-panel="2" data-od-id="panel-start">
+              <div class="card">
+                <div class="card-head"><h3>② 启动容器</h3><span id="run-badge" class="badge is-created"><i class="bdot"></i>已创建</span></div>
+                <div class="card-body stack-6">
+                  <div class="stack-2">
+                    <div class="row-between"><strong>环境预检</strong>
+                      <button class="btn btn-secondary btn-sm" id="pf-recheck">重新体检</button></div>
+                    <div id="pf-host"></div>
+                    <div class="banner warn" id="pf-block" style="display:none;">
+                      有检查未通过 · 修复后再起容器,或 <a href="#" id="pf-skip">仍然继续(我知道风险)</a>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="row-between" style="margin-bottom:10px;">
+                      <span class="eyebrow">通道配置 → docker run 翻译层</span>
+                      <button class="btn btn-sm btn-ghost" id="copy-run">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+                        复制
+                      </button>
+                    </div>
+                    <div class="code" id="run-preview"></div>
+                  </div>
+
+                  <div>
+                    <div class="row-between" style="margin-bottom:10px;">
+                      <span class="eyebrow">容器日志流</span>
+                      <span class="t-xs muted">来自 docker logs，逐行追加</span>
+                    </div>
+                    <div class="code log-stream" id="run-log"><span class="ln cmt"># 点击“起容器”开始 containers.run …</span></div>
+                  </div>
+                </div>
+                <div class="card-foot row-between">
+                  <button class="btn btn-secondary" data-back>上一步</button>
+                  <div class="row" style="gap:var(--space-3);">
+                    <button class="btn btn-primary" id="run-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z"/></svg>
+                      起容器
+                    </button>
+                    <button class="btn btn-primary" id="go-3" disabled>下一步：登录验证</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- ③ 登录验证 -->
+            <section class="step-panel" data-panel="3" data-od-id="panel-login">
+              <div class="card">
+                <div class="card-head"><h3>③ 登录验证</h3><span id="login-badge" class="badge is-running"><i class="bdot"></i>待登录</span></div>
+                <div class="card-body stack-6">
+                  <!-- 交互登录路径（login=interactive 或 aTrust）：noVNC 仿真登录窗 -->
+                  <div id="login-interactive" class="stack-6">
+                    <div id="vnc-placeholder" class="vnc-placeholder">正在拉起 noVNC 登录窗…</div>
+
+                    <div class="banner warn" data-od-id="login-warn">
+                      <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+                      <div>
+                        <div class="bt">登录成功只能靠后端 SOCKS5 探活判定</div>
+                        <p>noVNC 与本界面不同源，父页面读不到 RFB 事件，“VNC 连上”仅代表看到了登录页。请在容器内过完登录后，下一步用 SOCKS5 探活确认隧道真通。</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 无头注入路径（EC + 账号密码）：跳过 noVNC 交互登录 -->
+                  <div id="login-headless" style="display:none;">
+                    <div class="card" style="background:var(--surface-2);">
+                      <div class="card-body stack-6">
+                        <div class="row" style="gap:var(--space-3); align-items:flex-start;">
+                          <span class="badge is-running"><i class="bdot"></i>无头注入</span>
+                          <div>
+                            <h3 style="margin:0 0 4px;">账密已随容器无头注入</h3>
+                            <p class="t-sm muted" style="margin:0;">EC + 账号密码走 CLI 无头登录：账密通过 <span class="mono">CLI_OPTS -u / -p</span> 随容器启动直接注入，<strong>无需 noVNC 交互登录</strong>。无短信 / SSO 步骤，可直接进入连通探测。</p>
+                          </div>
+                        </div>
+                        <dl class="kv-list">
+                          <dt>登录方式</dt><dd>账号密码（CLI 无头）</dd>
+                          <dt>注入参数</dt><dd class="mono">CLI_OPTS="-d &lt;网关&gt; -u &lt;账号&gt; -p ******"</dd>
+                          <dt>noVNC 交互</dt><dd>跳过</dd>
+                          <dt>下一步</dt><dd>SOCKS5 连通探测</dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-foot row-between">
+                  <button class="btn btn-secondary" data-back>上一步</button>
+                  <button class="btn btn-primary" id="go-4">我已完成登录</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- ④ 连通探测 -->
+            <section class="step-panel" data-panel="4" data-od-id="panel-probe">
+              <div class="card">
+                <div class="card-head"><h3>④ 连通探测</h3><span id="probe-badge" class="badge is-running"><i class="bdot"></i>待探活</span></div>
+                <div class="card-body stack-6">
+                  <div class="banner warn" data-od-id="probe-note">
+                    <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+                    <div>
+                      <div class="bt">纯 TCP 端口监听 ≠ VPN 真连上</div>
+                      <p>端口监听只代表 danted 起来了。只有内网探测 URL 经 SOCKS5 真的返回成功，才算 <span class="mono">logged_in</span>。</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="row-between" style="margin-bottom:10px;">
+                      <span class="eyebrow">后端在容器内执行</span>
+                    </div>
+                    <div class="code" id="probe-cmd"></div>
+                  </div>
+
+                  <!-- 探活结果 -->
+                  <div class="card probe-result" id="probe-result" style="background:var(--surface-2);">
+                    <div class="card-body">
+                      <div class="row" style="gap:var(--space-3);">
+                        <span class="badge is-logged_in"><i class="bdot"></i>200 OK</span>
+                        <span class="t-sm">隧道真通 · 延迟 <span class="num strong" id="probe-lat">—</span> ms</span>
+                      </div>
+                      <p class="t-sm muted" style="margin-top:10px;">SOCKS5 探活通过，通道状态置为 <span class="mono">logged_in</span>。可以进入下一步绑定分流规则。</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-foot row-between">
+                  <button class="btn btn-secondary" data-back>上一步</button>
+                  <div class="row" style="gap:var(--space-3);">
+                    <button class="btn btn-secondary" id="probe-btn">
+                      <span class="spinner" id="probe-spin" style="display:none;"></span>
+                      运行 SOCKS5 探活
+                    </button>
+                    <button class="btn btn-primary" id="go-5" disabled>下一步：绑定规则</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- ⑤ 绑定分流规则 -->
+            <section class="step-panel" data-panel="5" data-od-id="panel-bind">
+              <div class="card" id="bind-card">
+                <div class="card-head"><h3>⑤ 绑定分流规则</h3><span class="badge is-logged_in"><i class="bdot"></i>已连接</span></div>
+                <div class="card-body stack-6">
+                  <div class="field">
+                    <label>域名 / IP（自动识别，可一次粘多个）</label>
+                    <form class="row" id="bind-form" style="gap:var(--space-3);" onsubmit="return false;">
+                      <input class="input mono grow" id="f-domain" placeholder="+.crm-a.com  fp.内网  10.20.0.0/16  192.168.30.40" autocomplete="off" />
+                      <button class="btn btn-primary" id="bind-btn" type="submit">绑定</button>
+                    </form>
+                    <span class="help">域名走 <span class="mono">DOMAIN-SUFFIX</span>、IP/网段走 <span class="mono">IP-CIDR + no-resolve</span>；写入该通道的 rule-provider 文件，调 mihomo REST 热加载即时生效，不重启、不断现有连接。</span>
+                  </div>
+                  <div class="ch-domains" id="bound-list"><span class="t-sm muted">尚未绑定规则</span></div>
+                </div>
+              </div>
+
+              <!-- 完成小结（绑定后显示） -->
+              <div class="card" id="done-card" style="display:none;">
+                <div class="card-head"><h3>通道已就绪</h3><span class="badge is-logged_in"><i class="bdot"></i>已连接</span></div>
+                <div class="card-body stack-6">
+                  <div class="banner info" data-od-id="done-banner">
+                    <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+                    <div>
+                      <div class="bt">分流规则已绑定，mihomo 热加载已生效</div>
+                      <p>规则写入 rule-provider 文件并热加载，即时生效、不重启 mihomo、不断现有连接。下一步把节点和订阅地址粘进你的 Clash，即可让命中域名 / IP 走这条通道。</p>
+                    </div>
+                  </div>
+                  <dl class="kv-list">
+                    <dt>通道名称</dt><dd id="done-name">—</dd>
+                    <dt>类型</dt><dd id="done-type">—</dd>
+                    <dt>SOCKS5 出口</dt><dd id="done-socks">—</dd>
+                    <dt>分流规则</dt><dd id="done-domain">—</dd>
+                    <dt>通道状态</dt><dd id="done-status">logged_in</dd>
+                  </dl>
+                </div>
+                <div class="card-foot" style="justify-content:flex-end;">
+                  <a class="btn btn-secondary" href="clash-config.html">去入口接入页粘节点</a>
+                  <a class="btn btn-primary" href="index.html">完成，回总览</a>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <!-- ─────────── 右：通道摘要 ─────────── -->
+          <aside class="summary-sticky" data-od-id="summary">
+            <div class="card">
+              <div class="card-head"><h3>通道摘要</h3><span id="sum-badge">已创建</span></div>
+              <div class="card-body">
+                <dl class="summary-kv">
+                  <dt>名称</dt><dd id="sum-name">—</dd>
+                  <dt>类型</dt><dd id="sum-type">EasyConnect</dd>
+                  <dt>EC 版本</dt><dd id="sum-ecver">7.6.3</dd>
+                  <dt>登录方式</dt><dd id="sum-login">账号密码</dd>
+                  <dt>网关</dt><dd id="sum-server">—</dd>
+                  <dt>探测 URL</dt><dd id="sum-probe">—</dd>
+                  <dt>SOCKS5</dt><dd id="sum-socks">:10804</dd>
+                  <dt>noVNC</dt><dd id="sum-novnc">:18084</dd>
+                  <dt>MAC</dt><dd id="sum-mac">—</dd>
+                  <dt>/root 卷</dt><dd id="sum-vol">—</dd>
+                </dl>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/preflightPanel.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    // ── 派生新通道的稳定标识（仅 docker-run 预览展示用；真实端口/MAC/卷由后端创建时分配落库）──
+    function randMac() {
+      const h = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
+      return "02:" + [h(), h(), h(), h(), h()].join(":");
+    }
+    const fakeMac = randMac();
+    const chanId = Math.random().toString(16).slice(2, 10);
+    const volName = "vpndata-" + chanId;   // 与后端 manager 实际卷名格式一致
+
+    // 侧栏/底栏：异步取真实系统信息与通道数
+    api.system().then(s => { $("#foot-port").textContent = ":" + s.mihomo_port; });
+    api.channels().then(cs => { $("#nav-count").textContent = cs.length; });
+
+    // ── 状态：表单模型 ──
+    const model = {
+      name: "", type: "easyconnect", ecver: "7.6.3",
+      login: "password", probe: "",
+      fields: {},          // ← manifest inputs 的值,按 input.key 存
+      status: "created", latency: null,
+    };
+
+    // 端口/标识写入摘要（一次性）；SOCKS5/noVNC 为容器内端口，host 侧由后端创建时自动分配
+    $("#alloc-socks").textContent = "容器内 1080";
+    $("#alloc-novnc").textContent = "容器内 8080";
+    $("#sum-socks").textContent = "容器内 1080";
+    $("#sum-novnc").textContent = "容器内 8080";
+    $("#sum-mac").textContent = fakeMac;
+    $("#sum-vol").textContent = volName;
+
+    const LOGIN = { password: "账号密码", interactive: "交互登录", headless: "无头注入" };
+
+    // ── 步骤切换 ──
+    let cur = 1;
+    function gotoStep(n) {
+      cur = n;
+      $$(".step-panel").forEach(p => p.classList.toggle("active", +p.dataset.panel === n));
+      $$("#stepper .step").forEach(s => {
+        const i = +s.dataset.step;
+        s.classList.toggle("active", i === n);
+        s.classList.toggle("done", i < n);
+      });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      if (n === 2) startPreflight();
+    }
+
+    let pf = null, pfPassed = false;
+    function startPreflight() {
+      pfPassed = false;
+      const runBtn = $("#run-btn");
+      runBtn.disabled = true;                       // 体检未过前禁起容器
+      $("#pf-block").style.display = "none";
+      pf = PreflightPanel($("#pf-host"), {
+        vpnType: model.type,
+        version: model.type === "easyconnect" ? model.ecver : undefined,
+        onPass: () => { pfPassed = true; runBtn.disabled = false; $("#pf-block").style.display = "none"; },
+      });
+      pf.run().then((res) => {
+        // 体检未通过(fail)或体检本身出错(res 为 null)都露出"仍然继续"逃生口,避免卡死
+        if (!res || res.overall === "fail") $("#pf-block").style.display = "flex";
+      });
+    }
+    $("#pf-recheck").addEventListener("click", () => startPreflight());
+    $("#pf-skip").addEventListener("click", (e) => {
+      e.preventDefault(); $("#run-btn").disabled = false; $("#pf-block").style.display = "none";
+    });
+
+    $$("[data-back]").forEach(b => b.addEventListener("click", () => gotoStep(cur - 1)));
+
+    // ── 摘要实时同步 ──
+    function syncSummary() {
+      $("#sum-name").textContent = model.name || "—";
+      $("#sum-type").textContent = (ADAPTERS.find(a => a.key === model.type) || {}).label || model.type;
+      $("#sum-ecver").textContent = model.type === "easyconnect" ? model.ecver : "—";
+      $("#sum-login").textContent = LOGIN[model.login] || model.login;
+      $("#sum-server").textContent = model.fields.server || "—";
+      $("#sum-probe").textContent = model.probe || "—";
+      renderSumBadge();
+    }
+    // 摘要徽章：用 outerHTML 替换，保持元素本身即 .badge 且保留 id
+    function renderSumBadge() {
+      const el = $("#sum-badge");
+      el.outerHTML = badgeHTML(model.status).replace("<span", '<span id="sum-badge"');
+    }
+
+    // ── 类型选择(数据驱动)──
+    let ADAPTERS = [];   // [{key,label,desc,versioned,login_modes,...}]
+
+    const TYPE_ICONS = {
+      easyconnect: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>',
+      atrust: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>',
+      _default: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:16px;height:16px;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/></svg>',
+    };
+
+    function renderTypeGrid(list) {
+      const grid = $("#type-grid");
+      grid.innerHTML = list.map((a, i) => `
+        <label class="choice${i === 0 ? " sel" : ""}" data-type="${a.key}">
+          <div class="ct">${TYPE_ICONS[a.key] || TYPE_ICONS._default}${a.label}</div>
+          <div class="cd">${a.desc || ""}</div>
+        </label>`).join("");
+    }
+
+    async function selectType(key) {
+      $$("#type-grid .choice").forEach(x => x.classList.toggle("sel", x.dataset.type === key));
+      model.type = key;
+      const spec = ADAPTERS.find(a => a.key === key) || {};
+      const versioned = !!spec.versioned;
+      $("#ecver-field").style.display = versioned ? "" : "none";
+      if (versioned) await loadVersions(key);
+      renderInputs(spec.inputs || []);
+      // 登录方式:headless-only(oss 家族)隐藏选择;切回非 headless-only 类型时复位遗留的 "headless"
+      const headlessOnly = Array.isArray(spec.login_modes)
+        && spec.login_modes.length === 1 && spec.login_modes[0] === "headless";
+      if (!headlessOnly && model.login === "headless") setLogin("password");
+      // 若该类型只支持交互登录(login_modes 不含 headless),禁用账密
+      const onlyGui = Array.isArray(spec.login_modes) && !spec.login_modes.includes("headless");
+      const pwdChoice = $('#login-grid .choice[data-login="password"]');
+      pwdChoice.classList.toggle("disabled", onlyGui);
+      $("#login-help").style.display = onlyGui ? "" : "none";
+      if (onlyGui && model.login === "password") setLogin("interactive");
+      $("#login-field").style.display = headlessOnly ? "none" : "";
+      if (headlessOnly) model.login = "headless";
+      // byo:gui-like 模式(经 noVNC 手动装包+登录),用独立 login 值,别落到 interactive
+      const byoOnly = Array.isArray(spec.login_modes)
+        && spec.login_modes.length === 1 && spec.login_modes[0] === "byo";
+      $("#login-field").style.display = byoOnly ? "none" : $("#login-field").style.display;
+      if (byoOnly) model.login = "byo";
+      syncLoginStep();
+      // byo 尽力而为告警(诚实标注:哪些客户端在容器里跑不起来)
+      const old = document.getElementById("byo-warn");
+      if (old) old.remove();
+      const byo = Array.isArray(spec.login_modes)
+        && spec.login_modes.length === 1 && spec.login_modes[0] === "byo";
+      if (byo) {
+        const b = document.createElement("div");
+        b.id = "byo-warn"; b.className = "banner warn";
+        b.innerHTML =
+          '<svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' +
+          '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>' +
+          '<div><div class="bt">尽力而为:并非所有客户端都能在容器里跑通</div>' +
+          '<p>适用于「自带 tun、纯网络认证」的普通 Linux GUI/CLI 客户端。' +
+          '<b>不支持</b>:依赖 systemd/dbus 守护进程的客户端(AnyConnect vpnagentd、' +
+          'GlobalProtect panGPS)、需 host 缺失内核模块的、硬件令牌/智能卡/TPM 绑定的、' +
+          '仅 Windows/macOS 的。登录成功最终只认 SOCKS5 探活。</p></div>';
+        $("#dyn-fields").after(b);
+      }
+      syncSummary();
+    }
+
+    // 按 manifest inputs 渲染动态字段;写回 model.fields[key]
+    function renderInputs(inputs) {
+      const host = $("#dyn-fields");
+      host.innerHTML = inputs.map(inp => {
+        const id = "dyn-" + inp.key;
+        const req = inp.required ? " required" : "";
+        if (inp.type === "file") {
+          return `<div class="field col-span"><label>${inp.label}</label>
+            <input class="input" id="${id}" type="file" data-key="${inp.key}"${req}></div>`;
+        }
+        const t = inp.secret ? "password" : (inp.type === "url" ? "url" : "text");
+        return `<div class="field col-span"><label>${inp.label}</label>
+          <input class="input mono" id="${id}" type="${t}" data-key="${inp.key}"
+                 autocomplete="off"${req}></div>`;
+      }).join("");
+      model.fields = {};
+      host.querySelectorAll("input").forEach(el => {
+        el.addEventListener(el.type === "file" ? "change" : "input", e => {
+          const key = e.target.dataset.key;
+          if (e.target.type === "file") { model.fields[key] = e.target.files[0] || null; }
+          else {
+            // 非密码文本字段(账号/网关)直接过滤掉空格:误输空格会致认证/连接失败。
+            if (e.target.type !== "password") {
+              const cleaned = e.target.value.replace(/\s+/g, "");
+              if (cleaned !== e.target.value) e.target.value = cleaned;
+            }
+            model.fields[key] = e.target.value;
+          }
+          syncSummary();
+        });
+      });
+    }
+
+    async function loadVersions(key) {
+      const sel = $("#f-ecver");
+      try {
+        const { versions } = await api.vpnVersions(key);
+        const def = versions.find(v => v.usable_here) || versions[0];
+        sel.innerHTML = versions.map(v =>
+          `<option value="${v.tag}"${def && v.tag === def.tag ? " selected" : ""}` +
+          `${v.usable_here ? "" : " disabled"}>` +
+          `${v.tag}${v.usable_here ? "" : "(本机不可用)"}</option>`).join("");
+        model.ecver = def ? def.tag : "";
+      } catch (e) {
+        sel.innerHTML = `<option value="7.6.3" selected>7.6.3</option>`;
+        model.ecver = "7.6.3";
+      }
+      syncSummary();
+    }
+
+    // 事件委托:卡片后渲染,绑在容器上
+    $("#type-grid").addEventListener("click", (e) => {
+      const c = e.target.closest(".choice");
+      if (c) selectType(c.dataset.type);
+    });
+
+    // 启动:拉适配器列表 → 渲染网格 → 选中第一个
+    api.vpnTypes().then(list => {
+      ADAPTERS = list;
+      renderTypeGrid(list);
+      if (list.length) selectType(list[0].key);
+    }).catch(() => { /* 离线:保留 HTML 里的静态两卡兜底 */ });
+
+    // ── 登录方式选择 ──
+    function setLogin(v) {
+      model.login = v;
+      $$("#login-grid .choice").forEach(x => x.classList.toggle("sel", x.dataset.login === v));
+      syncLoginStep();
+      syncSummary();
+    }
+    // 第③步按登录方式分流：账密=无头注入信息卡；交互/ aTrust=noVNC 仿真登录窗
+    function syncLoginStep() {
+      const spec = ADAPTERS.find(a => a.key === model.type) || {};
+      const lm = Array.isArray(spec.login_modes) ? spec.login_modes : [];
+      const headlessOnly = lm.length === 1 && lm[0] === "headless";  // oss 家族
+      const headless = headlessOnly || model.login === "password";
+      $("#login-headless").style.display = headless ? "" : "none";
+      $("#login-interactive").style.display = headless ? "none" : "";
+      // 第③步徽章：无头注入直接已就绪，交互登录待登录
+      const lb = $("#login-badge");
+      lb.outerHTML = headless
+        ? '<span id="login-badge" class="badge is-logged_in"><i class="bdot"></i>无需交互</span>'
+        : '<span id="login-badge" class="badge is-running"><i class="bdot"></i>待登录</span>';
+      // 底部按钮文案：无头可直接进入探测
+      $("#go-4").textContent = headless ? "直接进入连通探测" : "我已完成登录";
+    }
+    $$("#login-grid .choice").forEach(c => c.addEventListener("click", () => {
+      if (c.classList.contains("disabled")) return;
+      setLogin(c.dataset.login);
+    }));
+
+    // ── 表单输入绑定 ──
+    $("#f-name").addEventListener("input", e => { model.name = e.target.value.trim(); syncSummary(); });
+    $("#f-probe").addEventListener("input", e => { model.probe = e.target.value.trim(); syncSummary(); });
+    $("#f-ecver").addEventListener("change", e => { model.ecver = e.target.value; syncSummary(); });
+
+    // ── ①→② 校验 ──
+    $("#go-2").addEventListener("click", () => {
+      if (!model.name) return toast("请填写客户名称", false);
+      // 仅当该类型 manifest 把 server 声明为 url 时才强校验 https://(oss 的 openfortivpn 是 text,openvpn/wg 无 server)
+      const spec = ADAPTERS.find(a => a.key === model.type) || {};
+      const serverInp = (spec.inputs || []).find(i => i.key === "server");
+      if (serverInp && serverInp.type === "url") {
+        const sv = model.fields.server || "";
+        const lm = Array.isArray(spec.login_modes) ? spec.login_modes : [];
+        const headless = (lm.length === 1 && lm[0] === "headless") || model.login === "password";
+        // 无头登录必须有网关(拼进 CLI_OPTS -d);交互登录在 noVNC 里手填,网关可留空
+        if (headless && !sv) return toast("无头登录需填写网关地址", false);
+        if (sv && !/^https:\/\/.+/.test(sv)) return toast("网关地址须以 https:// 开头", false);
+      }
+      if (!model.probe) return toast("请填写内网探测 URL", false);
+      buildRunPreview();
+      gotoStep(2);
+    });
+
+    // ── ② docker run 翻译层预览 ──
+    function image() {
+      if (model.type === "easyconnect") {
+        return model.login === "password" ? "hagb/docker-easyconnect:cli" : "hagb/docker-easyconnect";
+      }
+      return "hagb/docker-atrust:latest";   // hagb 家族另一员:aTrust
+    }
+    // oss 无头家族:无 noVNC、1080 绝不映射 host(命门 #4);凭据经 stdin 注入(命门 #5)。
+    // 与后端 _build_oss 形态一致:无任何 -p、仅 VPN_PROTOCOL env、vpnmgr/oss-vpn:latest 镜像。
+    function buildOssPreview() {
+      const k = ['<span class="key">', "</span>"];
+      const s = ['<span class="str">', "</span>"];
+      const c = ['<span class="cmt">', "</span>"];
+      const L = [];
+      L.push(`${c[0]}# 通道 ${model.name || "—"} · id ${chanId}(oss 无头)${c[1]}`);
+      L.push(`docker run -d \\`);
+      L.push(`  --name ${s[0]}vpn-${chanId}${s[1]} --hostname ${s[0]}${chanId}${s[1]} \\`);
+      L.push(`  ${k[0]}--device${k[1]} /dev/net/tun:/dev/net/tun:rwm \\`);
+      L.push(`  ${k[0]}--cap-add${k[1]} NET_ADMIN \\`);
+      L.push(`  ${c[0]}# 协议名传给 entrypoint;账号/密码/配置文件经 stdin 注入,绝不进 env/命令行${c[1]}`);
+      L.push(`  ${k[0]}-e${k[1]} VPN_PROTOCOL=${s[0]}${model.type}${s[1]} \\`);
+      L.push(`  ${c[0]}# SOCKS5 出口仅在 docker 内网(1080),绝不映射到 host;无 noVNC${c[1]}`);
+      L.push(`  ${c[0]}# 配置/登录态持久化(.ovpn / wg .conf 经 stdin 落到 /config)${c[1]}`);
+      L.push(`  ${k[0]}-v${k[1]} ${s[0]}vpndata-${chanId}${s[1]}:/config \\`);
+      L.push(`  ${k[0]}--restart${k[1]} unless-stopped \\`);
+      L.push(`  ${s[0]}vpnmgr/oss-vpn:latest${s[1]}`);
+      $("#run-preview").innerHTML = L.join("\n");
+    }
+    function buildRunPreview() {
+      const spec = ADAPTERS.find(a => a.key === model.type) || {};
+      if (spec.runtime === "oss") { buildOssPreview(); return; }
+      const k = ['<span class="key">', "</span>"];
+      const s = ['<span class="str">', "</span>"];
+      const c = ['<span class="cmt">', "</span>"];
+      const L = [];
+      // 行内注释独占一行（以 # 起头），让每行命令统一以 \ 续行、整段可直接复制
+      L.push(`${c[0]}# 通道 ${model.name || "—"} · id ${chanId}${c[1]}`);
+      L.push(`docker run -d \\`);
+      L.push(`  --name ${s[0]}vpn-${chanId}${s[1]} --hostname ${s[0]}${chanId}${s[1]} \\`);
+      L.push(`  ${k[0]}--device${k[1]} /dev/net/tun:/dev/net/tun:rwm \\`);
+      L.push(`  ${k[0]}--cap-add${k[1]} NET_ADMIN \\`);
+      L.push(`  ${k[0]}-e${k[1]} FAKE_HWADDR=${s[0]}${fakeMac}${s[1]} \\`);
+      L.push(`  ${c[0]}# EXIT 留空 = 断线自动重连${c[1]}`);
+      L.push(`  ${k[0]}-e${k[1]} EXIT=${s[0]}${s[1]} \\`);
+      L.push(`  ${k[0]}-e${k[1]} PING_ADDR=${s[0]}${model.probe || "<内网可达>"}${s[1]} \\`);
+      if (model.type === "easyconnect") {
+        if (model.login === "password") {
+          L.push(`  ${k[0]}-e${k[1]} EC_VER=${s[0]}${model.ecver}${s[1]} \\`);
+          L.push(`  ${c[0]}# CLI_OPTS 无头注入账密，跳过登录步骤；cli 镜像仅 amd64，本机 arm64 走 QEMU（慢、偶发不稳）或退回 GUI noVNC 登一次${c[1]}`);
+          L.push(`  ${k[0]}-e${k[1]} CLI_OPTS=${s[0]}"-d ${model.fields.server || "<网关>"} -u ${model.fields.username || "<账号>"} -p ******"${s[1]} \\`);
+        } else {
+          L.push(`  ${k[0]}-e${k[1]} EC_VER=${s[0]}${model.ecver}${s[1]} \\`);
+          L.push(`  ${c[0]}# noVNC 交互登录（过短信 / SSO）${c[1]}`);
+          L.push(`  ${k[0]}-e${k[1]} USE_NOVNC=1 -e PASSWORD=${s[0]}********${s[1]} \\`);
+        }
+      } else {
+        L.push(`  ${c[0]}# aTrust 仅交互登录${c[1]}`);
+        L.push(`  ${k[0]}-e${k[1]} USE_NOVNC=1 -e PASSWORD=${s[0]}********${s[1]} \\`);
+        L.push(`  ${c[0]}# arm64 原生客户端冻结，需绕版本校验${c[1]}`);
+        L.push(`  ${k[0]}-e${k[1]} DISABLE_PKG_VERSION_XML=1 \\`);
+        L.push(`  ${c[0]}# aTrust 必需：放通 route_localnet${c[1]}`);
+        L.push(`  ${k[0]}--sysctl${k[1]} net.ipv4.conf.default.route_localnet=1 \\`);
+      }
+      L.push(`  ${c[0]}# SOCKS5 出口（host 端口创建时自动分配）${c[1]}`);
+      L.push(`  ${k[0]}-p${k[1]} 127.0.0.1:<自动分配>:1080 \\`);
+      L.push(`  ${c[0]}# noVNC（host 端口创建时自动分配）${c[1]}`);
+      L.push(`  ${k[0]}-p${k[1]} 127.0.0.1:<自动分配>:8080 \\`);
+      if (model.type === "atrust") {
+        L.push(`  ${c[0]}# aTrust 客户端端口${c[1]}`);
+        L.push(`  ${k[0]}-p${k[1]} 127.0.0.1:<自动分配>:54631 \\`);
+      }
+      L.push(`  ${c[0]}# 登录态持久化${c[1]}`);
+      L.push(`  ${k[0]}-v${k[1]} ${s[0]}${volName}${s[1]}:/root \\`);
+      L.push(`  ${k[0]}--restart${k[1]} unless-stopped \\`);
+      L.push(`  ${s[0]}${image()}${s[1]}`);
+      $("#run-preview").innerHTML = L.join("\n");
+    }
+
+    // 复制 run 预览
+    $("#copy-run").addEventListener("click", () => {
+      copyText($("#run-preview").textContent, "docker run 已复制");
+    });
+
+    // ── 起容器：created → starting → running，逐行日志 ──
+    let started = false;
+    function setRunBadge(s) { $("#run-badge").outerHTML = badgeHTML(s).replace("<span", '<span id="run-badge"'); }
+    function setSumBadge(s) { model.status = s; renderSumBadge(); }
+    function appendLog(text, cls) {
+      const box = $("#run-log");
+      const ln = document.createElement("span");
+      ln.className = "ln " + (cls || "");
+      ln.textContent = text;
+      box.appendChild(ln);
+      box.scrollTop = box.scrollHeight;
+    }
+    $("#run-btn").addEventListener("click", async () => {
+      if (started) return;
+      started = true;
+      const btn = $("#run-btn");
+      btn.disabled = true; btn.textContent = "启动中…";
+      setRunBadge("starting"); setSumBadge("starting");
+      $("#run-log").innerHTML = "";
+      appendLog("$ POST /api/channels …", "");
+      try {
+        const isHeadless = model.login === "headless";
+        const cfg = {};
+        let pkgFile = null;
+        for (const [k, v] of Object.entries(model.fields)) {
+          if (v == null) continue;
+          if (v instanceof File && k === "package") { pkgFile = v; continue; }  // byo 二进制:defer 到 multipart
+          cfg[k] = (v instanceof File) ? await v.text() : v;  // oss .ovpn/wg .conf 仍读文本随 config 加密
+        }
+        const ch = await api.create({
+          name: model.name, vpn_type: model.type,
+          ec_ver: model.type === "easyconnect" ? model.ecver : "",
+          login_method: isHeadless ? "headless" : model.login,
+          probe_url: model.probe,
+          // hagb 扁平兼容字段 + oss 的 config{}
+          server: cfg.server || "", username: cfg.username || "",
+          password: model.login === "password" ? (model.fields.password || "") : "",
+          config: cfg,
+        });
+        window.createdId = ch.id;
+        if (pkgFile) {
+          appendLog("$ POST /api/channels/" + ch.id + "/upload …", "");
+          await api.upload(ch.id, pkgFile);
+          appendLog("uploaded " + pkgFile.name, "ok");
+        }
+        appendLog("Created container vpn-" + ch.id, "ok");
+        appendLog("status → " + ch.status, "ok");
+        setRunBadge("running"); setSumBadge("running");
+        btn.textContent = "已起容器"; $("#go-3").disabled = false;
+        toast("容器已起 · 进入登录");
+      } catch (e) {
+        started = false; btn.disabled = false; btn.textContent = "重试起容器";
+        setRunBadge("error"); appendLog("起容器失败:" + e.message, "warn");
+        toast("起容器失败:" + e.message, false);
+        // 复用预检面板诊断:重跑体检,高亮可修项
+        appendLog("→ 正在体检 Docker 环境定位原因…", "");
+        if (pf) pf.run();
+        $("#pf-block").style.display = "flex";
+      }
+    });
+    $("#go-3").addEventListener("click", () => { gotoStep(3); loadVnc(); });
+
+    // ── ③ 登录验证：账密无头跳过；交互登录拉真 noVNC iframe ──
+    async function loadVnc() {
+      if (model.login === "password" || model.login === "headless") return;  // 无头无 noVNC
+      try {
+        const { url } = await api.login(window.createdId);
+        let f = document.getElementById("vnc-frame");
+        if (!f) {
+          f = document.createElement("iframe");
+          f.id = "vnc-frame"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
+          const ph = document.getElementById("vnc-placeholder");
+          if (ph) ph.replaceWith(f); else $("#login-interactive").prepend(f);
+        }
+        f.src = url;
+      } catch (e) {
+        const ph = document.getElementById("vnc-placeholder");
+        if (ph) ph.textContent = "拉取登录窗失败：" + e.message;
+        toast("拉取登录窗失败:" + e.message, false);
+      }
+    }
+
+    $("#go-4").addEventListener("click", () => { buildProbeCmd(); gotoStep(4); });
+
+    // ── ④ SOCKS5 探活 ──
+    function buildProbeCmd() {
+      const s = ['<span class="str">', "</span>"];
+      const c = ['<span class="cmt">', "</span>"];
+      $("#probe-cmd").innerHTML =
+        `${c[0]}# 后端 exec_run 在容器内执行${c[1]}\n` +
+        `curl --socks5-hostname 127.0.0.1:1080 \\\n` +
+        `  ${s[0]}${model.probe || "<内网探测URL>"}${s[1]} \\\n` +
+        `  --max-time 5 -o /dev/null -w ${s[0]}"%{http_code} %{time_total}s"${s[1]}`;
+    }
+    $("#probe-btn").addEventListener("click", async () => {
+      const btn = $("#probe-btn"), spin = $("#probe-spin");
+      btn.disabled = true; spin.style.display = "";
+      try {
+        const r = await api.status(window.createdId);
+        if (r.connected) {
+          $("#probe-lat").textContent = r.latency_ms ?? "?";
+          $("#probe-result").classList.add("show");
+          $("#probe-badge").outerHTML = badgeHTML("logged_in").replace("<span", '<span id="probe-badge"');
+          setSumBadge("logged_in"); $("#go-5").disabled = false;
+          toast(`隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录`);
+        } else { toast("探活未通过:请确认已在登录窗完成验证", false); }
+      } catch (e) { toast("探活出错:" + e.message, false); }
+      finally { btn.disabled = false; btn.textContent = "重新探活"; spin.style.display = "none"; }
+    });
+    $("#go-5").addEventListener("click", () => gotoStep(5));
+
+    // ── ⑤ 绑定分流规则 + 完成（域名/IP 后端自动识别，可多条）──
+    $("#bind-form").addEventListener("submit", async () => {
+      const toks = parseTokens($("#f-domain").value);
+      if (!toks.length) { toast("请填写域名或 IP", false); return false; }
+      try {
+        const r = await api.addRules(window.createdId, toks);
+        $("#f-domain").value = "";
+        // 用返回的 domains/ips 重绘 bound-list
+        const all = [...r.domains.map(d => ({ pattern: d.pattern, ip: false })),
+                     ...r.ips.map(d => ({ pattern: d.pattern, ip: true }))];
+        $("#bound-list").innerHTML = all.map(b =>
+          `<span class="tag mono${b.ip ? " ip" : ""}">${b.pattern}</span>`).join("");
+        $("#done-name").textContent = model.name;
+        const a = ADAPTERS.find(x => x.key === model.type) || {};
+        const label = a.label || model.type;
+        $("#done-type").textContent = label + (a.versioned ? " " + model.ecver : "");
+        $("#done-socks").textContent = `vpn-${window.createdId}:1080`;
+        $("#done-domain").textContent = `${r.domains.length} 域名 / ${r.ips.length} IP`;
+        $("#done-card").style.display = "";
+        toast(`已绑定 ${r.added.domain} 域名 / ${r.added.ip} IP → 热加载生效`);
+      } catch (e) { toast("绑定出错:" + e.message, false); }
+      return false;
+    });
+
+    // 初始化
+    setLogin("password");
+    syncSummary();
+  </script>
+</body>
+</html>

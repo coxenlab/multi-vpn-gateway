@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>流量监控 · VPN 管理网关</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+  <style>
+    /* 屏内独有样式 —— 仅用 var(--*) 或与 black/white/transparent 的 color-mix */
+    .metric .ml svg { width: 14px; height: 14px; }
+    .metric.up .mv .num, .legend-up { color: var(--accent); }
+    .metric.down .mv .num, .legend-down { color: var(--success); }
+    .spark path { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* 大面积图 */
+    .flow-chart { position: relative; }
+    .flow-chart .grid line { stroke: var(--border); stroke-width: 1; }
+    .flow-chart .line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .flow-chart .fill-up { fill: color-mix(in oklab, var(--accent), transparent 88%); stroke: none; }
+    .flow-chart .fill-down { fill: color-mix(in oklab, var(--success), transparent 88%); stroke: none; }
+    .legend-row { display: flex; gap: var(--space-5); align-items: center; }
+    .legend { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--muted); }
+    .legend .num { font-size: var(--text-xs); }
+
+    /* 节点延迟行 */
+    .lat-row { display: grid; grid-template-columns: 1fr 120px 56px 14px; gap: var(--space-3); align-items: center; padding: var(--space-3) 0; border-bottom: 1px solid var(--border); }
+    .lat-row:last-child { border-bottom: 0; }
+    .lat-row .lname { font-family: var(--font-mono); font-size: var(--text-sm); }
+    .lat-row .lsub { font-size: var(--text-xs); color: var(--muted); margin-top: 1px; }
+    .lat-row .lms { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--text-sm); text-align: right; }
+    .lat-row .alive { width: 8px; height: 8px; border-radius: 50%; justify-self: center; }
+    .alive.on { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+    .alive.off { background: var(--muted); }
+
+    /* 实时连接表内的链路标签 */
+    .chain-cell { display: flex; flex-direction: column; gap: 1px; }
+    .chain-cell .cn { font-weight: 500; }
+    .chain-cell .ce { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted); }
+    .table tr.is-direct td { color: var(--muted); }
+    .rule-tag { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+    @media (max-width: 600px) {
+      .lat-row { grid-template-columns: 1fr 70px 48px 14px; gap: var(--space-2); }
+      .table th.hide-sm, .table td.hide-sm { display: none; }
+    }
+  </style>
+</head>
+<body data-page="monitor">
+  <div class="app">
+    <!-- ════ 侧栏（所有屏一致） ════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+        </span>
+        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
+      </div>
+      <nav class="sidebar-nav">
+        <span class="nav-label">管理</span>
+        <a class="nav-item" data-nav="channels" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          通道总览 <span class="count" id="nav-count">—</span>
+        </a>
+        <a class="nav-item" data-nav="monitor" href="monitor.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          流量监控
+        </a>
+        <a class="nav-item" data-nav="entry" href="clash-config.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
+          入口接入
+        </a>
+        <a class="nav-item" data-nav="env-check" href="env-check.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          环境诊断
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span>
+          <span>mihomo 运行中</span>
+          <span class="k spacer" id="foot-port">:7899</span>
+        </div>
+        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
+      </div>
+    </aside>
+
+    <!-- ════ 主区 ════ -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1>流量监控</h1>
+        <span class="spacer"></span>
+        <span class="sys-chip" id="ctrl-pill">external-controller 127.0.0.1:9090 · 只读遥测</span>
+      </header>
+
+      <div class="content stack-6">
+        <!-- 说明：本页镜像 mihomo :9090 的实时遥测 -->
+        <div class="banner info" data-od-id="monitor-note">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+          <div>
+            <div class="bt">这里只看本工具 mihomo 的第二跳</div>
+            <p>数据来自本工具 mihomo 的 <span class="mono">/traffic</span> 与 <span class="mono">/connections</span>。未命中客户域名的流量在你的 Clash 内直连、不进本工具——所以下表中 <span class="mono">MATCH → DIRECT</span> 的行只是兜底直连，本工具不介入。</p>
+          </div>
+        </div>
+
+        <!-- 顶部实时指标 -->
+        <div class="grid-4" data-od-id="metrics">
+          <div class="metric up">
+            <div class="ml">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              实时上行
+            </div>
+            <div class="mv"><span class="num" id="m-up">0</span><span class="unit">KB/s</span></div>
+            <svg class="spark" id="sp-up" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--accent)"/></svg>
+          </div>
+          <div class="metric down">
+            <div class="ml">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+              实时下行
+            </div>
+            <div class="mv"><span class="num" id="m-down">0</span><span class="unit">KB/s</span></div>
+            <svg class="spark" id="sp-down" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--success)"/></svg>
+          </div>
+          <div class="metric">
+            <div class="ml">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M5 12a7 7 0 017-7M19 12a7 7 0 01-7 7"/><circle cx="12" cy="12" r="2"/></svg>
+              活跃连接数
+            </div>
+            <div class="mv"><span class="num" id="m-conn">0</span></div>
+            <svg class="spark" id="sp-conn" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--muted)"/></svg>
+          </div>
+          <div class="metric">
+            <div class="ml">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+              在线节点数
+            </div>
+            <div class="mv"><span class="num" id="m-nodes">0</span></div>
+            <svg class="spark" id="sp-nodes" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--muted)"/></svg>
+          </div>
+        </div>
+
+        <!-- 大面积图 + 右侧节点延迟 -->
+        <div class="grid-2-1" data-od-id="charts">
+          <div class="card">
+            <div class="card-head">
+              <h3>流量速率 <span class="t-xs muted" style="font-weight:400;">· 实时</span></h3>
+              <div class="legend-row">
+                <span class="legend"><span class="legend-dot legend-up" style="background:var(--accent);"></span>上行 <span class="num" id="lg-up">0 KB/s</span></span>
+                <span class="legend"><span class="legend-dot legend-down" style="background:var(--success);"></span>下行 <span class="num" id="lg-down">0 KB/s</span></span>
+              </div>
+            </div>
+            <div class="card-body">
+              <svg class="area-chart flow-chart" id="flow" viewBox="0 0 600 180" preserveAspectRatio="none">
+                <g class="grid" id="flow-grid"></g>
+                <path class="fill-down" id="flow-down-fill"></path>
+                <path class="fill-up" id="flow-up-fill"></path>
+                <path class="line" id="flow-down-line" stroke="var(--success)"></path>
+                <path class="line" id="flow-up-line" stroke="var(--accent)"></path>
+              </svg>
+              <p class="t-xs muted" style="margin-top:10px;">最近 60 个采样 · 每 ~1.5s 取一点 · 仅统计经本工具分流的流量</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>节点延迟</h3><span class="t-xs muted">隧道侧探活</span></div>
+            <div class="card-body">
+              <div id="lat-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 实时连接表 -->
+        <div class="card" data-od-id="connections">
+          <div class="card-head">
+            <h3>实时连接</h3>
+            <span class="t-sm muted">活跃 <span class="num" id="conn-count">—</span> 条 · 按目标聚合</span>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>目标</th>
+                  <th class="hide-sm">命中规则</th>
+                  <th>通道 / 出口</th>
+                  <th class="r">连接</th>
+                  <th class="r">↑ 总</th>
+                  <th class="r">↓ 总</th>
+                </tr>
+              </thead>
+              <tbody id="conn-body"></tbody>
+            </table>
+          </div>
+          <div class="card-foot">
+            <span class="t-xs muted">命中客户域名的连接走对应通道的 SOCKS5 出口；<span class="mono">DIRECT</span> 行为 mihomo 兜底直连，绝不回环到你的 Clash。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    let chs = [], sys = {}, prevTotals = null, prevTs = null;
+    async function boot() {
+      sys = await api.system();
+      $("#foot-port").textContent = ":" + sys.mihomo_port;
+      $("#ctrl-pill").textContent = "external-controller " + (sys.controller || "?") + " · 只读遥测";
+      await tick();
+      setInterval(tick, 1500);
+    }
+    function chanName(id) { const c = chs.find(x => x.id === id); return c ? c.name : "—"; }
+
+    /* ───────── 实时速率序列（由 pushSeries 维护，初值全 0，不再仿真） ───────── */
+    const N = 60;                       // 面积图采样点
+    const SN = 28;                      // spark 采样点
+    let upSeries = Array.from({ length: N }, () => 0);
+    let downSeries = Array.from({ length: N }, () => 0);
+    let connSeries = Array.from({ length: SN }, () => 0);
+    let nodeSeries = Array.from({ length: SN }, () => 0);
+    let liveNodes = 0;
+
+    function pushSeries(up, down, conn) {
+      upSeries.push(up); upSeries.shift();
+      downSeries.push(down); downSeries.shift();
+      connSeries.push(conn); connSeries.shift();
+      nodeSeries.push(liveNodes); nodeSeries.shift();   // liveNodes 已在 tick 由 /proxies 算好
+    }
+
+    function drawSpark(id, vals, stroke) {
+      const p = $("#" + id + " path");
+      p.setAttribute("d", linePath(vals, 200, 48, 4));
+      if (stroke) p.setAttribute("stroke", stroke);
+    }
+
+    function drawFlow() {
+      const w = 600, h = 180;
+      // 上下行归一到同一坐标系（共享峰值），自绘 path 让基线固定在 0、不随帧跳动
+      const peak = Math.max(...upSeries, ...downSeries, 1) * 1.15;
+      const norm = (arr) => arr.map(v => v / peak);
+      const up = norm(upSeries), down = norm(downSeries);
+      const pad = 4;
+      const path = (arr) => {
+        const step = (w - pad * 2) / (arr.length - 1);
+        return arr.map((v, i) => {
+          const x = (pad + i * step).toFixed(1);
+          const y = (pad + (h - pad * 2) * (1 - v)).toFixed(1);
+          return (i ? "L" : "M") + x + " " + y;
+        }).join(" ");
+      };
+      const area = (arr) => path(arr) + ` L${(w - pad).toFixed(1)} ${h} L${pad} ${h} Z`;
+      $("#flow-up-line").setAttribute("d", path(up));
+      $("#flow-down-line").setAttribute("d", path(down));
+      $("#flow-up-fill").setAttribute("d", area(up));
+      $("#flow-down-fill").setAttribute("d", area(down));
+    }
+
+    function drawGrid() {
+      const g = $("#flow-grid");
+      let s = "";
+      for (let i = 1; i < 4; i++) { const y = (180 / 4) * i; s += `<line x1="0" y1="${y}" x2="600" y2="${y}"/>`; }
+      g.innerHTML = s;
+    }
+
+    function fmtRate(kb) { return kb >= 1024 ? (kb / 1024).toFixed(1) + " MB/s" : Math.round(kb) + " KB/s"; }
+
+    function renderMetrics(up, down, conn) {
+      $("#m-up").textContent = Math.round(up);
+      $("#m-down").textContent = Math.round(down);
+      $("#m-conn").textContent = conn;
+      $("#m-nodes").textContent = liveNodes;
+      $("#lg-up").textContent = fmtRate(up);
+      $("#lg-down").textContent = fmtRate(down);
+    }
+
+    /* ───────── 节点延迟列表 ───────── */
+    function latRow(name, sub, ms, alive, dotTitle) {
+      const cls = latClass(ms);
+      const pct = ms == null ? 0 : Math.min(100, Math.round((ms / 200) * 100));
+      return `<div class="lat-row">
+        <div>
+          <div class="lname">${name}</div>
+          <div class="lsub">${sub}</div>
+        </div>
+        <div class="lat-bar ${cls}"><i style="width:${pct}%"></i></div>
+        <div class="lms">${ms == null ? "—" : ms + " ms"}</div>
+        <div class="alive ${alive ? "on" : "off"}" title="${dotTitle || (alive ? "alive" : "offline")}"></div>
+      </div>`;
+    }
+    function renderLatency() {
+      let html = "";
+      // 节点 = 本工具内层 mihomo 的 ch-*（来自 /proxies），alive 直接来自 mihomo，空闲也算在线
+      nodes.forEach(p => {
+        const id = p.name.indexOf("ch-") === 0 ? p.name.slice(3) : p.name;
+        const c = chs.find(x => x.id === id);
+        const sub = c ? c.name + " · " + c.socks_endpoint : "vpn-" + id + ":1080";
+        html += latRow(p.name, sub, c ? c.latency_ms : null, p.alive, p.alive ? "alive" : "offline");
+      });
+      // DIRECT 兜底直连：非隧道探活，仅表示直连可用，延迟显示“—”
+      html += latRow("DIRECT", "兜底直连 · 不经隧道", null, true, "直连可用");
+      $("#lat-list").innerHTML = html;
+    }
+
+    /* ───────── 实时连接表（mihomo /connections 真实形态） ───────── */
+    function fmtBytes(n) {
+      n = +n || 0;
+      if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+      if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+      return n + " B";
+    }
+    function chainId(chain) {
+      // chains 末项形如 "ch-{id}"；取出 {id} 用于映射通道名/序号
+      return chain && chain.indexOf("ch-") === 0 ? chain.slice(3) : null;
+    }
+    // 按 目标+通道+规则 聚合：同目标的重复短连接合并成一行，带连接数与累计流量
+    function aggregate(list) {
+      const groups = new Map();
+      list.forEach(c => {
+        const meta = c.metadata || {};
+        const chains = c.chains || [];
+        const tail = chains.length ? chains[chains.length - 1] : "";
+        const host = (meta.host || meta.destinationIP || "—") + (meta.destinationPort ? ":" + meta.destinationPort : "");
+        const key = host + "|" + tail + "|" + (c.rule || "");
+        let g = groups.get(key);
+        if (!g) { g = { host, tail, rule: c.rule || "", count: 0, up: 0, down: 0 }; groups.set(key, g); }
+        g.count++; g.up += (+c.upload || 0); g.down += (+c.download || 0);
+      });
+      return Array.from(groups.values()).sort((a, b) => b.count - a.count);
+    }
+    function connRow(g) {
+      const id = chainId(g.tail);
+      const direct = !id;   // 末跳非 ch-* 即兜底直连（DIRECT）
+      const chainCell = direct
+        ? `<div class="chain-cell"><span class="cn muted">直连</span><span class="ce">DIRECT</span></div>`
+        : `<div class="chain-cell"><span class="cn">${chanName(id)}</span><span class="ce">${g.tail} → vpn-${id}:1080</span></div>`;
+      return `<tr class="${direct ? "is-direct" : ""}">
+        <td class="mono">${g.host}</td>
+        <td class="hide-sm"><span class="rule-tag">${g.rule}</span></td>
+        <td>${chainCell}</td>
+        <td class="r num-col">${g.count > 1 ? `<span class="pill">×${g.count}</span>` : g.count}</td>
+        <td class="r num-col">${fmtBytes(g.up)}</td>
+        <td class="r num-col">${fmtBytes(g.down)}</td>
+      </tr>`;
+    }
+    function renderConns(list) {
+      const groups = aggregate(list);
+      $("#conn-body").innerHTML = groups.length
+        ? groups.map(connRow).join("")
+        : `<tr><td colspan="6"><div class="empty" style="padding:var(--space-5);">暂无经本工具分流的连接</div></td></tr>`;
+      $("#conn-count").textContent = list.length;
+    }
+
+    /* ───────── 全量重绘（spark + 面积图） ───────── */
+    function drawAll() {
+      drawSpark("sp-up", upSeries.slice(-SN), "var(--accent)");
+      drawSpark("sp-down", downSeries.slice(-SN), "var(--success)");
+      drawSpark("sp-conn", connSeries, "var(--muted)");
+      drawSpark("sp-nodes", nodeSeries, "var(--muted)");
+      drawFlow();
+    }
+
+    /* ───────── tick：拉真实遥测，速率=总量差分/时间差 ───────── */
+    let nodes = [];   // 本工具内层通道节点 ch-*（来自 /api/proxies）
+    async function tick() {
+      let data;
+      try {
+        [chs, data, nodes] = await Promise.all([
+          api.channels(), api.connections(), api.proxies().then(r => r.proxies || []),
+        ]);
+      } catch (e) { return; }
+      $("#nav-count").textContent = chs.length;
+      liveNodes = nodes.filter(p => p.alive).length;   // 在线节点 = mihomo 里 alive 的 ch-*
+      // 速率 = 总量差分 / 时间差；累计值变小 = mihomo 重载/重启归零，本帧不计差分（避免负值突刺）
+      const now = Date.now();
+      let up = 0, down = 0;
+      if (prevTotals && prevTs) {
+        const dt = (now - prevTs) / 1000 || 1;
+        const dUp = data.uploadTotal - prevTotals.up, dDown = data.downloadTotal - prevTotals.down;
+        up = dUp >= 0 ? dUp / dt / 1024 : 0;
+        down = dDown >= 0 ? dDown / dt / 1024 : 0;
+      }
+      prevTotals = { up: data.uploadTotal, down: data.downloadTotal }; prevTs = now;
+      const connList = data.connections || [];
+      pushSeries(up, down, connList.length);
+      renderMetrics(up, down, connList.length);
+      renderConns(connList);
+      renderLatency();
+      drawAll();
+    }
+
+    // 初次渲染（静态部分）+ 启动轮询
+    drawGrid();
+    boot();
+  </script>
+</body>
+</html>

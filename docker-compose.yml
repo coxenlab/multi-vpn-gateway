@@ -1,0 +1,43 @@
+networks:
+  vpnnet:
+    name: vpnmgr_vpnnet
+
+volumes:
+  appdata:
+
+services:
+  mihomo:
+    image: metacubex/mihomo:latest
+    command: -d /cfg
+    volumes:
+      - ./mihomo:/cfg
+    ports:
+      - "127.0.0.1:${MIHOMO_PORT}:7899"          # 给你的 Clash 接的分流端口
+      - "127.0.0.1:${MIHOMO_CTRL_PORT}:9090"     # 控制台 API
+    networks: [vpnnet]
+    restart: unless-stopped
+
+  app:
+    build: ./app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # 让后端能管理其它容器
+      - ./app:/app                                # 源码挂载:改代码即时生效,不用重建镜像
+      - ./mihomo:/cfg                             # 与 mihomo 共享配置文件
+      - appdata:/data                             # SQLite + 加密主密钥
+    environment:
+      MIHOMO_CTRL_URL: http://mihomo:9090
+      MIHOMO_SECRET: ${MIHOMO_SECRET}
+      MIHOMO_CONFIG_PATH: /cfg/config.yaml
+      MIHOMO_HOST_PORT: ${MIHOMO_PORT}
+      VPN_NET: vpnmgr_vpnnet
+      PORT_RANGE_LOW: ${PORT_RANGE_LOW}
+      PORT_RANGE_HIGH: ${PORT_RANGE_HIGH}
+      DATA_DIR: /data
+      UI_PORT: ${UI_PORT}
+      MIHOMO_CTRL_PORT: ${MIHOMO_CTRL_PORT}
+    ports:
+      - "127.0.0.1:${UI_PORT}:8000"
+    networks: [vpnnet]
+    depends_on: [mihomo]
+    restart: unless-stopped
