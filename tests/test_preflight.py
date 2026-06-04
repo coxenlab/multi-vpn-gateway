@@ -256,3 +256,14 @@ def test_run_checks_preflight_scope_excludes_extra():
     out = preflight.run_checks(dc, "atrust", None, host_arch="arm64", vpn_net="vpnnet")
     ids = {c["id"] for c in out["checks"]}
     assert "mihomo_health" not in ids and "docker_version" not in ids
+
+
+def test_known_repos_contains_mihomo():
+    repos = preflight.known_repos()
+    assert "metacubex/mihomo" in repos
+
+
+def test_infra_images_declared():
+    imgs = {i["image"] for i in preflight.INFRA_IMAGES}
+    assert "metacubex/mihomo:latest" in imgs
+    assert "app" in imgs

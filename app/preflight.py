@@ -15,6 +15,14 @@ DEFAULT_MIRRORS = ["docker.1ms.run", "hub.rat.dev"]
 # 自建镜像的本地构建上下文(镜像名前缀 → 仓库内构建目录)
 _BUILD_CONTEXT = {"vpnmgr/oss-vpn": "images/oss", "vpnmgr/byo-desktop": "images/byo"}
 
+# 基础设施镜像(定义在 docker-compose,不在 adapters):分流底座 + 管理后端
+INFRA_IMAGES = [
+    {"image": "metacubex/mihomo:latest", "kind": "pull", "title": "mihomo 分流底座",
+     "arch": ["amd64", "arm64"]},
+    {"image": "app", "kind": "compose", "title": "管理后端(FastAPI)",
+     "build_context": "app", "arch": []},
+]
+
 
 def resolve_image(vpn_type, version=None):
     """按 vpn_type 解析最终镜像名(替换 {version} 占位)。未知类型抛 KeyError。"""
@@ -26,12 +34,15 @@ def resolve_image(vpn_type, version=None):
 
 
 def known_repos():
-    """所有适配器声明的镜像 repo(去掉 tag/占位),供 fix 端点做白名单校验。"""
+    """所有适配器 + 基础设施声明的镜像 repo(去掉 tag/占位),供 fix 端点做白名单校验。"""
     repos = set()
     for spec in registry.list_adapters():
         img = registry.get(spec["key"])["image"]
         repo = img.split(":", 1)[0].replace("{version}", "").rstrip(":")
         repos.add(repo)
+    for inf in INFRA_IMAGES:
+        if inf["kind"] == "pull":
+            repos.add(inf["image"].split(":", 1)[0])
     return repos
 
 
