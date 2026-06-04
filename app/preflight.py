@@ -8,6 +8,7 @@ import uuid
 import requests
 import docker
 import registry
+import dockerhub
 
 # P1 硬编码镜像源(按顺序探测可达再拉);P2 改为读 store.mirrors 表
 DEFAULT_MIRRORS = ["docker.1ms.run", "hub.rat.dev"]
@@ -49,6 +50,79 @@ def known_repos():
 def is_buildable(image):
     """vpnmgr/* 是自建镜像(镜像源上没有),应本地构建而非拉取。"""
     return image.split(":", 1)[0] in _BUILD_CONTEXT
+
+
+def _split_image(full):
+    """拆镜像串 → (repo, tag_or_None, versioned, image_field, display)。
+    versioned(含 {version})→ tag=None、image_field=repo;否则 image_field=完整名、tag 默认 latest。"""
+    if "{version}" in full:
+        repo = full.split(":", 1)[0]
+        return repo, None, True, repo, full
+    repo, _, tag = full.partition(":")
+    return repo, (tag or "latest"), False, full, full
+
+
+def _image_present(dc, image):
+    """本机是否已有该镜像。ImageNotFound→False,其它异常→None(永不抛,沿用 preflight 风格)。"""
+    try:
+        dc.images.get(image)
+        return True
+    except docker.errors.ImageNotFound:
+        return False
+    except Exception:
+        return None
+
+
+def image_inventory(dc, host_arch, mirrors):
+    """汇总本系统全部镜像 + 下载/构建元信息。返回 {host_arch, mirrors, images:[...]}。
+    VPN 镜像从 registry 去重推导(oss 8 协议并成 1 条),infra 来自 INFRA_IMAGES。"""
+    entries = {}
+    order = []
+
+    for spec in registry.list_adapters():
+        full = registry.get(spec["key"])["image"]
+        repo, tag, versioned, image_field, display = _split_image(full)
+        key = repo if versioned else image_field
+        if key not in entries:
+            entries[key] = {
+                "image": image_field, "display": display, "repo": repo, "tag": tag,
+                "kind": "build" if is_buildable(image_field) else "pull",
+                "role": "vpn", "title": spec["label"], "used_by": [],
+                "arch": list(spec.get("arch", [])), "versioned": versioned,
+                "build_context": _BUILD_CONTEXT.get(repo),
+                "versions": [], "present": None,
+                "_fallback": spec.get("fallback_versions", []),
+            }
+            order.append(key)
+        e = entries[key]
+        e["used_by"].append(spec["label"])
+        for a in spec.get("arch", []):
+            if a not in e["arch"]:
+                e["arch"].append(a)
+
+    for inf in INFRA_IMAGES:
+        repo, tag, _, image_field, display = _split_image(inf["image"])
+        entries[image_field] = {
+            "image": image_field, "display": display, "repo": repo, "tag": tag,
+            "kind": inf["kind"], "role": "infra", "title": inf["title"], "used_by": [],
+            "arch": list(inf.get("arch", [])), "versioned": False,
+            "build_context": inf.get("build_context"),
+            "versions": [], "present": None, "_fallback": [],
+        }
+        order.append(image_field)
+
+    for key in order:
+        e = entries[key]
+        fb = e.pop("_fallback")
+        if e["versioned"]:
+            e["versions"] = dockerhub.versions(e["repo"], host_arch, fb)
+        elif e["kind"] != "compose":
+            if e["kind"] == "pull":
+                e["versions"] = [{"tag": e["tag"], "arch": e["arch"], "usable_here": True}]
+            e["present"] = _image_present(dc, e["image"])
+
+    return {"host_arch": host_arch, "mirrors": list(mirrors),
+            "images": [entries[k] for k in order]}
 
 
 def _result(id, layer, title, status, detail="", fix=None):

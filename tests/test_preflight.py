@@ -267,3 +267,59 @@ def test_infra_images_declared():
     imgs = {i["image"] for i in preflight.INFRA_IMAGES}
     assert "metacubex/mihomo:latest" in imgs
     assert "app" in imgs
+
+
+def _inv(monkeypatch, images=None):
+    import dockerhub
+    monkeypatch.setattr(dockerhub, "versions",
+                        lambda repo, arch, fb: [{"tag": "7.6.7", "arch": ["arm64"], "usable_here": True},
+                                                {"tag": "7.6.3", "arch": ["amd64"], "usable_here": False}])
+    dc = _FakeDc(images=images or {})
+    out = preflight.image_inventory(dc, "arm64", ["docker.1ms.run"])
+    return out, {e["image"]: e for e in out["images"]}
+
+
+def test_inventory_top_level_shape(monkeypatch):
+    out, _ = _inv(monkeypatch)
+    assert out["host_arch"] == "arm64"
+    assert out["mirrors"] == ["docker.1ms.run"]
+    assert isinstance(out["images"], list) and out["images"]
+
+
+def test_inventory_dedups_oss_collects_used_by(monkeypatch):
+    _, by = _inv(monkeypatch)
+    oss = by["vpnmgr/oss-vpn:latest"]
+    assert oss["kind"] == "build"
+    assert oss["build_context"] == "images/oss"
+    assert len(oss["used_by"]) == 8
+
+
+def test_inventory_ec_versioned_attaches_live_versions(monkeypatch):
+    _, by = _inv(monkeypatch)
+    ec = by["hagb/docker-easyconnect"]
+    assert ec["versioned"] is True
+    assert ec["kind"] == "pull"
+    assert ec["present"] is None
+    assert ec["versions"][0]["tag"] == "7.6.7"
+
+
+def test_inventory_fixed_pull_has_present_and_single_version(monkeypatch):
+    _, by = _inv(monkeypatch, images={"hagb/docker-atrust:latest": "arm64"})
+    at = by["hagb/docker-atrust:latest"]
+    assert at["kind"] == "pull" and at["versioned"] is False
+    assert at["present"] is True
+    assert at["versions"] == [{"tag": "latest", "arch": ["amd64", "arm64"], "usable_here": True}]
+
+
+def test_inventory_includes_infra(monkeypatch):
+    _, by = _inv(monkeypatch)
+    assert by["metacubex/mihomo:latest"]["role"] == "infra"
+    app = by["app"]
+    assert app["kind"] == "compose"
+    assert app["present"] is None and app["versions"] == []
+
+
+def test_inventory_present_false_when_missing(monkeypatch):
+    _, by = _inv(monkeypatch, images={})
+    assert by["hagb/docker-atrust:latest"]["present"] is False
+    assert by["vpnmgr/oss-vpn:latest"]["present"] is False
