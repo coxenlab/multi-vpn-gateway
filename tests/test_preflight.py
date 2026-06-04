@@ -323,3 +323,17 @@ def test_inventory_present_false_when_missing(monkeypatch):
     _, by = _inv(monkeypatch, images={})
     assert by["hagb/docker-atrust:latest"]["present"] is False
     assert by["vpnmgr/oss-vpn:latest"]["present"] is False
+
+
+def test_inventory_versioned_uses_real_fallback(monkeypatch):
+    import dockerhub
+    seen = {}
+    def fake_versions(repo, arch, fb):
+        seen["fb"] = fb
+        return [{"tag": t, "arch": [], "usable_here": True} for t in fb]
+    monkeypatch.setattr(dockerhub, "versions", fake_versions)
+    out = preflight.image_inventory(_FakeDc(images={}), "arm64", [])
+    by = {e["image"]: e for e in out["images"]}
+    # easyconnect 在 adapters.yaml 里 fallback_versions: ["7.6.3", "7.6.7"]
+    assert seen["fb"] == ["7.6.3", "7.6.7"]
+    assert [v["tag"] for v in by["hagb/docker-easyconnect"]["versions"]] == ["7.6.3", "7.6.7"]

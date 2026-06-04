@@ -80,7 +80,8 @@ def image_inventory(dc, host_arch, mirrors):
     order = []
 
     for spec in registry.list_adapters():
-        full = registry.get(spec["key"])["image"]
+        full_spec = registry.get(spec["key"])
+        full = full_spec["image"]
         repo, tag, versioned, image_field, display = _split_image(full)
         key = repo if versioned else image_field
         if key not in entries:
@@ -91,7 +92,7 @@ def image_inventory(dc, host_arch, mirrors):
                 "arch": list(spec.get("arch", [])), "versioned": versioned,
                 "build_context": _BUILD_CONTEXT.get(repo),
                 "versions": [], "present": None,
-                "_fallback": spec.get("fallback_versions", []),
+                "_fallback": full_spec.get("fallback_versions", []),
             }
             order.append(key)
         e = entries[key]
