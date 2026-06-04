@@ -138,7 +138,7 @@
                 重新登录
               </button>
               <button class="btn btn-secondary" id="act-probe">检测连通</button>
-              <button class="btn btn-secondary" id="act-restart">重启容器</button>
+              <button class="btn btn-secondary" id="act-restart">重启</button>
               <button class="btn btn-secondary" id="act-power">停止</button>
               <span class="spacer"></span>
               <button class="btn btn-danger" data-open="del-modal">删除</button>
@@ -457,12 +457,10 @@
       renderRuleTables();
       $("#del-name").textContent = containerId;
       syncStatus();
-      // 无头通道(oss,如 openfortivpn):无交互登录 → 隐藏「登录」tab 与「重新登录」按钮
+      // 无头通道(oss,如 openfortivpn):无交互登录 → 隐藏「登录」tab(「重新登录」按钮由 syncStatus 统一显隐)
       const headless = ch.login_method === "headless";
       const loginTabBtn = document.querySelector('.tab[data-tab="login"]');
       if (loginTabBtn) loginTabBtn.style.display = headless ? "none" : "";
-      const relogin = $("#act-relogin");
-      if (relogin) relogin.style.display = headless ? "none" : "";
     }
 
     // ── 概览：容器配置 kv-list ──
@@ -502,8 +500,13 @@
     // ── 登录面板填充 ──
     function renderLoginPanel() {
       $("#vnc-addr").textContent = `${sys.bound_ip}:${ch.novnc_port}`;
-      $("#portal-title").textContent = k.label === "aTrust" ? "aTrust 信任接入" : "EasyConnect 企业接入";
-      $("#portal-host").textContent = hostName;
+      // #portal-title / #portal-host 是「仿真门户」占位;loadVnc() 起 noVNC iframe 时整个
+      // #portal 被 replaceWith 掉 → 二者不复存在。此后任何重渲染(重启/保存)须容忍其为 null,
+      // 否则 boot() 抛 "Cannot set properties of null (setting 'textContent')"。
+      const pt = $("#portal-title");
+      if (pt) pt.textContent = k.label === "aTrust" ? "aTrust 信任接入" : "EasyConnect 企业接入";
+      const ph = $("#portal-host");
+      if (ph) ph.textContent = hostName;
       $("#li-method").textContent = methodLabel;
       $("#li-port").innerHTML = `<span class="mono">:${ch.novnc_port}</span>`;
       $("#li-probe").innerHTML = `<span class="mono">${ch.probe_url}</span>`;
@@ -534,14 +537,17 @@
 
     function syncStatus() {
       const stopped = ch.status === "stopped";
+      const headless = ch.login_method === "headless";
       $("#top-badge").innerHTML = badgeHTML(ch.status);
       $("#h-status").innerHTML = badgeHTML(ch.status);
+      // 电源按钮:停止态=「启动」(走重建),运行态=「停止」——始终可见。
       $("#act-power").textContent = stopped ? "启动" : "停止";
-      // 容器已停：SOCKS5 不监听、状态机不能直接登录 → 探活/重新登录均不可用
-      $("#act-probe").disabled = stopped;
-      $("#act-relogin").disabled = stopped;
-      // 已停时「重启容器」语义即「启动容器」
-      $("#act-restart").textContent = stopped ? "启动容器" : "重启容器";
+      // 状态驱动显隐:容器已停时 SOCKS5 不监听、登录窗 404，「重启 / 检测连通 / 重新登录」都无意义 → 隐藏，
+      // 只留「启动」+「删除」。运行态才显示;「重新登录」对无头通道恒隐(无交互登录)。
+      // 「启动」本身已走重建,故停止态不再并排出现等价的「启动容器」。
+      $("#act-restart").style.display = stopped ? "none" : "";
+      $("#act-probe").style.display = stopped ? "none" : "";
+      $("#act-relogin").style.display = (stopped || headless) ? "none" : "";
     }
 
     // ── 顶部操作 ──
@@ -619,6 +625,9 @@
         await api.stop(ch.id);
         await api.start(ch.id);
         await boot();
+        // 重建会换容器、换 noVNC 端口;若正显示着 noVNC iframe,把它重新指向新端口,
+        // 否则用户面对的是指向旧(已死)端口的 iframe。
+        if ($("#vnc-frame")) await loadVnc();
         toast("容器已重启 · SOCKS5 监听就绪，请登录后探活");
       } catch (err) { toast("重启出错：" + err.message, false); }
       finally { btn.disabled = false; btn.textContent = orig; }

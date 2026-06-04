@@ -188,26 +188,28 @@ def put_file(cid, dest_dir, filename, blob):
 
 
 def ensure_novnc_bridge(cid):
-    """确保 noVNC 可用:用一个自起的 websockify 顶在容器 8080(= 映射到 host 的端口)。
+    """确保 noVNC 的 WS 后端(websockify)起着;arm64 自愈。幂等。
 
-    hagb 镜像自带的 noVNC 前端在 arm64 上不稳:websockify(8082)因 `su -s /bin/sh`
-    "Permission denied" 起不来;tinyproxy(8080)偶发因 /etc/tinyproxy-novnc.conf
-    没生成("Read-only file system")而不启动 → noVNC「无法连接到服务器」甚至
-    「未发送任何数据」。这里以 root 直接拉起一个全功能 websockify(--web 同时服务
-    noVNC 静态页 + WS→VNC 桥)占住 8080,绕开整条易碎链路。幂等:已在跑则跳过。
+    hagb 镜像的 noVNC 链:tinyproxy-novnc(8080)→ 静态 busybox httpd(8081) +
+    `/websockify` → websockify(8082)→ Xtigervnc(5901)。镜像用
+    `su daemon -s /bin/sh -c 'websockify --daemon 127.0.0.1:8082 127.0.0.1:5901'`
+    (见容器内 /usr/local/bin/novnc-min-size.sh)起 websockify,但 arm64 下
+    `su -s /bin/sh` 报 "Permission denied" → websockify 永不启动 → `/websockify` 无后端
+    → noVNC「无法连接到服务器」。这里以 root 直接拉起同形态的 websockify,绕开 su。
+    注:镜像内 websockify 是 C 版(不支持 --web),故沿用镜像的 8082→5901 形态、由
+    tinyproxy 合并静态+WS(login url 的 `path=websockify/` 即走这条),不要改成 --web 顶 8080。
     """
     try:
         c = dc.containers.get(f"vpn-{cid}")
         start = (
-            "pgrep -f 'websockify --web' >/dev/null 2>&1 && exit 0; "
-            "pkill -f tinyproxy-novnc 2>/dev/null; "
-            "exec websockify --web /usr/local/share/novnc 0.0.0.0:8080 127.0.0.1:5901 "
-            ">/tmp/novnc-bridge.log 2>&1"
+            "ss -tln 2>/dev/null | grep -q :8082 && exit 0; "            # WS 后端已起 → 跳过
+            "for i in $(seq 1 30); do ss -tln 2>/dev/null | grep -q :5901 && break; sleep 0.3; done; "  # 等 VNC 就绪
+            "websockify --daemon 127.0.0.1:8082 127.0.0.1:5901 >/tmp/novnc-bridge.log 2>&1"
         )
         c.exec_run(["sh", "-c", start], user="root", detach=True)
-        # 等 8080 起来再返回,避免前端 iframe 抢跑拿到空响应(ERR_EMPTY_RESPONSE)
-        for _ in range(20):
-            rc, _o = c.exec_run(["sh", "-c", "ss -tln 2>/dev/null | grep -q :8080"])
+        # 等 8082(WS 后端)起来再返回,避免前端 iframe 抢跑连到无后端的 `/websockify`(红条「无法连接」)
+        for _ in range(30):
+            rc, _o = c.exec_run(["sh", "-c", "ss -tln 2>/dev/null | grep -q :8082"])
             if rc == 0:
                 break
             time.sleep(0.2)
@@ -218,13 +220,6 @@ def ensure_novnc_bridge(cid):
 def stop(cid):
     try:
         dc.containers.get(f"vpn-{cid}").stop()
-    except docker.errors.NotFound:
-        pass
-
-
-def start(cid):
-    try:
-        dc.containers.get(f"vpn-{cid}").start()
     except docker.errors.NotFound:
         pass
 

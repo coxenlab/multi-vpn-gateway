@@ -258,8 +258,19 @@ async def patch_rule(cid, rid: int, req: Request):
 
 @app.post("/api/channels/{cid}/start")
 def start(cid):
-    manager.start(cid)
-    store.set_status(cid, "running")
+    # hagb(EC/aTrust)的守护进程与 oss 经 exec 注入的隧道都扛不住原地 docker start
+    # (守护进程不重新初始化、注入的客户端进程丢失)→ 容器崩退码 1 或起来无隧道。
+    # 「启动/重启」一律重建容器(docker run fresh,复用同卷/MAC/hostname),才是能恢复的原语。
+    ch = store.get_channel(cid)
+    if not ch:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        container_id, novnc = manager.create_channel(ch, ch["vnc_password"])
+    except Exception as e:
+        store.set_status(cid, "error")
+        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+    store.set_container(cid, container_id, novnc, "running")
+    manager.rebuild()
     return {"ok": True}
 
 

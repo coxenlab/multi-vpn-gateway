@@ -305,3 +305,20 @@ def test_preflight_default_scope_skips_mihomo_probe(client, monkeypatch):
     assert calls["n"] == 0                                 # 向导 gate 不探 mihomo
     client.get("/api/preflight?vpn_type=atrust&scope=full")
     assert calls["n"] == 1                                 # full 才探
+
+
+def test_start_recreates_not_inplace_docker_start(client, monkeypatch):
+    """命门:EC/aTrust(hagb) 与 oss 扛不住原地 docker start(守护进程/exec 注入的隧道不重启)。
+    /start 必须重建容器(docker run fresh),而非 container.start()。"""
+    import manager, store
+    cid = _create(client)["id"]                          # create_channel mocked → ("cid_fake", 18080)
+    client.post(f"/api/channels/{cid}/stop")
+    assert store.get_channel(cid)["status"] == "stopped"
+
+    monkeypatch.setattr(manager, "create_channel", lambda c, vnc: ("fresh-cid", 29999))
+    r = client.post(f"/api/channels/{cid}/start")
+    assert r.status_code == 200
+    row = store.get_channel(cid)
+    assert row["container_id"] == "fresh-cid"             # 走了重建(docker run fresh),落全新容器
+    assert row["novnc_port"] == 29999                     # 原地 docker start 不会换容器/端口
+    assert row["status"] == "running"

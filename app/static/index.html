@@ -141,18 +141,21 @@
 
     // 通道卡片
     function actionsFor(c) {
-      // 无头通道(oss,如 openfortivpn):无交互登录,不显示登录/重新登录按钮
+      const detail = `<a class="btn btn-sm btn-secondary" href="channel.html?id=${c.id}">详情</a>`;
+      const del = `<button class="btn btn-sm btn-danger spacer" onclick="askDel('${c.id}')">删除</button>`;
+      // 停止态:容器没起,登录/探活都无意义 → 只给「启动」(走重建);状态已由右上角徽章表达,不再放死的「已停止」占位钮。
+      if (c.status === "stopped")
+        return `<button class="btn btn-sm btn-primary" onclick="power('${c.id}','start',this)">启动</button>${detail}${del}`;
+      // 运行态:登录/重新登录(无头通道隐藏)+ 检测连通 + 停止。「重启」属低频操作,留在详情页。
       const headless = c.login_method === "headless";
       const login = headless ? ""
         : (c.status === "logged_in"
             ? `<a class="btn btn-sm btn-secondary" href="channel.html?id=${c.id}#login">重新登录</a>`
             : `<a class="btn btn-sm btn-primary" href="channel.html?id=${c.id}#login">登录</a>`);
-      const probe = c.status === "stopped"
-        ? `<button class="btn btn-sm btn-secondary" disabled>已停止</button>`
-        : `<button class="btn btn-sm btn-secondary" onclick="probe('${c.id}', this)">检测连通</button>`;
-      return `${login}${probe}
-        <a class="btn btn-sm btn-secondary" href="channel.html?id=${c.id}">详情</a>
-        <button class="btn btn-sm btn-danger spacer" onclick="askDel('${c.id}')">删除</button>`;
+      return `${login}
+        <button class="btn btn-sm btn-secondary" onclick="probe('${c.id}', this)">检测连通</button>
+        <button class="btn btn-sm btn-secondary" onclick="power('${c.id}','stop',this)">停止</button>
+        ${detail}${del}`;
     }
     function cardHTML(c) {
       const k = kindMeta(c.vpn_type);
@@ -205,6 +208,19 @@
         toast(r.connected ? `隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录` : "探活失败：未连通", r.connected);
       } catch (e) { toast("探活出错：" + e.message, false); }
       finally { btn.disabled = false; btn.textContent = "检测连通"; }
+    };
+    // 电源:启动(后端走重建,复用同卷/MAC)/ 停止。成功后 load() 重绘卡片,故无需手动复位按钮。
+    window.power = async function (id, action, btn) {
+      const label = action === "start" ? "启动" : "停止";
+      btn.disabled = true; btn.textContent = label + "中…";
+      try {
+        await (action === "start" ? api.start(id) : api.stop(id));
+        await load();
+        toast(action === "start" ? "已启动 · 正在重建容器,请稍候登录 / 检测连通" : "容器已停止");
+      } catch (e) {
+        toast(label + "出错:" + e.message, false);
+        btn.disabled = false; btn.textContent = label;
+      }
     };
     // 快绑：一次可粘多条，后端自动识别 IP/网段（走 IP-CIDR）与域名（走 DOMAIN-SUFFIX）
     window.bindRule = async function (id, form) {

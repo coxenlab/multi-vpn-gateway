@@ -50,6 +50,8 @@ def client(monkeypatch):
     import manager
     monkeypatch.setattr(manager, "rebuild", lambda: 204)
     monkeypatch.setattr(manager, "create_channel", lambda ch, vnc: ("cid_fake", 18080))
+    monkeypatch.setattr(manager, "novnc_port", lambda cid: 18080)        # 不碰真 docker:登录 url 用此端口
+    monkeypatch.setattr(manager, "ensure_novnc_bridge", lambda cid: None)
     monkeypatch.setattr(manager, "probe", lambda ch: (True, 42))
     monkeypatch.setattr(manager, "uptime", lambda cid: "1分钟")
     monkeypatch.setattr(manager, "mihomo_alive", lambda: True)
