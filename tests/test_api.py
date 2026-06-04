@@ -322,3 +322,25 @@ def test_start_recreates_not_inplace_docker_start(client, monkeypatch):
     assert row["container_id"] == "fresh-cid"             # 走了重建(docker run fresh),落全新容器
     assert row["novnc_port"] == 29999                     # 原地 docker start 不会换容器/端口
     assert row["status"] == "running"
+
+
+def test_byo_start_inplace_not_recreate(client, monkeypatch):
+    """例外:byo 桌面容器的客户端是用户手动装在可写层(非 /root 卷),重建会抹掉 →
+    /start 必须原地 docker start(桌面+microsocks 在 entrypoint,扛得住),不重建。"""
+    import manager, store
+    cid = client.post("/api/channels", json={
+        "name": "兜底X", "vpn_type": "custom", "login_method": "byo",
+        "probe_url": "http://p"}).json()["id"]            # create_channel mocked → ("cid_fake", 18080)
+    client.post(f"/api/channels/{cid}/stop")
+
+    started = {}
+    monkeypatch.setattr(manager, "start", lambda c: started.update(cid=c))
+    monkeypatch.setattr(manager, "create_channel",
+                        lambda c, vnc: (_ for _ in ()).throw(AssertionError("byo 不应重建")))
+    r = client.post(f"/api/channels/{cid}/start")
+    assert r.status_code == 200
+    assert started.get("cid") == cid                      # 走了原地 docker start
+    row = store.get_channel(cid)
+    assert row["container_id"] == "cid_fake"              # 容器没换(没重建)
+    assert row["novnc_port"] == 18080
+    assert row["status"] == "running"

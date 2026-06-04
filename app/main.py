@@ -261,9 +261,19 @@ def start(cid):
     # hagb(EC/aTrust)的守护进程与 oss 经 exec 注入的隧道都扛不住原地 docker start
     # (守护进程不重新初始化、注入的客户端进程丢失)→ 容器崩退码 1 或起来无隧道。
     # 「启动/重启」一律重建容器(docker run fresh,复用同卷/MAC/hostname),才是能恢复的原语。
+    # 例外:byo 桌面容器的客户端是用户手动装在可写层(非 /root 卷),重建会抹掉 →
+    #       原地 docker start(桌面+microsocks 在 entrypoint,扛得住原地重启)。
     ch = store.get_channel(cid)
     if not ch:
         return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        runtime = registry.get(ch["vpn_type"]).get("runtime")
+    except KeyError:
+        runtime = None
+    if runtime == "byo":
+        manager.start(cid)
+        store.set_status(cid, "running")
+        return {"ok": True}
     try:
         container_id, novnc = manager.create_channel(ch, ch["vnc_password"])
     except Exception as e:

@@ -224,6 +224,15 @@ def stop(cid):
         pass
 
 
+def start(cid):
+    """原地 docker start——仅 byo 用。byo 的客户端是用户手动装在可写层(非 /root 卷),
+    重建会抹掉;桌面+microsocks 在 entrypoint,扛得住原地重启。hagb/oss 走 create_channel 重建。"""
+    try:
+        dc.containers.get(f"vpn-{cid}").start()
+    except docker.errors.NotFound:
+        pass
+
+
 def remove(cid):
     try:
         dc.containers.get(f"vpn-{cid}").remove(force=True)
