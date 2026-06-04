@@ -24,6 +24,7 @@
       req("GET", `/api/preflight?scope=${scope || "preflight"}${vpnType ? "&vpn_type=" + encodeURIComponent(vpnType) : ""}${version ? "&version=" + encodeURIComponent(version) : ""}`),
     preflightFix: (action, params) => req("POST", `/api/preflight/fix/${action}`, params || {}),
     preflightFixStatus: (taskId) => req("GET", `/api/preflight/fix/${taskId}`),
+    images: () => req("GET", "/api/images"),
     create: (data) => req("POST", "/api/channels", data),
     update: (id, data) => req("PATCH", `/api/channels/${id}`, data),
     login: (id) => req("GET", `/api/channels/${id}/login`),

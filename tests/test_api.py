@@ -344,3 +344,21 @@ def test_byo_start_inplace_not_recreate(client, monkeypatch):
     assert row["container_id"] == "cid_fake"              # 容器没换(没重建)
     assert row["novnc_port"] == 18080
     assert row["status"] == "running"
+
+
+def test_images_inventory_route(client, monkeypatch):
+    import dockerhub
+    monkeypatch.setattr(dockerhub, "versions",
+                        lambda repo, arch, fb: [{"tag": "7.6.7", "arch": ["arm64"], "usable_here": True}])
+
+    # dc.images is a class-level property; patch _image_present to simulate no local images
+    monkeypatch.setattr("preflight._image_present", lambda dc, name: False)
+
+    j = client.get("/api/images").json()
+    assert j["host_arch"]
+    assert "docker.1ms.run" in j["mirrors"]
+    by = {e["image"]: e for e in j["images"]}
+    assert by["hagb/docker-easyconnect"]["versioned"] is True
+    assert by["metacubex/mihomo:latest"]["role"] == "infra"
+    assert by["vpnmgr/oss-vpn:latest"]["kind"] == "build"
+    assert len(by["vpnmgr/oss-vpn:latest"]["used_by"]) == 8

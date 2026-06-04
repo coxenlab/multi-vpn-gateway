@@ -336,6 +336,12 @@ def preflight_fix_status(task_id: str):
     return st
 
 
+@app.get("/api/images")
+def images_inventory():
+    mirrors = [m["host"] for m in store.list_mirrors() if m["enabled"]]
+    return preflight.image_inventory(manager.dc, registry.host_arch(), mirrors)
+
+
 @app.get("/api/system")
 def system():
     ctrl_port = os.environ.get("MIHOMO_CTRL_PORT", "")
