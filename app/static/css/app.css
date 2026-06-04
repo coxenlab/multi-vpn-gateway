@@ -379,6 +379,9 @@ p { margin: 0; text-wrap: pretty; }
 .code .str { color: color-mix(in oklab, var(--success), white 35%); }
 .code-head { display: flex; align-items: center; justify-content: space-between; background: var(--ink-soft); color: var(--on-ink); padding: var(--space-2) var(--space-4); border-radius: var(--radius-md) var(--radius-md) 0 0; font-family: var(--font-mono); font-size: var(--text-xs); }
 .code-head + .code { border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.copy-btn { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid color-mix(in oklab, var(--on-ink), transparent 72%); border-radius: var(--radius-sm); background: transparent; color: var(--on-ink); font-size: var(--text-xs); line-height: 1; }
+.copy-btn svg { width: 13px; height: 13px; }
+.copy-btn:hover { background: color-mix(in oklab, var(--on-ink), transparent 86%); border-color: color-mix(in oklab, var(--on-ink), transparent 45%); }
 kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; background: var(--surface); }
 
 /* ─── toast ───────────────────────────────────────────────────────────── */
