@@ -76,6 +76,7 @@
             <div class="tabs" data-tabs>
               <button class="tab active" data-tab="diag">诊断</button>
               <button class="tab" data-tab="mirrors">镜像源</button>
+              <button class="tab" data-tab="images">镜像清单</button>
             </div>
 
             <!-- ─── Tab 诊断 ─── -->
@@ -98,6 +99,12 @@
                 </div>
                 <div id="mir-list"></div>
               </div>
+            </div>
+
+            <!-- ─── Tab 镜像清单 ─── -->
+            <div class="tabpanel" data-panel="images" style="padding-top:var(--space-5);">
+              <p class="t-xs muted" style="margin-bottom:var(--space-3);">本系统用到的全部镜像 + 下载/构建/离线命令。可拉取的支持一键拉取(本机架构);自建镜像需在仓库根构建。</p>
+              <div id="img-list"></div>
             </div>
           </div>
         </div>
@@ -168,6 +175,161 @@
               .catch(e => toast("添加失败:" + e.message, false));
     });
     renderMirrors();
+
+    /* ── 镜像清单 ── */
+    const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>';
+    const KIND_LABEL = { pull: "上游拉取", build: "自建镜像", compose: "compose 构建" };
+
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    function imgCommands(e, arch, tag, mirrors) {
+      const out = [];
+      if (e.kind === "pull") {
+        const plat = `--platform linux/${arch}`;
+        const ref = `${e.repo}:${tag}`;
+        out.push({ h: "直连拉取", t: `docker pull ${plat} ${ref}` });
+        (mirrors || []).forEach(m => out.push({
+          h: `经镜像源 ${m}`,
+          t: `docker pull ${plat} ${m}/${ref}\ndocker tag ${m}/${ref} ${ref}\ndocker rmi ${m}/${ref}`,
+        }));
+        const tar = ref.replace(/[\/:]/g, "_") + ".tar";
+        out.push({ h: "离线导出 / 导入", t: `# 有网机器上导出\ndocker save ${ref} -o ${tar}\n# 拷到目标机后导入\ndocker load -i ${tar}` });
+      } else if (e.kind === "build") {
+        out.push({ h: "本机构建(仓库根执行)", t: `docker build -t ${e.image} ${e.build_context}` });
+        out.push({ h: "多架构构建(需 buildx)", t: `# --load 仅单平台;多架构改 --push 到 registry 或分架构 save\ndocker buildx build --platform linux/amd64,linux/arm64 -t ${e.image} ${e.build_context}` });
+        const tar = e.image.replace(/[\/:]/g, "_") + ".tar";
+        out.push({ h: "离线导出 / 导入", t: `docker save ${e.image} -o ${tar}\ndocker load -i ${tar}` });
+      } else {
+        out.push({ h: "构建 / 重启(仓库根执行)", t: `docker compose build app\n# 或重建并重启后端\ndocker compose up -d --build app` });
+      }
+      return out;
+    }
+
+    function imgCard(e, hostArch, mirrors) {
+      const card = document.createElement("div");
+      card.className = "card card-pad stack-3";
+      card.style.marginBottom = "var(--space-4)";
+      const archOpts = (e.arch && e.arch.length) ? e.arch : [hostArch];
+      const firstUsable = (e.versions.find(v => v.usable_here) || e.versions[0] || {});
+      const state = {
+        arch: archOpts.includes(hostArch) ? hostArch : archOpts[0],
+        tag: e.versioned ? (firstUsable.tag || "latest") : (e.tag || "latest"),
+      };
+      const presentBadge = e.present === true ? `<span class="badge is-logged_in">本机已就绪</span>`
+        : e.present === false ? `<span class="badge is-stopped">未就绪</span>` : "";
+
+      card.innerHTML = `
+        <div class="row" style="justify-content:space-between; align-items:flex-start; gap:var(--space-3);">
+          <div>
+            <div class="row" style="gap:var(--space-2); align-items:center; flex-wrap:wrap;">
+              <strong>${esc(e.title)}</strong>
+              <span class="tag mono">${esc(e.display)}</span>
+              ${presentBadge}
+            </div>
+            <div class="t-xs muted" style="margin-top:4px;">
+              ${esc(KIND_LABEL[e.kind] || e.kind)}${e.used_by && e.used_by.length ? " · 用于 " + esc(e.used_by.join("、")) : ""}${e.build_context ? " · 上下文 " + esc(e.build_context) : ""}
+            </div>
+          </div>
+          <div class="img-actions"></div>
+        </div>
+        <div class="img-controls row" style="gap:var(--space-4); flex-wrap:wrap;"></div>
+        <div class="img-cmds stack-3"></div>`;
+
+      const controls = card.querySelector(".img-controls");
+      const cmds = card.querySelector(".img-cmds");
+      const actions = card.querySelector(".img-actions");
+      let pullBtn = null;
+
+      if (e.versioned && e.versions.length) {
+        const sel = document.createElement("select");
+        sel.className = "input"; sel.style.maxWidth = "220px";
+        sel.innerHTML = e.versions.map(v =>
+          `<option value="${esc(v.tag)}" ${v.tag === state.tag ? "selected" : ""}>${esc(v.tag)}${v.arch && v.arch.length ? ` (${esc(v.arch.join("/"))})` : ""}${v.usable_here ? "" : " ·本机不可用"}</option>`).join("");
+        sel.addEventListener("change", () => { state.tag = sel.value; paint(); });
+        const wrap = document.createElement("label");
+        wrap.className = "t-xs muted"; wrap.style.cssText = "display:flex;gap:6px;align-items:center;";
+        wrap.append("版本", sel);
+        controls.appendChild(wrap);
+      }
+      if (e.kind === "pull") {
+        const sel = document.createElement("select");
+        sel.className = "input"; sel.style.maxWidth = "140px";
+        sel.innerHTML = archOpts.map(a =>
+          `<option value="${a}" ${a === state.arch ? "selected" : ""}>${a}</option>`).join("");
+        sel.addEventListener("change", () => { state.arch = sel.value; paint(); });
+        const wrap = document.createElement("label");
+        wrap.className = "t-xs muted"; wrap.style.cssText = "display:flex;gap:6px;align-items:center;";
+        wrap.append("命令架构", sel);
+        controls.appendChild(wrap);
+      }
+      if (e.kind === "pull") {
+        pullBtn = document.createElement("button");
+        pullBtn.className = "btn btn-primary btn-sm";
+        pullBtn.textContent = `一键拉取(本机 ${hostArch})`;
+        pullBtn.addEventListener("click", async () => {
+          const image = `${e.repo}:${state.tag}`;
+          pullBtn.disabled = true; const orig = pullBtn.textContent; pullBtn.textContent = "拉取中…";
+          const tip = document.createElement("div"); tip.className = "banner info"; cmds.prepend(tip);
+          try {
+            await pullImageTask(image, st => { tip.textContent = st.progress || st.status; });
+            toast("镜像就绪"); renderImages();
+          } catch (err) { tip.className = "banner danger"; tip.textContent = "拉取失败:" + err.message; }
+          finally { pullBtn.disabled = false; pullBtn.textContent = orig; }
+        });
+        actions.appendChild(pullBtn);
+      }
+
+      function paint() {
+        cmds.innerHTML = imgCommands(e, state.arch, state.tag, mirrors).map(c => `
+          <div>
+            <div class="code-head"><span>${esc(c.h)}</span>
+              <button class="copy-btn" data-cmd="${encodeURIComponent(c.t)}">${COPY_ICON}复制</button></div>
+            <pre class="code">${esc(c.t)}</pre>
+          </div>`).join("");
+        cmds.querySelectorAll("[data-cmd]").forEach(b =>
+          b.addEventListener("click", () => copyText(decodeURIComponent(b.dataset.cmd), "已复制命令")));
+        if (pullBtn && e.versioned) {
+          const v = e.versions.find(x => x.tag === state.tag);
+          const ok = !v || v.usable_here;
+          pullBtn.disabled = !ok;
+          pullBtn.title = ok ? "" : "该版本无本机架构镜像,改用命令在对应架构机器上拉取";
+        }
+      }
+      paint();
+      return card;
+    }
+
+    let IMG_LOADING = false;
+    async function renderImages() {
+      if (IMG_LOADING) return;
+      IMG_LOADING = true;
+      const box = document.getElementById("img-list");
+      box.innerHTML = `<div class="chk-loading">加载中…</div>`;
+      let data;
+      try { data = await api.images(); }
+      catch (e) { box.innerHTML = `<div class="banner danger">加载镜像清单失败:${esc(e.message)}</div>`; IMG_LOADING = false; return; }
+      box.innerHTML = "";
+      [{ role: "vpn", title: "VPN 通道镜像" }, { role: "infra", title: "基础设施镜像" }].forEach(g => {
+        const items = data.images.filter(e => e.role === g.role);
+        if (!items.length) return;
+        const h = document.createElement("div");
+        h.className = "t-sm"; h.style.cssText = "font-weight:600; margin:var(--space-4) 0 var(--space-2);";
+        h.textContent = g.title;
+        box.appendChild(h);
+        items.forEach(e => box.appendChild(imgCard(e, data.host_arch, data.mirrors)));
+      });
+      if (data.mirrors && !data.mirrors.length) {
+        const note = document.createElement("div");
+        note.className = "t-xs muted"; note.style.marginTop = "var(--space-2)";
+        note.textContent = "未配置镜像源,「经镜像源」命令已隐藏;可在「镜像源」tab 添加。";
+        box.appendChild(note);
+      }
+      IMG_LOADING = false;
+    }
+
+    document.querySelector('[data-tab="images"]').addEventListener("click", renderImages);
   </script>
 </body>
 </html>
