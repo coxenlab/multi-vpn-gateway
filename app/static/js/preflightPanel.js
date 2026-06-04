@@ -20,6 +20,21 @@
       <div class="chk-act">${fix}</div></div>`;
   }
 
+  // 共享:发起一次镜像拉取任务并轮询到结束。onProgress(st) 每 2s 调一次。
+  window.pullImageTask = function (image, onProgress) {
+    return new Promise(function (resolve, reject) {
+      api.preflightFix("pull_image", { image }).then(function (r) {
+        const iv = setInterval(async function () {
+          let st;
+          try { st = await api.preflightFixStatus(r.task_id); } catch (e) { return; }
+          if (onProgress) onProgress(st);
+          if (st.status === "done") { clearInterval(iv); resolve(st); }
+          else if (st.status === "error") { clearInterval(iv); reject(new Error(st.error || "拉取失败")); }
+        }, 2000);
+      }, reject);
+    });
+  };
+
   window.PreflightPanel = function (host, opts) {
     opts = opts || {};
     let busy = false;
@@ -43,24 +58,15 @@
           await api.preflightFix("create_network", {});
           toast("网络已创建"); await run();
         } else if (action === "pull_image") {
-          const { task_id } = await api.preflightFix("pull_image", { image });
-          await poll(task_id);
+          const tip = document.createElement("div");
+          tip.className = "banner info"; host.prepend(tip);
+          try {
+            await pullImageTask(image, function (st) { tip.textContent = st.progress || st.status; });
+            toast("镜像就绪"); await run();
+          } catch (e) { tip.className = "banner danger"; tip.textContent = e.message; }
         }
       } catch (e) { toast("修复失败:" + e.message, false); }
       finally { busy = false; }
-    }
-
-    function poll(taskId) {
-      return new Promise((resolve) => {
-        const tip = document.createElement("div");
-        tip.className = "banner info"; host.prepend(tip);
-        const iv = setInterval(async () => {
-          let st; try { st = await api.preflightFixStatus(taskId); } catch { return; }
-          tip.textContent = st.progress || st.status;
-          if (st.status === "done") { clearInterval(iv); toast("镜像就绪"); await run(); resolve(); }
-          else if (st.status === "error") { clearInterval(iv); tip.className = "banner danger"; tip.textContent = st.error || "拉取失败"; resolve(); }
-        }, 2000);
-      });
     }
 
     return { run };
