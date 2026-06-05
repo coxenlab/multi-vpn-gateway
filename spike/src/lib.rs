@@ -3,8 +3,10 @@ use bollard::Docker;
 use bollard::container::{Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions, WaitContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
+use bollard::models::{DeviceMapping, HostConfig};
 use bollard::network::CreateNetworkOptions;
 use futures_util::StreamExt;
+use std::collections::HashMap;
 use tokio::io::AsyncWriteExt;
 
 /// 解析 VM 的 docker.sock 路径:优先 DOCKER_HOST(去掉 unix:// 前缀),
@@ -160,7 +162,7 @@ pub async fn run_detached_on_net(docker: &Docker, name: &str, image: &str, net: 
         image: Some(image.to_string()),
         hostname: Some(name.to_string()),
         cmd: Some(cmd.into_iter().map(String::from).collect()),
-        host_config: Some(bollard::models::HostConfig {
+        host_config: Some(HostConfig {
             network_mode: Some(net.to_string()),
             ..Default::default()
         }),
@@ -179,8 +181,48 @@ pub async fn run_capture_on_net(docker: &Docker, name: &str, image: &str, net: &
     let cfg = Config {
         image: Some(image.to_string()),
         cmd: Some(cmd.into_iter().map(String::from).collect()),
-        host_config: Some(bollard::models::HostConfig {
+        host_config: Some(HostConfig {
             network_mode: Some(net.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    docker.create_container(Some(CreateContainerOptions { name, platform: None }), cfg).await
+        .map_err(|e| anyhow!("create {name}: {e}"))?;
+    docker.start_container(name, None::<StartContainerOptions<String>>).await
+        .map_err(|e| anyhow!("start {name}: {e}"))?;
+
+    let mut wait = docker.wait_container(name, None::<WaitContainerOptions<String>>);
+    while let Some(item) = wait.next().await { let _ = item; }
+
+    let mut logs = docker.logs(name, Some(LogsOptions::<String> {
+        stdout: true, stderr: true, ..Default::default()
+    }));
+    let mut out = String::new();
+    while let Some(item) = logs.next().await {
+        out.push_str(&String::from_utf8_lossy(item?.into_bytes().as_ref()));
+    }
+    rm_force(docker, name).await.ok();
+    Ok(out)
+}
+
+/// 一次性容器,带 /dev/net/tun + NET_ADMIN + sysctl ip_forward=1(命门#6 的关键 kwargs)。
+/// 不用 auto_remove:避免 logs 调用时容器已删导致 409 竞态;改为手动 rm_force。
+pub async fn run_capture_privileged(docker: &Docker, name: &str, image: &str, cmd: Vec<&str>) -> Result<String> {
+    let mut sysctls = HashMap::new();
+    sysctls.insert("net.ipv4.ip_forward".to_string(), "1".to_string());
+
+    let cfg = Config {
+        image: Some(image.to_string()),
+        cmd: Some(cmd.into_iter().map(String::from).collect()),
+        host_config: Some(HostConfig {
+            cap_add: Some(vec!["NET_ADMIN".to_string(), "MKNOD".to_string()]),
+            devices: Some(vec![DeviceMapping {
+                path_on_host: Some("/dev/net/tun".to_string()),
+                path_in_container: Some("/dev/net/tun".to_string()),
+                cgroup_permissions: Some("rwm".to_string()),
+            }]),
+            sysctls: Some(sysctls),
             ..Default::default()
         }),
         ..Default::default()
