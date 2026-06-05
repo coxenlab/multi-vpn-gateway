@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 
 /// 对照 store.py::init —— 建表 + 补列 + 一次性迁移 + 种子,全部幂等。
 pub fn init(db: &Path) -> anyhow::Result<()> {
@@ -50,6 +51,42 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// 读取/创建 Fernet 主密钥(命门 #5:0600,缺失才生成)。返回 urlsafe-base64 字符串。
+pub fn master_key(data_dir: &Path) -> anyhow::Result<String> {
+    std::fs::create_dir_all(data_dir)?;
+    let kf = data_dir.join("master.key");
+    if !kf.exists() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let key = fernet::Fernet::generate_key();
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&kf)?;
+        f.write_all(key.as_bytes())?;
+    }
+    Ok(std::fs::read_to_string(&kf)?.trim().to_string())
+}
+
+/// 解密 Python cryptography.Fernet 密文(命门 #5;用 decrypt() 不带 TTL → 零迁移)。
+pub fn decrypt(key: &str, token: &str) -> anyhow::Result<Vec<u8>> {
+    let f = fernet::Fernet::new(key).ok_or_else(|| anyhow::anyhow!("invalid fernet key"))?;
+    f.decrypt(token).map_err(|e| anyhow::anyhow!("fernet decrypt: {e:?}"))
+}
+
+/// 取某通道明文密码(命门 #5:仅供容器注入,绝不接前端路由)。
+pub fn get_password(db: &Path, key: &str, cid: &str) -> anyhow::Result<String> {
+    let conn = Connection::open(db)?;
+    let enc: Option<String> = conn
+        .query_row("SELECT password_enc FROM channels WHERE id=?1", [cid], |r| r.get(0))
+        .optional()?;
+    match enc.filter(|s| !s.is_empty()) {
+        Some(tok) => Ok(String::from_utf8_lossy(&decrypt(key, &tok)?).into_owned()),
+        None => Ok(String::new()),
+    }
 }
 
 pub(crate) fn table_columns(conn: &Connection, table: &str) -> anyhow::Result<HashSet<String>> {
@@ -113,5 +150,48 @@ mod tests {
             .unwrap();
         assert_eq!(kind, "domain");
         assert_eq!(pat, "example.com");
+    }
+
+    #[test]
+    fn decrypts_python_fernet_fixture_zero_migration() {
+        let key = include_str!("../tests/fixtures/fernet_key.txt").trim();
+        let token = include_str!("../tests/fixtures/fernet_token.txt").trim();
+        let plaintext = decrypt(key, token).unwrap();
+        assert_eq!(plaintext, b"s3cr3t-password");
+    }
+
+    #[test]
+    fn master_key_created_0600_and_stable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let k1 = master_key(dir.path()).unwrap();
+        let kf = dir.path().join("master.key");
+        let mode = std::fs::metadata(&kf).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "master.key must be 0600 (命门 #5)");
+        let k2 = master_key(dir.path()).unwrap();
+        assert_eq!(k1, k2);
+        assert!(fernet::Fernet::new(&k1).is_some());
+    }
+
+    #[test]
+    fn get_password_roundtrips_and_empty_is_blank() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        let f = fernet::Fernet::new(&key).unwrap();
+        let enc = f.encrypt(b"hunter2");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO channels(id,name,password_enc) VALUES('c1','n',?1)",
+            [&enc],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO channels(id,name,password_enc) VALUES('c2','n','')",
+            [],
+        ).unwrap();
+        drop(conn);
+        assert_eq!(get_password(&db, &key, "c1").unwrap(), "hunter2");
+        assert_eq!(get_password(&db, &key, "c2").unwrap(), "");
     }
 }
