@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use bollard::Docker;
-use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions};
+use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use futures_util::StreamExt;
@@ -118,6 +118,26 @@ pub async fn exec_inject_stdin(docker: &Docker, name: &str, cmd: Vec<&str>, data
         StartExecResults::Detached => return Err(anyhow!("exec detached unexpectedly")),
     }
     Ok(out)
+}
+
+/// 把单个文件以 in-memory tar 形式落进容器的 dst_dir(对应今天的 put_file/put_archive)。
+pub async fn put_file(docker: &Docker, name: &str, dst_dir: &str, filename: &str, data: &[u8]) -> Result<()> {
+    // 1) 内存打 tar
+    let mut ar = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(data.len() as u64);
+    header.set_mode(0o600);
+    header.set_cksum();
+    ar.append_data(&mut header, filename, data)?;
+    let tar_bytes = ar.into_inner()?; // Vec<u8>
+
+    // 2) 上传到容器(Docker 端点 PUT /containers/{id}/archive)
+    let opts = UploadToContainerOptions { path: dst_dir, ..Default::default() };
+    docker
+        .upload_to_container(name, Some(opts), bytes::Bytes::from(tar_bytes))
+        .await
+        .map_err(|e| anyhow!("upload_to_container {name}:{dst_dir}: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
