@@ -1,4 +1,36 @@
 use anyhow::{anyhow, Result};
+use bollard::Docker;
+use bollard::image::CreateImageOptions;
+use futures_util::StreamExt;
+
+/// 解析 VM 的 docker.sock 路径:优先 DOCKER_HOST(去掉 unix:// 前缀),
+/// 否则回退 colima 默认 profile 的 sock。
+pub fn spike_socket() -> String {
+    if let Ok(h) = std::env::var("DOCKER_HOST") {
+        return h.trim_start_matches("unix://").to_string();
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/.colima/default/docker.sock")
+}
+
+/// 连接 VM 内 Docker Engine。等价于今天的 docker.from_env(),只是 socket 路径不同。
+pub async fn connect() -> Result<Docker> {
+    let sock = spike_socket();
+    let docker = Docker::connect_with_socket(&sock, 120, bollard::API_DEFAULT_VERSION)
+        .map_err(|e| anyhow!("connect {sock}: {e}"))?;
+    docker.ping().await.map_err(|e| anyhow!("ping {sock}: {e}"))?;
+    Ok(docker)
+}
+
+/// 确保镜像在 VM 内存在(集成测试用 alpine 这种小镜像)。
+pub async fn ensure_image(docker: &Docker, image: &str) -> Result<()> {
+    let opts = CreateImageOptions { from_image: image, ..Default::default() };
+    let mut stream = docker.create_image(Some(opts), None, None);
+    while let Some(item) = stream.next().await {
+        item.map_err(|e| anyhow!("pull {image}: {e}"))?;
+    }
+    Ok(())
+}
 
 /// 用与 Python cryptography.Fernet 相同的 key 解密其密文。
 /// 用 decrypt()(不带 TTL),保证旧 token 不被时间拒绝。
