@@ -97,6 +97,145 @@ pub(crate) fn table_columns(conn: &Connection, table: &str) -> anyhow::Result<Ha
     Ok(cols)
 }
 
+use serde::Serialize;
+use serde_json::{json, Value};
+
+/// 前端可见的通道(命门 #5:结构体里压根没有 password_enc 字段)。
+#[derive(Serialize, Clone, Debug)]
+pub struct ChannelPublic {
+    pub id: String,
+    pub name: String,
+    pub vpn_type: String,
+    pub server: String,
+    pub ec_ver: Option<String>,
+    pub login_method: String,
+    pub username: String,
+    pub vnc_password: Option<String>,
+    pub mac: Option<String>,
+    pub novnc_port: Option<i64>,
+    pub probe_url: String,
+    pub status: String,
+    pub container_id: Option<String>,
+    pub latency_ms: Option<i64>,
+    pub config: Value,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct Rule {
+    pub id: i64,
+    pub channel_id: String,
+    pub kind: String,
+    pub pattern: String,
+    pub enabled: i64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct Mirror {
+    pub id: i64,
+    pub host: String,
+    pub priority: i64,
+    pub enabled: i64,
+}
+
+/// 对照 _public_config:解析 config_json,丢掉 _secret 列出的字段,返回非 secret 明文 map。
+fn public_config(raw: Option<String>) -> Value {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else { return json!({}); };
+    let Ok(obj) = serde_json::from_str::<Value>(&raw) else { return json!({}); };
+    let secret: HashSet<String> = obj
+        .get("_secret")
+        .and_then(|s| s.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let mut out = serde_json::Map::new();
+    if let Some(fields) = obj.get("_fields").and_then(|f| f.as_object()) {
+        for (k, v) in fields {
+            if !secret.contains(k) {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+const CH_COLS: &str =
+    "id,name,vpn_type,server,ec_ver,login_method,username,vnc_password,mac,novnc_port,probe_url,status,container_id,latency_ms,config_json";
+
+fn map_channel(row: &rusqlite::Row) -> rusqlite::Result<ChannelPublic> {
+    let config_json: Option<String> = row.get(14)?;
+    Ok(ChannelPublic {
+        id: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+        name: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        vpn_type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        server: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        ec_ver: row.get(4)?,
+        login_method: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        username: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        vnc_password: row.get(7)?,
+        mac: row.get(8)?,
+        novnc_port: row.get(9)?,
+        probe_url: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+        status: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+        container_id: row.get(12)?,
+        latency_ms: row.get(13)?,
+        config: public_config(config_json),
+    })
+}
+
+pub fn list_channels(db: &Path) -> anyhow::Result<Vec<ChannelPublic>> {
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare(&format!("SELECT {CH_COLS} FROM channels"))?;
+    let rows = stmt.query_map([], map_channel)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn get_channel(db: &Path, cid: &str) -> anyhow::Result<Option<ChannelPublic>> {
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare(&format!("SELECT {CH_COLS} FROM channels WHERE id=?1"))?;
+    let mut rows = stmt.query_map([cid], map_channel)?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
+}
+
+fn map_rule(row: &rusqlite::Row) -> rusqlite::Result<Rule> {
+    Ok(Rule {
+        id: row.get(0)?,
+        channel_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        kind: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        pattern: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        enabled: row.get(4)?,
+    })
+}
+
+pub fn list_rules(db: &Path, cid: &str) -> anyhow::Result<Vec<Rule>> {
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE channel_id=?1")?;
+    let rows = stmt.query_map([cid], map_rule)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules")?;
+    let rows = stmt.query_map([], map_rule)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn list_mirrors(db: &Path) -> anyhow::Result<Vec<Mirror>> {
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare("SELECT id,host,priority,enabled FROM mirrors ORDER BY priority")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Mirror {
+            id: r.get(0)?,
+            host: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            priority: r.get(2)?,
+            enabled: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +332,52 @@ mod tests {
         drop(conn);
         assert_eq!(get_password(&db, &key, "c1").unwrap(), "hunter2");
         assert_eq!(get_password(&db, &key, "c2").unwrap(), "");
+    }
+
+    #[test]
+    fn list_channels_strips_password_and_secret_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let cfg = r#"{"_fields":{"server":"vpn.example.com","password":"ZW5j"},"_secret":["password"]}"#;
+        conn.execute(
+            "INSERT INTO channels(id,name,vpn_type,server,login_method,username,password_enc,status,config_json) \
+             VALUES('abc','客户A','easyconnect','vpn.example.com','interactive','alice','SOME_CIPHER','running',?1)",
+            [cfg],
+        ).unwrap();
+        drop(conn);
+
+        let chans = list_channels(&db).unwrap();
+        assert_eq!(chans.len(), 1);
+        let v = serde_json::to_value(&chans[0]).unwrap();
+        assert!(v.get("password_enc").is_none());
+        let config = v.get("config").unwrap();
+        assert_eq!(config.get("server").unwrap(), "vpn.example.com");
+        assert!(config.get("password").is_none(), "secret config field must be stripped");
+        assert_eq!(v.get("username").unwrap(), "alice");
+        assert_eq!(v.get("status").unwrap(), "running");
+    }
+
+    #[test]
+    fn rules_split_and_mirrors_ordered() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('c1','domain','a.com',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('c1','ip','10.0.0.0/8',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('c2','domain','b.com',0)", []).unwrap();
+        drop(conn);
+
+        let r1 = list_rules(&db, "c1").unwrap();
+        assert_eq!(r1.len(), 2);
+        let all = all_rules(&db).unwrap();
+        assert_eq!(all.len(), 3);
+
+        let mirrors = list_mirrors(&db).unwrap();
+        assert_eq!(mirrors.len(), 2);
+        assert_eq!(mirrors[0].host, "docker.1ms.run");
+        assert_eq!(mirrors[0].priority, 1);
     }
 }
