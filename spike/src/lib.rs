@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use bollard::Docker;
-use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions};
+use bollard::container::{Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions, WaitContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
+use bollard::network::CreateNetworkOptions;
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
@@ -138,6 +139,69 @@ pub async fn put_file(docker: &Docker, name: &str, dst_dir: &str, filename: &str
         .await
         .map_err(|e| anyhow!("upload_to_container {name}:{dst_dir}: {e}"))?;
     Ok(())
+}
+
+pub async fn ensure_network(docker: &Docker, name: &str) -> Result<()> {
+    docker
+        .create_network(CreateNetworkOptions { name, ..Default::default() })
+        .await
+        .map_err(|e| anyhow!("create network {name}: {e}"))?;
+    Ok(())
+}
+
+pub async fn rm_network(docker: &Docker, name: &str) -> Result<()> {
+    docker.remove_network(name).await.map_err(|e| anyhow!("rm network {name}: {e}"))?;
+    Ok(())
+}
+
+/// 起常驻容器并接入指定网络 + 设 hostname=name(对应 adapters 的 hostname+network)。
+pub async fn run_detached_on_net(docker: &Docker, name: &str, image: &str, net: &str, cmd: Vec<&str>) -> Result<()> {
+    let cfg = Config {
+        image: Some(image.to_string()),
+        hostname: Some(name.to_string()),
+        cmd: Some(cmd.into_iter().map(String::from).collect()),
+        host_config: Some(bollard::models::HostConfig {
+            network_mode: Some(net.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    docker.create_container(Some(CreateContainerOptions { name, platform: None }), cfg).await
+        .map_err(|e| anyhow!("create {name}: {e}"))?;
+    docker.start_container(name, None::<StartContainerOptions<String>>).await
+        .map_err(|e| anyhow!("start {name}: {e}"))?;
+    Ok(())
+}
+
+/// 在指定网络上跑一次性容器,等它退出,收集日志,然后手动删容器。
+/// 不用 auto_remove:Docker 在容器退出后立即删除,随后 logs 调用会 409("dead or marked for removal")。
+pub async fn run_capture_on_net(docker: &Docker, name: &str, image: &str, net: &str, cmd: Vec<&str>) -> Result<String> {
+    let cfg = Config {
+        image: Some(image.to_string()),
+        cmd: Some(cmd.into_iter().map(String::from).collect()),
+        host_config: Some(bollard::models::HostConfig {
+            network_mode: Some(net.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    docker.create_container(Some(CreateContainerOptions { name, platform: None }), cfg).await
+        .map_err(|e| anyhow!("create {name}: {e}"))?;
+    docker.start_container(name, None::<StartContainerOptions<String>>).await
+        .map_err(|e| anyhow!("start {name}: {e}"))?;
+
+    let mut wait = docker.wait_container(name, None::<WaitContainerOptions<String>>);
+    while let Some(item) = wait.next().await { let _ = item; }
+
+    let mut logs = docker.logs(name, Some(LogsOptions::<String> {
+        stdout: true, stderr: true, ..Default::default()
+    }));
+    let mut out = String::new();
+    while let Some(item) = logs.next().await {
+        out.push_str(&String::from_utf8_lossy(item?.into_bytes().as_ref()));
+    }
+    rm_force(docker, name).await.ok();
+    Ok(out)
 }
 
 #[cfg(test)]
