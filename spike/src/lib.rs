@@ -1,7 +1,10 @@
 use anyhow::{anyhow, Result};
 use bollard::Docker;
+use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions};
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use futures_util::StreamExt;
+use tokio::io::AsyncWriteExt;
 
 /// 解析 VM 的 docker.sock 路径:优先 DOCKER_HOST(去掉 unix:// 前缀),
 /// 否则回退 colima 默认 profile 的 sock。
@@ -42,6 +45,79 @@ pub fn decrypt_fernet(key: &str, token: &str) -> Result<Vec<u8>> {
 /// 占位:证明工程能编译能测。后续任务会替换/扩充本文件。
 pub fn spike_ready() -> bool {
     true
+}
+
+/// 起一个常驻容器(detached,auto_remove=false 便于多次 exec)。
+pub async fn run_detached(docker: &Docker, name: &str, image: &str, cmd: Vec<&str>) -> Result<()> {
+    let cfg = Config {
+        image: Some(image.to_string()),
+        cmd: Some(cmd.into_iter().map(String::from).collect()),
+        ..Default::default()
+    };
+    docker
+        .create_container(Some(CreateContainerOptions { name, platform: None }), cfg)
+        .await
+        .map_err(|e| anyhow!("create {name}: {e}"))?;
+    docker
+        .start_container(name, None::<StartContainerOptions<String>>)
+        .await
+        .map_err(|e| anyhow!("start {name}: {e}"))?;
+    Ok(())
+}
+
+pub async fn rm_force(docker: &Docker, name: &str) -> Result<()> {
+    docker
+        .remove_container(name, Some(RemoveContainerOptions { force: true, ..Default::default() }))
+        .await
+        .map_err(|e| anyhow!("rm {name}: {e}"))?;
+    Ok(())
+}
+
+/// 跑一次 exec 并收集 stdout/stderr 文本。
+pub async fn exec_capture(docker: &Docker, name: &str, cmd: Vec<&str>) -> Result<String> {
+    let exec = docker
+        .create_exec(name, CreateExecOptions {
+            cmd: Some(cmd.into_iter().map(String::from).collect()),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut out = String::new();
+    if let StartExecResults::Attached { mut output, .. } =
+        docker.start_exec(&exec.id, Some(StartExecOptions { detach: false, ..Default::default() })).await?
+    {
+        while let Some(item) = output.next().await {
+            out.push_str(&String::from_utf8_lossy(item?.into_bytes().as_ref()));
+        }
+    }
+    Ok(out)
+}
+
+/// 核心:exec 时 attach_stdin,把 data 写进容器 stdin 并 shutdown 发 EOF。
+/// 对应今天 Python 的 exec_run(stdin=True, socket=True)+sendall+shutdown(SHUT_WR)。
+pub async fn exec_inject_stdin(docker: &Docker, name: &str, cmd: Vec<&str>, data: &[u8]) -> Result<String> {
+    let exec = docker
+        .create_exec(name, CreateExecOptions {
+            cmd: Some(cmd.into_iter().map(String::from).collect()),
+            attach_stdin: Some(true),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            ..Default::default()
+        })
+        .await?;
+    let mut out = String::new();
+    match docker.start_exec(&exec.id, Some(StartExecOptions { detach: false, ..Default::default() })).await? {
+        StartExecResults::Attached { mut output, mut input } => {
+            input.write_all(data).await.map_err(|e| anyhow!("write stdin: {e}"))?;
+            input.shutdown().await.map_err(|e| anyhow!("shutdown stdin (EOF): {e}"))?; // EOF
+            while let Some(item) = output.next().await {
+                out.push_str(&String::from_utf8_lossy(item?.into_bytes().as_ref()));
+            }
+        }
+        StartExecResults::Detached => return Err(anyhow!("exec detached unexpectedly")),
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
