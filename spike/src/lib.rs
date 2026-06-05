@@ -143,7 +143,7 @@ pub async fn put_file(docker: &Docker, name: &str, dst_dir: &str, filename: &str
     Ok(())
 }
 
-pub async fn ensure_network(docker: &Docker, name: &str) -> Result<()> {
+pub async fn create_network_fresh(docker: &Docker, name: &str) -> Result<()> {
     docker
         .create_network(CreateNetworkOptions { name, ..Default::default() })
         .await
@@ -211,6 +211,7 @@ pub async fn run_capture_on_net(docker: &Docker, name: &str, image: &str, net: &
 pub async fn run_capture_privileged(docker: &Docker, name: &str, image: &str, cmd: Vec<&str>) -> Result<String> {
     let mut sysctls = HashMap::new();
     sysctls.insert("net.ipv4.ip_forward".to_string(), "1".to_string());
+    sysctls.insert("net.ipv4.conf.default.route_localnet".to_string(), "1".to_string());
 
     let cfg = Config {
         image: Some(image.to_string()),

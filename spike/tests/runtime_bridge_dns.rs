@@ -1,4 +1,4 @@
-use spike::{connect, ensure_image, ensure_network, rm_force, rm_network,
+use spike::{connect, ensure_image, create_network_fresh, rm_force, rm_network,
             run_detached_on_net, run_capture_on_net};
 
 #[tokio::test]
@@ -11,7 +11,7 @@ async fn container_resolves_peer_by_name_on_user_bridge() {
     let server = "vpn-test"; // 模拟 vpn-{id}
     rm_force(&docker, server).await.ok();
     rm_network(&docker, net).await.ok();
-    ensure_network(&docker, net).await.unwrap();
+    create_network_fresh(&docker, net).await.unwrap();
 
     // server:在 1080 上回一行 "ok"(busybox nc 常驻)。
     run_detached_on_net(
