@@ -1,0 +1,15 @@
+[package]
+name = "spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+bollard = "0.17"
+fernet = "0.2"
+anyhow = "1"
+bytes = "1"
+tar = "0.4"
+futures-util = "0.3"
+
+[dev-dependencies]
