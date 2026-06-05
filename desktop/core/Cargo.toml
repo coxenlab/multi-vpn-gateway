@@ -23,4 +23,5 @@ chrono = "0.4"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"

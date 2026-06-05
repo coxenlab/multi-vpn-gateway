@@ -56,6 +56,7 @@ pub fn build_channels_response(
             } else {
                 ch.status.clone()
             };
+            // safe: ChannelPublic always serializes to a JSON object
             let mut v = serde_json::to_value(&ch).unwrap();
             let o = v.as_object_mut().unwrap();
             o.insert("status".into(), json!(status));
@@ -75,6 +76,7 @@ pub fn split_rules(rules: Vec<store::Rule>) -> (Vec<Value>, Vec<Value>) {
     let mut domains = vec![];
     let mut ips = vec![];
     for r in rules {
+        // safe: Rule always serializes to a JSON object
         let v = serde_json::to_value(&r).unwrap();
         match r.kind.as_str() {
             "ip" => ips.push(v),
@@ -103,18 +105,20 @@ mod tests {
 
     #[test]
     fn down_override_when_running_but_no_uptime() {
-        let chans = vec![ch("a", "running"), ch("b", "logged_in"), ch("c", "stopped")];
+        let chans = vec![ch("a", "running"), ch("b", "logged_in"), ch("c", "stopped"), ch("d", "creating")];
         let rules: HashMap<String, (Vec<serde_json::Value>, Vec<serde_json::Value>)> = HashMap::new();
         let mut up: HashMap<String, Option<String>> = HashMap::new();
         up.insert("a".into(), None);
         up.insert("b".into(), Some("3分钟".into()));
         up.insert("c".into(), None);
+        up.insert("d".into(), None);
 
         let out = build_channels_response(chans, &rules, &up);
         assert_eq!(out[0]["status"], "down");
         assert_eq!(out[1]["status"], "logged_in");
         assert_eq!(out[1]["uptime"], "3分钟");
         assert_eq!(out[2]["status"], "stopped");
+        assert_eq!(out[3]["status"], "creating");  // mid-creation with no uptime does NOT flip to down
         assert_eq!(out[0]["socks_proxy"], "ch-a");
         assert_eq!(out[0]["socks_endpoint"], "vpn-a:1080");
         assert_eq!(out[0]["volume_name"], "vpndata-a");
