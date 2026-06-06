@@ -340,6 +340,117 @@ pub fn set_config_field(
     Ok(())
 }
 
+/// 对照 _enc_config:secret 字段 Fernet 密文,非 secret 走 clean_field;空 config → None;_secret sorted。
+fn enc_config(
+    f: &Fernet,
+    config: &serde_json::Map<String, Value>,
+    secret_keys: &[String],
+) -> Option<String> {
+    if config.is_empty() {
+        return None;
+    }
+    let secret: HashSet<&str> = secret_keys.iter().map(|s| s.as_str()).collect();
+    let mut fields = serde_json::Map::new();
+    for (k, v) in config {
+        let s = value_to_string(v);
+        let stored = if secret.contains(k.as_str()) {
+            f.encrypt(s.as_bytes())
+        } else {
+            clean_field(k, &s)
+        };
+        fields.insert(k.clone(), Value::String(stored));
+    }
+    let secret_sorted: std::collections::BTreeSet<String> = secret_keys.iter().cloned().collect();
+    let secret_vec: Vec<String> = secret_sorted.into_iter().collect();
+    Some(json!({ "_fields": fields, "_secret": secret_vec }).to_string())
+}
+
+/// add_channel 的输入(密码为明文,落库时 Fernet 加密)。
+pub struct NewChannel {
+    pub id: String,
+    pub name: String,
+    pub vpn_type: String,
+    pub server: String,
+    pub ec_ver: String,
+    pub login_method: String,
+    pub username: String,
+    pub password: String,
+    pub vnc_password: String,
+    pub mac: String,
+    pub probe_url: String,
+    pub status: String,
+}
+
+/// 对照 add_channel:密码 Fernet(空→'');config 经 enc_config;name/server/username/probe_url 清洗。
+pub fn add_channel(
+    db: &Path,
+    key: &str,
+    ch: &NewChannel,
+    config: &serde_json::Map<String, Value>,
+    secret_keys: &[String],
+) -> anyhow::Result<()> {
+    let f = fernet_for(key)?;
+    let pw_enc = if ch.password.is_empty() { String::new() } else { f.encrypt(ch.password.as_bytes()) };
+    let cfg_json = enc_config(&f, config, secret_keys);
+    let conn = Connection::open(db)?;
+    conn.execute(
+        "INSERT INTO channels(id,name,vpn_type,server,ec_ver,login_method,username,password_enc,vnc_password,mac,probe_url,status,config_json) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        rusqlite::params![
+            ch.id,
+            clean_field("name", &ch.name),
+            ch.vpn_type,
+            clean_field("server", &ch.server),
+            ch.ec_ver,
+            ch.login_method,
+            clean_field("username", &ch.username),
+            pw_enc,
+            ch.vnc_password,
+            ch.mac,
+            clean_field("probe_url", &ch.probe_url),
+            ch.status,
+            cfg_json,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 对照 update_channel:仅改 fields 中出现的列(name/server/ec_ver/username/probe_url 清洗;password 加密);
+/// 再把 server/username/password 镜像进 config_json(供 oss_connect 读)。
+pub fn update_channel(
+    db: &Path,
+    key: &str,
+    cid: &str,
+    fields: &serde_json::Map<String, Value>,
+    secret_keys: &[String],
+) -> anyhow::Result<()> {
+    let f = fernet_for(key)?;
+    {
+        let conn = Connection::open(db)?;
+        for col in ["name", "server", "ec_ver", "username", "probe_url"] {
+            if let Some(v) = fields.get(col) {
+                let s = clean_field(col, &value_to_string(v));
+                conn.execute(&format!("UPDATE channels SET {col}=?1 WHERE id=?2"), rusqlite::params![s, cid])?;
+            }
+        }
+        if let Some(v) = fields.get("password") {
+            let pw = value_to_string(v);
+            let enc = if pw.is_empty() { String::new() } else { f.encrypt(pw.as_bytes()) };
+            conn.execute("UPDATE channels SET password_enc=?1 WHERE id=?2", rusqlite::params![enc, cid])?;
+        }
+    }
+    let secret: HashSet<&str> = secret_keys.iter().map(|s| s.as_str()).collect();
+    for col in ["server", "username", "password"] {
+        if let Some(v) = fields.get(col) {
+            let is_secret = secret.contains(col);
+            let raw = value_to_string(v);
+            let value = if is_secret { raw } else { clean_field(col, &raw) };
+            set_config_field(db, key, cid, col, &value, is_secret)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn list_mirrors(db: &Path) -> anyhow::Result<Vec<Mirror>> {
     let conn = Connection::open(db)?;
     let mut stmt = conn.prepare("SELECT id,host,priority,enabled FROM mirrors ORDER BY priority")?;
@@ -546,5 +657,76 @@ mod tests {
         conn.execute("INSERT INTO channels(id,name) VALUES('c1','n')", []).unwrap();
         drop(conn);
         assert!(get_config(&db, &key, "c1").unwrap().is_empty());
+    }
+
+    fn new_ch(id: &str) -> NewChannel {
+        NewChannel {
+            id: id.into(), name: "客户A".into(), vpn_type: "easyconnect".into(),
+            server: " vpn.example.com ".into(), ec_ver: "7.6.3".into(),
+            login_method: "interactive".into(), username: " alice ".into(),
+            password: "p@ss w0rd".into(), vnc_password: "vnc12345".into(),
+            mac: "02:11:22:33:44:55".into(), probe_url: "https://intra/".into(),
+            status: "creating".into(),
+        }
+    }
+
+    #[test]
+    fn add_channel_encrypts_password_and_strips_in_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("server".into(), serde_json::json!("vpn.example.com"));
+        cfg.insert("password".into(), serde_json::json!("p@ss w0rd"));
+        add_channel(&db, &key, &new_ch("c1"), &cfg, &["password".to_string()]).unwrap();
+
+        assert_eq!(get_password(&db, &key, "c1").unwrap(), "p@ss w0rd");
+        let ch = get_channel(&db, "c1").unwrap().unwrap();
+        assert_eq!(ch.username, "alice");
+        assert_eq!(ch.server, "vpn.example.com");
+        let v = serde_json::to_value(&ch).unwrap();
+        assert!(v.get("password_enc").is_none());
+        assert!(v["config"].get("password").is_none());
+        assert_eq!(v["config"]["server"], "vpn.example.com");
+        assert_eq!(ch.status, "creating");
+    }
+
+    #[test]
+    fn add_channel_empty_password_is_blank_not_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        let mut ch = new_ch("c2"); ch.password = "".into();
+        add_channel(&db, &key, &ch, &serde_json::Map::new(), &[]).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let pw: String = conn.query_row("SELECT password_enc FROM channels WHERE id='c2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(pw, "");
+        assert_eq!(get_password(&db, &key, "c2").unwrap(), "");
+    }
+
+    #[test]
+    fn update_channel_changes_present_fields_and_mirrors_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        add_channel(&db, &key, &new_ch("c3"), &serde_json::Map::new(), &[]).unwrap();
+
+        let mut fields = serde_json::Map::new();
+        fields.insert("username".into(), serde_json::json!(" bob "));
+        fields.insert("password".into(), serde_json::json!("newpw"));
+        update_channel(&db, &key, "c3", &fields, &["password".to_string()]).unwrap();
+
+        let ch = get_channel(&db, "c3").unwrap().unwrap();
+        assert_eq!(ch.username, "bob");
+        assert_eq!(get_password(&db, &key, "c3").unwrap(), "newpw");
+        let cfg = get_config(&db, &key, "c3").unwrap();
+        assert_eq!(cfg["password"], "newpw");
+        assert_eq!(cfg["username"], "bob");
+        let v = serde_json::to_value(&ch).unwrap();
+        assert!(v["config"].get("password").is_none());
     }
 }
