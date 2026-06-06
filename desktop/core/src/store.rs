@@ -522,6 +522,35 @@ pub fn del_channel(db: &Path, cid: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 对照 add_mirror:priority=MAX+1,enabled=1,返回 lastrowid。host UNIQUE 冲突 → Err。
+pub fn add_mirror(db: &Path, host: &str) -> anyhow::Result<i64> {
+    let conn = Connection::open(db)?;
+    let nextp: i64 = conn.query_row("SELECT COALESCE(MAX(priority),0)+1 FROM mirrors", [], |r| r.get(0))?;
+    conn.execute(
+        "INSERT INTO mirrors(host,priority,enabled) VALUES(?1,?2,1)",
+        rusqlite::params![host, nextp],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn del_mirror(db: &Path, mid: i64) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute("DELETE FROM mirrors WHERE id=?1", [mid])?;
+    Ok(())
+}
+
+/// 对照 set_mirror:priority/enabled 可选,None=不动;两者都 None 则 no-op。
+pub fn set_mirror(db: &Path, mid: i64, priority: Option<i64>, enabled: Option<bool>) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    if let Some(p) = priority {
+        conn.execute("UPDATE mirrors SET priority=?1 WHERE id=?2", rusqlite::params![p, mid])?;
+    }
+    if let Some(e) = enabled {
+        conn.execute("UPDATE mirrors SET enabled=?1 WHERE id=?2", rusqlite::params![if e {1} else {0}, mid])?;
+    }
+    Ok(())
+}
+
 pub fn list_mirrors(db: &Path) -> anyhow::Result<Vec<Mirror>> {
     let conn = Connection::open(db)?;
     let mut stmt = conn.prepare("SELECT id,host,priority,enabled FROM mirrors ORDER BY priority")?;
@@ -821,6 +850,35 @@ mod tests {
 
         del_rule(&db, rid).unwrap();
         assert!(get_rule(&db, rid).unwrap().is_none());
+    }
+
+    #[test]
+    fn mirror_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap(); // seeds 2 mirrors (priority 1,2)
+
+        let mid = add_mirror(&db, "my.mirror.io").unwrap();
+        assert!(mid > 0);
+        let mirrors = list_mirrors(&db).unwrap();
+        let added = mirrors.iter().find(|m| m.host == "my.mirror.io").unwrap();
+        assert_eq!(added.priority, 3); // MAX(2)+1
+        assert_eq!(added.enabled, 1);
+
+        assert!(add_mirror(&db, "my.mirror.io").is_err()); // host UNIQUE
+
+        set_mirror(&db, mid, None, Some(false)).unwrap();
+        let m = list_mirrors(&db).unwrap().into_iter().find(|m| m.id == mid).unwrap();
+        assert_eq!(m.enabled, 0);
+        assert_eq!(m.priority, 3); // unchanged
+
+        set_mirror(&db, mid, Some(10), None).unwrap();
+        let m = list_mirrors(&db).unwrap().into_iter().find(|m| m.id == mid).unwrap();
+        assert_eq!(m.priority, 10);
+        assert_eq!(m.enabled, 0); // unchanged
+
+        del_mirror(&db, mid).unwrap();
+        assert!(list_mirrors(&db).unwrap().iter().all(|m| m.id != mid));
     }
 
     #[test]
