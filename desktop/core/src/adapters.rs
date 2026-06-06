@@ -107,7 +107,25 @@ fn build_hagb(id: &str, mac: &str, ec_ver: Option<&str>, spec: &AdapterSpec, vnc
     ContainerPlan { name: format!("vpn-{id}"), config }
 }
 
-/// 按 runtime 分派(对照 build_run_kwargs)。oss/byo 在后续 task 接上。
+/// 对照 _build_oss:无 noVNC/无 host 端口(命门 #4);env 只 VPN_PROTOCOL(命门 #5);卷 /config。
+fn build_oss(id: &str, spec: &AdapterSpec, vpn_net: &str) -> Result<ContainerPlan> {
+    let protocol = spec
+        .protocol
+        .clone()
+        .ok_or_else(|| anyhow!("oss adapter missing protocol"))?;
+    let mut host = base_host_config(spec, vpn_net);
+    host.binds = Some(vec![format!("vpndata-{id}:/config")]);
+    let config = Config {
+        image: Some(spec.image.clone()),
+        hostname: Some(id.to_string()),
+        env: Some(vec![format!("VPN_PROTOCOL={protocol}")]),
+        host_config: Some(host),
+        ..Default::default()
+    };
+    Ok(ContainerPlan { name: format!("vpn-{id}"), config })
+}
+
+/// 按 runtime 分派(对照 build_run_kwargs)。byo 在后续 task 接上。
 pub fn build_run_kwargs(
     id: &str,
     mac: &str,
@@ -118,6 +136,7 @@ pub fn build_run_kwargs(
 ) -> Result<ContainerPlan> {
     match spec.runtime.as_str() {
         "hagb" => Ok(build_hagb(id, mac, ec_ver, spec, vnc_pwd, vpn_net)),
+        "oss" => build_oss(id, spec, vpn_net),
         other => Err(anyhow!("unsupported runtime: {other}")),
     }
 }
@@ -163,5 +182,34 @@ mod tests {
         assert_eq!(h.sysctls.as_ref().unwrap().get("net.ipv4.conf.default.route_localnet").map(String::as_str), Some("1"));
         let env = p.config.env.as_ref().unwrap();
         assert!(env.iter().all(|e| !e.starts_with("EC_VER=")));
+    }
+
+    #[test]
+    fn oss_anyconnect_no_ports_protocol_env() {
+        let spec = registry::get("anyconnect").unwrap();
+        let p = build_run_kwargs("o1", "", None, &spec, "", "vpnnet").unwrap();
+        assert_eq!(p.config.image.as_deref(), Some("vpnmgr/oss-vpn:latest"));
+        let h = hc(&p);
+        // 命门 #4:oss 无任何 host 端口
+        assert!(h.port_bindings.is_none());
+        assert!(p.config.exposed_ports.is_none());
+        // 卷 /config(非 /root)
+        assert_eq!(h.binds, Some(vec!["vpndata-o1:/config".to_string()]));
+        // 命门 #5:env 只有 VPN_PROTOCOL(无凭据)
+        assert_eq!(p.config.env, Some(vec!["VPN_PROTOCOL=anyconnect".to_string()]));
+        // 命门 #6:ip_forward
+        assert_eq!(h.sysctls.as_ref().unwrap().get("net.ipv4.ip_forward").map(String::as_str), Some("1"));
+        assert!(h.device_cgroup_rules.is_none());
+    }
+
+    #[test]
+    fn oss_openfortivpn_cgroup_and_mknod() {
+        let spec = registry::get("openfortivpn").unwrap();
+        let p = build_run_kwargs("o2", "", None, &spec, "", "net").unwrap();
+        let h = hc(&p);
+        assert_eq!(p.config.env, Some(vec!["VPN_PROTOCOL=openfortivpn".to_string()]));
+        // 命门 #6:PPP 字符设备放行 + MKNOD
+        assert_eq!(h.device_cgroup_rules, Some(vec!["c 108:* rwm".to_string()]));
+        assert!(h.cap_add.as_ref().unwrap().contains(&"MKNOD".to_string()));
     }
 }
