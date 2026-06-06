@@ -125,7 +125,28 @@ fn build_oss(id: &str, spec: &AdapterSpec, vpn_net: &str) -> Result<ContainerPla
     Ok(ContainerPlan { name: format!("vpn-{id}"), config })
 }
 
-/// 按 runtime 分派(对照 build_run_kwargs)。byo 在后续 task 接上。
+/// 对照 _build_byo:镜像字面量;env 模板化(USE_NOVNC/PASSWORD);noVNC 8080 绑 127.0.0.1;卷 /root;无 EC_VER 特例。
+fn build_byo(id: &str, mac: &str, spec: &AdapterSpec, vnc_pwd: &str, vpn_net: &str) -> ContainerPlan {
+    let env: indexmap::IndexMap<String, String> = spec
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), apply_ctx(v, mac, vnc_pwd, DEFAULT_VERSION)))
+        .collect();
+    let mut host = base_host_config(spec, vpn_net);
+    host.port_bindings = Some(novnc_port_bindings());
+    host.binds = Some(vec![format!("vpndata-{id}:/root")]);
+    let config = Config {
+        image: Some(spec.image.clone()),
+        hostname: Some(id.to_string()),
+        env: Some(env_vec(&env)),
+        exposed_ports: Some(exposed_8080()),
+        host_config: Some(host),
+        ..Default::default()
+    };
+    ContainerPlan { name: format!("vpn-{id}"), config }
+}
+
+/// 按 runtime 分派(对照 build_run_kwargs)。
 pub fn build_run_kwargs(
     id: &str,
     mac: &str,
@@ -137,6 +158,7 @@ pub fn build_run_kwargs(
     match spec.runtime.as_str() {
         "hagb" => Ok(build_hagb(id, mac, ec_ver, spec, vnc_pwd, vpn_net)),
         "oss" => build_oss(id, spec, vpn_net),
+        "byo" => Ok(build_byo(id, mac, spec, vnc_pwd, vpn_net)),
         other => Err(anyhow!("unsupported runtime: {other}")),
     }
 }
@@ -211,5 +233,41 @@ mod tests {
         // 命门 #6:PPP 字符设备放行 + MKNOD
         assert_eq!(h.device_cgroup_rules, Some(vec!["c 108:* rwm".to_string()]));
         assert!(h.cap_add.as_ref().unwrap().contains(&"MKNOD".to_string()));
+    }
+
+    #[test]
+    fn byo_custom_shape() {
+        let spec = registry::get("custom").unwrap();
+        let p = build_run_kwargs("b1", "02:00:00:00:00:09", None, &spec, "vncsecret", "net").unwrap();
+        assert_eq!(p.config.image.as_deref(), Some("vpnmgr/byo-desktop:latest"));
+        let h = hc(&p);
+        // 命门 #4:byo 有 host noVNC 8080 → 127.0.0.1
+        let pb = h.port_bindings.as_ref().unwrap().get("8080/tcp").unwrap().as_ref().unwrap();
+        assert_eq!(pb[0].host_ip.as_deref(), Some("127.0.0.1"));
+        // 卷 /root
+        assert_eq!(h.binds, Some(vec!["vpndata-b1:/root".to_string()]));
+        // 命门 #6:NET_ADMIN + MKNOD
+        assert!(h.cap_add.as_ref().unwrap().contains(&"NET_ADMIN".to_string()));
+        assert!(h.cap_add.as_ref().unwrap().contains(&"MKNOD".to_string()));
+        // env:USE_NOVNC + PASSWORD(模板化),无凭据
+        let env = p.config.env.as_ref().unwrap();
+        assert!(env.contains(&"USE_NOVNC=1".to_string()));
+        assert!(env.contains(&"PASSWORD=vncsecret".to_string()));
+    }
+
+    #[test]
+    fn hagb_empty_ec_ver_omits_ec_ver_env() {
+        let spec = registry::get("easyconnect").unwrap();
+        let p = build_run_kwargs("e0", "", Some(""), &spec, "v", "net").unwrap();
+        assert_eq!(p.config.image.as_deref(), Some("hagb/docker-easyconnect:7.6.3"));
+        let env = p.config.env.as_ref().unwrap();
+        assert!(env.iter().all(|e| !e.starts_with("EC_VER=")), "empty ec_ver must omit EC_VER");
+    }
+
+    #[test]
+    fn unknown_runtime_errors() {
+        let mut spec = registry::get("easyconnect").unwrap();
+        spec.runtime = "weird".into();
+        assert!(build_run_kwargs("x", "", None, &spec, "v", "net").is_err());
     }
 }
