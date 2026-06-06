@@ -223,6 +223,41 @@ pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// 对照 add_rule:INSERT enabled=1,返回 lastrowid。
+pub fn add_rule(db: &Path, cid: &str, kind: &str, pattern: &str) -> anyhow::Result<i64> {
+    let conn = Connection::open(db)?;
+    conn.execute(
+        "INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES(?1,?2,?3,1)",
+        rusqlite::params![cid, kind, pattern],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_rule(db: &Path, rid: i64) -> anyhow::Result<Option<Rule>> {
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE id=?1")?;
+    let mut rows = stmt.query_map([rid], map_rule)?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
+}
+
+pub fn del_rule(db: &Path, rid: i64) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute("DELETE FROM rules WHERE id=?1", [rid])?;
+    Ok(())
+}
+
+pub fn set_rule_enabled(db: &Path, rid: i64, enabled: bool) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute(
+        "UPDATE rules SET enabled=?1 WHERE id=?2",
+        rusqlite::params![if enabled { 1 } else { 0 }, rid],
+    )?;
+    Ok(())
+}
+
 // ── config 字段级 Fernet 加解密 (命门 #5) ─────────────────────────────────────
 
 fn fernet_for(key: &str) -> anyhow::Result<Fernet> {
@@ -764,6 +799,28 @@ mod tests {
         assert_eq!(cfg["username"], "bob");
         let v = serde_json::to_value(&ch).unwrap();
         assert!(v["config"].get("password").is_none());
+    }
+
+    #[test]
+    fn rule_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+
+        let rid = add_rule(&db, "c1", "domain", "a.com").unwrap();
+        assert!(rid > 0);
+        let r = get_rule(&db, rid).unwrap().unwrap();
+        assert_eq!(r.kind, "domain");
+        assert_eq!(r.pattern, "a.com");
+        assert_eq!(r.enabled, 1);
+
+        set_rule_enabled(&db, rid, false).unwrap();
+        assert_eq!(get_rule(&db, rid).unwrap().unwrap().enabled, 0);
+        set_rule_enabled(&db, rid, true).unwrap();
+        assert_eq!(get_rule(&db, rid).unwrap().unwrap().enabled, 1);
+
+        del_rule(&db, rid).unwrap();
+        assert!(get_rule(&db, rid).unwrap().is_none());
     }
 
     #[test]
