@@ -4,6 +4,8 @@ pub mod docker;
 pub mod mihomo;
 pub mod server;
 pub mod routes;
+pub mod registry;
+pub mod adapters;
 
 use std::sync::Arc;
 
