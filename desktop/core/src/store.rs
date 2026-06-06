@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
+use fernet::Fernet;
 
 /// 对照 store.py::init —— 建表 + 补列 + 一次性迁移 + 种子,全部幂等。
 pub fn init(db: &Path) -> anyhow::Result<()> {
@@ -222,6 +223,123 @@ pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+// ── config 字段级 Fernet 加解密 (命门 #5) ─────────────────────────────────────
+
+fn fernet_for(key: &str) -> anyhow::Result<Fernet> {
+    Fernet::new(key).ok_or_else(|| anyhow::anyhow!("invalid fernet key"))
+}
+
+/// 把 JSON 值转成 Python str(v) 等价的字符串(config 值实际几乎都是字符串)。
+#[allow(dead_code)]
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// 对照 _clean_field:username/server 去全部空白;其余仅首尾 trim。密码绝不进此函数。
+pub fn clean_field(key: &str, val: &str) -> String {
+    if key == "username" || key == "server" {
+        val.split_whitespace().collect()
+    } else {
+        val.trim().to_string()
+    }
+}
+
+/// 对照 get_config_raw:返回通道的 config_json 原文(密文),空或 NULL 则空字符串。
+pub fn get_config_raw(db: &Path, cid: &str) -> anyhow::Result<String> {
+    let conn = Connection::open(db)?;
+    let raw: Option<String> = conn
+        .query_row("SELECT config_json FROM channels WHERE id=?1", [cid], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten();
+    Ok(raw.unwrap_or_default())
+}
+
+/// 命门 #5:完整解密的 config(secret 明文)——仅供容器注入,绝不接前端路由。
+pub fn get_config(
+    db: &Path,
+    key: &str,
+    cid: &str,
+) -> anyhow::Result<serde_json::Map<String, Value>> {
+    let raw = get_config_raw(db, cid)?;
+    if raw.is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    let obj: Value = serde_json::from_str(&raw)?;
+    let secret: HashSet<String> = obj
+        .get("_secret")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let f = fernet_for(key)?;
+    let mut out = serde_json::Map::new();
+    if let Some(fields) = obj.get("_fields").and_then(|v| v.as_object()) {
+        for (k, v) in fields {
+            if secret.contains(k) {
+                let tok = v.as_str().unwrap_or_default();
+                let pt = f.decrypt(tok).map_err(|e| anyhow::anyhow!("decrypt {k}: {e:?}"))?;
+                out.insert(k.clone(), Value::String(String::from_utf8_lossy(&pt).into_owned()));
+            } else {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 对照 set_config_field:RMW config_json;secret=true → 密文 + 注册进 _secret(sorted);secret=false → 明文。
+pub fn set_config_field(
+    db: &Path,
+    key: &str,
+    cid: &str,
+    field: &str,
+    value: &str,
+    secret: bool,
+) -> anyhow::Result<()> {
+    let f = fernet_for(key)?;
+    let conn = Connection::open(db)?;
+    let raw: Option<String> = conn
+        .query_row("SELECT config_json FROM channels WHERE id=?1", [cid], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten();
+    let mut obj: Value = raw
+        .filter(|s| !s.is_empty())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({"_fields": {}, "_secret": []}));
+    if !obj.get("_fields").map(|v| v.is_object()).unwrap_or(false) {
+        obj["_fields"] = json!({});
+    }
+    if !obj.get("_secret").map(|v| v.is_array()).unwrap_or(false) {
+        obj["_secret"] = json!([]);
+    }
+    let stored = if secret {
+        f.encrypt(value.as_bytes())
+    } else {
+        clean_field(field, value)
+    };
+    obj["_fields"][field] = Value::String(stored);
+    if secret {
+        let mut set: std::collections::BTreeSet<String> = obj["_secret"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        set.insert(field.to_string());
+        obj["_secret"] = json!(set.into_iter().collect::<Vec<_>>());
+    }
+    conn.execute(
+        "UPDATE channels SET config_json=?1 WHERE id=?2",
+        rusqlite::params![obj.to_string(), cid],
+    )?;
+    Ok(())
+}
+
 pub fn list_mirrors(db: &Path) -> anyhow::Result<Vec<Mirror>> {
     let conn = Connection::open(db)?;
     let mut stmt = conn.prepare("SELECT id,host,priority,enabled FROM mirrors ORDER BY priority")?;
@@ -379,5 +497,54 @@ mod tests {
         assert_eq!(mirrors.len(), 2);
         assert_eq!(mirrors[0].host, "docker.1ms.run");
         assert_eq!(mirrors[0].priority, 1);
+    }
+
+    #[test]
+    fn clean_field_strips_correctly() {
+        assert_eq!(clean_field("username", " a b c "), "abc");
+        assert_eq!(clean_field("server", "v p n.com"), "vpn.com");
+        assert_eq!(clean_field("name", "  My VPN  "), "My VPN");
+        assert_eq!(clean_field("probe_url", " http://x "), "http://x");
+    }
+
+    #[test]
+    fn config_field_secret_encrypts_registers_and_decrypts() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name) VALUES('c1','n')", []).unwrap();
+        drop(conn);
+
+        set_config_field(&db, &key, "c1", "server", "vpn.example.com", false).unwrap();
+        set_config_field(&db, &key, "c1", "password", "p@ss w0rd", true).unwrap();
+
+        let raw = get_config_raw(&db, "c1").unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(obj["_secret"], serde_json::json!(["password"]));
+        let pw_cipher = obj["_fields"]["password"].as_str().unwrap();
+        assert_ne!(pw_cipher, "p@ss w0rd");
+        assert_eq!(obj["_fields"]["server"], "vpn.example.com");
+
+        let cfg = get_config(&db, &key, "c1").unwrap();
+        assert_eq!(cfg["password"], "p@ss w0rd");
+        assert_eq!(cfg["server"], "vpn.example.com");
+
+        let pub_cfg = public_config(Some(raw));
+        assert!(pub_cfg.get("password").is_none());
+        assert_eq!(pub_cfg["server"], "vpn.example.com");
+    }
+
+    #[test]
+    fn get_config_empty_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name) VALUES('c1','n')", []).unwrap();
+        drop(conn);
+        assert!(get_config(&db, &key, "c1").unwrap().is_empty());
     }
 }
