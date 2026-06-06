@@ -354,10 +354,11 @@ pub fn set_config_field(
     if !obj.get("_secret").map(|v| v.is_array()).unwrap_or(false) {
         obj["_secret"] = json!([]);
     }
+    // 对照 store.py set_config_field:非 secret 值原样存(清洗是调用方/update_channel 的职责)。
     let stored = if secret {
         f.encrypt(value.as_bytes())
     } else {
-        clean_field(field, value)
+        value.to_string()
     };
     obj["_fields"][field] = Value::String(stored);
     if secret {
@@ -757,6 +758,22 @@ mod tests {
         conn.execute("INSERT INTO channels(id,name) VALUES('c1','n')", []).unwrap();
         drop(conn);
         assert!(get_config(&db, &key, "c1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_config_field_nonsecret_stores_raw_like_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name) VALUES('c1','n')", []).unwrap();
+        drop(conn);
+        // 对照 store.py:非 secret 原样存(不清洗)——前后空白保留
+        set_config_field(&db, &key, "c1", "package", " installer .run ", false).unwrap();
+        let raw = get_config_raw(&db, "c1").unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(obj["_fields"]["package"], " installer .run ");
     }
 
     fn new_ch(id: &str) -> NewChannel {
