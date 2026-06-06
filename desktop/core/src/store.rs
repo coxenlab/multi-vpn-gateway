@@ -451,6 +451,42 @@ pub fn update_channel(
     Ok(())
 }
 
+pub fn set_container(db: &Path, cid: &str, container_id: &str, novnc: Option<i64>, status: &str) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute(
+        "UPDATE channels SET container_id=?1, novnc_port=?2, status=?3 WHERE id=?4",
+        rusqlite::params![container_id, novnc, status, cid],
+    )?;
+    Ok(())
+}
+
+pub fn set_status(db: &Path, cid: &str, status: &str) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute("UPDATE channels SET status=?1 WHERE id=?2", rusqlite::params![status, cid])?;
+    Ok(())
+}
+
+pub fn set_novnc_port(db: &Path, cid: &str, port: i64) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute("UPDATE channels SET novnc_port=?1 WHERE id=?2", rusqlite::params![port, cid])?;
+    Ok(())
+}
+
+pub fn set_latency(db: &Path, cid: &str, ms: i64) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute("UPDATE channels SET latency_ms=?1 WHERE id=?2", rusqlite::params![ms, cid])?;
+    Ok(())
+}
+
+/// 对照 del_channel:手动级联(无 FK)删 channels + domains + rules。
+pub fn del_channel(db: &Path, cid: &str) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    conn.execute("DELETE FROM channels WHERE id=?1", [cid])?;
+    conn.execute("DELETE FROM domains WHERE channel_id=?1", [cid])?;
+    conn.execute("DELETE FROM rules WHERE channel_id=?1", [cid])?;
+    Ok(())
+}
+
 pub fn list_mirrors(db: &Path) -> anyhow::Result<Vec<Mirror>> {
     let conn = Connection::open(db)?;
     let mut stmt = conn.prepare("SELECT id,host,priority,enabled FROM mirrors ORDER BY priority")?;
@@ -728,5 +764,40 @@ mod tests {
         assert_eq!(cfg["username"], "bob");
         let v = serde_json::to_value(&ch).unwrap();
         assert!(v["config"].get("password").is_none());
+    }
+
+    #[test]
+    fn channel_state_mutators_and_cascade_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        add_channel(&db, &key, &new_ch("c1"), &serde_json::Map::new(), &[]).unwrap();
+
+        set_container(&db, "c1", "deadbeefcid", Some(54321), "running").unwrap();
+        set_latency(&db, "c1", 42).unwrap();
+        let ch = get_channel(&db, "c1").unwrap().unwrap();
+        assert_eq!(ch.container_id.as_deref(), Some("deadbeefcid"));
+        assert_eq!(ch.novnc_port, Some(54321));
+        assert_eq!(ch.status, "running");
+        assert_eq!(ch.latency_ms, Some(42));
+
+        set_status(&db, "c1", "logged_in").unwrap();
+        set_novnc_port(&db, "c1", 60000).unwrap();
+        let ch = get_channel(&db, "c1").unwrap().unwrap();
+        assert_eq!(ch.status, "logged_in");
+        assert_eq!(ch.novnc_port, Some(60000));
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO domains(channel_id,pattern) VALUES('c1','x.com')", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('c1','domain','x.com',1)", []).unwrap();
+        drop(conn);
+        del_channel(&db, "c1").unwrap();
+        assert!(get_channel(&db, "c1").unwrap().is_none());
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let d: i64 = conn.query_row("SELECT COUNT(*) FROM domains WHERE channel_id='c1'", [], |r| r.get(0)).unwrap();
+        let r: i64 = conn.query_row("SELECT COUNT(*) FROM rules WHERE channel_id='c1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(d, 0);
+        assert_eq!(r, 0);
     }
 }
