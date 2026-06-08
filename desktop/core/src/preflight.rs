@@ -2,9 +2,10 @@
 //! 检查函数永不抛:内部错误转 warn/fail 的 CheckResult。
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 use bollard::Docker;
-use crate::registry;
+use crate::{registry, dockerhub};
 
 /// 自建镜像本地构建上下文(镜像名前缀 → 仓库内目录)。对照 _BUILD_CONTEXT。
 pub const BUILD_CONTEXT: &[(&str, &str)] = &[
@@ -317,9 +318,156 @@ fn aggregate(checks: Vec<CheckResult>, host_arch: &str, image: Option<String>) -
     json!({ "host_arch": host_arch, "target_image": image, "overall": overall, "checks": checks })
 }
 
+// ── image_inventory + 后台拉镜像 worker(对照 image_inventory / start_pull) ────
+
+/// 对照 image_inventory。docker None → present 不查(保持 None)。
+pub async fn image_inventory(docker: Option<&Docker>, host_arch: &str, mirrors: &[String]) -> Value {
+    let mut order: Vec<String> = Vec::new();
+    let mut entries: HashMap<String, Value> = HashMap::new();
+
+    if let Ok(list) = registry::list_adapters() {
+        for a in &list {
+            let Ok(spec) = registry::get(&a.key) else { continue };
+            let s = split_image(&spec.image);
+            let key = if s.versioned { s.repo.clone() } else { s.image_field.clone() };
+            let entry = entries.entry(key.clone()).or_insert_with(|| {
+                order.push(key.clone());
+                json!({
+                    "image": s.image_field, "display": s.display, "repo": s.repo,
+                    "tag": s.tag, "kind": if is_buildable(&s.image_field) { "build" } else { "pull" },
+                    "role": "vpn", "title": a.label, "used_by": [],
+                    "arch": [], "versioned": s.versioned,
+                    "build_context": build_context_of(&s.repo),
+                    "versions": [], "present": Value::Null,
+                    "_fallback": spec.fallback_versions,
+                })
+            });
+            entry["used_by"].as_array_mut().unwrap().push(json!(a.label));
+            let arr = entry["arch"].as_array_mut().unwrap();
+            for ar in &spec.arch {
+                if !arr.iter().any(|x| x == ar) {
+                    arr.push(json!(ar));
+                }
+            }
+        }
+    }
+    for inf in INFRA_IMAGES {
+        let s = split_image(inf.image);
+        let key = s.image_field.clone();
+        order.push(key.clone());
+        entries.insert(key, json!({
+            "image": s.image_field, "display": s.display, "repo": s.repo, "tag": s.tag,
+            "kind": inf.kind, "role": "infra", "title": inf.title, "used_by": [],
+            "arch": inf.arch, "versioned": false,
+            "build_context": inf.build_context,
+            "versions": [], "present": Value::Null, "_fallback": [],
+        }));
+    }
+
+    let mut images = Vec::new();
+    for key in &order {
+        let mut e = entries.remove(key).unwrap();
+        let fb: Vec<String> = e["_fallback"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        e.as_object_mut().unwrap().remove("_fallback");
+        let versioned = e["versioned"].as_bool().unwrap_or(false);
+        let kind = e["kind"].as_str().unwrap_or("").to_string();
+        if versioned {
+            let repo = e["repo"].as_str().unwrap_or("").to_string();
+            e["versions"] = json!(dockerhub::versions(&repo, host_arch, &fb).await);
+        } else if kind != "compose" {
+            if kind == "pull" {
+                let tag = e["tag"].clone();
+                let arch = e["arch"].clone();
+                e["versions"] = json!([{ "tag": tag, "arch": arch, "usable_here": true }]);
+            }
+            if let Some(d) = docker {
+                let img = e["image"].as_str().unwrap_or("").to_string();
+                e["present"] = json!(crate::docker::image_present(d, &img).await);
+            }
+        }
+        images.push(e);
+    }
+    json!({ "host_arch": host_arch, "mirrors": mirrors, "images": images })
+}
+
+// ── 后台拉镜像任务表(对照 _TASKS) ──
+fn tasks() -> &'static Mutex<HashMap<String, Value>> {
+    static T: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn get_task(tid: &str) -> Option<Value> {
+    tasks().lock().unwrap().get(tid).cloned()
+}
+
+fn set_task(tid: &str, v: Value) {
+    tasks().lock().unwrap().insert(tid.to_string(), v);
+}
+
+/// 对照 start_pull:后台任务遍历 mirror 拉取(pull_retag),更新任务表。返回 task_id(8 hex)。
+pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<String>) -> String {
+    let tid: String = (0..4).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    set_task(&tid, json!({ "status": "running", "progress": "准备拉取…", "log_tail": [], "error": Value::Null }));
+    let (image, host_arch, tid2) = (image.to_string(), host_arch.to_string(), tid.clone());
+    let mirrors = if mirrors.is_empty() {
+        DEFAULT_MIRRORS.iter().map(|s| s.to_string()).collect()
+    } else {
+        mirrors
+    };
+    tokio::spawn(async move {
+        let (repo, tag) = match image.split_once(':') {
+            Some((r, t)) => (r.to_string(), if t.is_empty() { "latest".into() } else { t.to_string() }),
+            None => (image.clone(), "latest".to_string()),
+        };
+        let mut log: Vec<String> = Vec::new();
+        for m in &mirrors {
+            set_task(&tid2, json!({ "status": "running", "progress": format!("探测镜像源 {m}…"), "log_tail": log, "error": Value::Null }));
+            if !mirror_reachable(m).await {
+                log.push(format!("{m} 不可达,跳过"));
+                log = log.split_off(log.len().saturating_sub(20));
+                continue;
+            }
+            set_task(&tid2, json!({ "status": "running", "progress": format!("从 {m} 拉取 {repo}:{tag}…"), "log_tail": log, "error": Value::Null }));
+            match crate::docker::pull_retag(&docker, m, &repo, &tag, &host_arch).await {
+                Ok(arch) => {
+                    set_task(&tid2, json!({ "status": "done", "progress": format!("完成:{repo}:{tag}({arch})"), "log_tail": log, "error": Value::Null }));
+                    return;
+                }
+                Err(e) => {
+                    log.push(format!("{m} 失败:{e}"));
+                    log = log.split_off(log.len().saturating_sub(20));
+                }
+            }
+        }
+        set_task(&tid2, json!({ "status": "error", "progress": "", "log_tail": log,
+            "error": "所有镜像源均失败,建议配置 Docker daemon 国内源后重试(见教程)" }));
+    });
+    tid
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn inventory_dedups_oss_and_has_infra() {
+        let inv = image_inventory(None, "arm64", &["docker.1ms.run".into()]).await;
+        assert_eq!(inv["host_arch"], "arm64");
+        let imgs = inv["images"].as_array().unwrap();
+        let oss = imgs.iter().filter(|e| e["repo"] == "vpnmgr/oss-vpn").count();
+        assert_eq!(oss, 1, "oss 去重成 1 条");
+        assert!(imgs.iter().any(|e| e["repo"] == "metacubex/mihomo"), "infra mihomo");
+        assert!(imgs.iter().any(|e| e["role"] == "infra" && e["kind"] == "compose"), "app compose 条");
+        let mihomo = imgs.iter().find(|e| e["repo"] == "metacubex/mihomo").unwrap();
+        assert!(mihomo["present"].is_null());
+    }
+
+    #[test]
+    fn pull_task_lifecycle() {
+        assert!(get_task("nope").is_none());
+    }
 
     #[tokio::test]
     async fn run_checks_no_docker_daemon_fails_rest_skip() {
