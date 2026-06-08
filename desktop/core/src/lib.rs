@@ -10,6 +10,7 @@ pub mod adapters;
 pub mod webutil;
 pub mod api;
 pub mod dockerhub;
+pub mod preflight;
 
 use std::sync::Arc;
 
