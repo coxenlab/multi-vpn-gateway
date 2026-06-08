@@ -85,6 +85,14 @@ pub fn plan_rules(patterns: &[String], forced: Option<&str>, existing: &[(String
     RulePlan { to_add, added, rejected }
 }
 
+/// 对照 main.py login 的 url 构造(命门 #4:端口是容器实时映射的 host 端口)。
+/// path 须带尾斜杠:镜像内 tinyproxy 把 /websockify 301→/websockify/,WS 握手不跟随 301。
+pub fn login_url(port: i64, vnc_password: &str) -> String {
+    format!(
+        "http://127.0.0.1:{port}/vnc.html?path=websockify/&autoconnect=true&resize=remote&password={vnc_password}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +157,14 @@ mod tests {
     fn plan_rules_forced_domain_keeps_raw_trimmed() {
         let out = plan_rules(&["  Corp.COM  ".into()], Some("domain"), &[]);
         assert!(out.to_add.contains(&("domain".into(), "Corp.COM".into())));
+    }
+
+    #[test]
+    fn login_url_has_websockify_path_and_password() {
+        let u = login_url(45678, "deadbeef");
+        assert!(u.contains("127.0.0.1:45678/vnc.html"));
+        assert!(u.contains("path=websockify/"), "尾斜杠不可少(tinyproxy 301 不被 WS 跟随)");
+        assert!(u.contains("autoconnect=true"));
+        assert!(u.contains("password=deadbeef"));
     }
 }

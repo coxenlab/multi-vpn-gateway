@@ -1,5 +1,5 @@
 //! main.py 路由的 Rust 端 handler(薄壳)。对照 app/main.py。
-use axum::extract::{Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
@@ -245,4 +245,87 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
         }
     }
     channel_json(&db, &cid)
+}
+
+// ── login / upload / status(命门 #1 探活、#5 上传安装器) ────────────────────
+
+pub async fn login(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let ch = match store::get_channel(&db, &cid) {
+        Ok(Some(c)) => c,
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&format!("{e}")),
+    };
+    if ch.login_method == "headless" {
+        return Json(json!({ "login_mode": "headless" })).into_response();
+    }
+    let docker = match st.docker.as_ref() {
+        Some(d) => d,
+        None => return err500("docker unavailable"),
+    };
+    let port = match manager::novnc_port(docker, &cid).await {
+        Some(p) => p,
+        None => return err404("no novnc port"),
+    };
+    if Some(port) != ch.novnc_port {
+        let _ = store::set_novnc_port(&db, &cid, port);
+    }
+    manager::ensure_novnc_bridge(docker, &cid).await;
+    Json(json!({ "url": webutil::login_url(port, &ch.vnc_password.unwrap_or_default()) })).into_response()
+}
+
+pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp: Multipart) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let key = match store::master_key(&st.cfg.data_dir) {
+        Ok(k) => k,
+        Err(e) => return err500(&format!("master_key: {e}")),
+    };
+    if matches!(store::get_channel(&db, &cid), Ok(None)) {
+        return err404("not found");
+    }
+    // 取第一个文件字段(对照 UploadFile = File(...) 的单文件语义)
+    let (filename, blob) = match mp.next_field().await {
+        Ok(Some(field)) => {
+            let fname = field.file_name().map(String::from).unwrap_or_default();
+            match field.bytes().await {
+                Ok(b) => (fname, b),
+                Err(e) => return err500(&format!("read upload: {e}")),
+            }
+        }
+        Ok(None) => return err500("no file field"),
+        Err(e) => return err500(&format!("multipart: {e}")),
+    };
+    let docker = match st.docker.as_ref() {
+        Some(d) => d,
+        None => return err500("docker unavailable"),
+    };
+    // 命门 #5:二进制经 put_archive 落数据卷,绝不入 SQLite/回传
+    if let Err(e) = crate::docker::put_file(docker, &format!("vpn-{cid}"), "/root", &filename, blob.as_ref()).await {
+        return err500(&format!("{e}"));
+    }
+    let _ = store::set_config_field(&db, &key, &cid, "package", &filename, false);
+    Json(json!({ "ok": true, "package": filename })).into_response()
+}
+
+pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let ch = match store::get_channel(&db, &cid) {
+        Ok(Some(c)) => c,
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&format!("{e}")),
+    };
+    let (ok, ms) = manager::probe(&ch).await; // 命门 #1
+    let new = if ok {
+        "logged_in"
+    } else if ch.status == "logged_in" {
+        "running"
+    } else {
+        ch.status.as_str()
+    }
+    .to_string();
+    let _ = store::set_status(&db, &cid, &new);
+    if let Some(m) = ms {
+        let _ = store::set_latency(&db, &cid, m);
+    }
+    Json(json!({ "status": new, "connected": ok, "latency_ms": ms })).into_response()
 }

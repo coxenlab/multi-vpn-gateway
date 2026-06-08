@@ -25,6 +25,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/vpn-types", get(api::vpn_types))
         .route("/api/connections", get(api::connections))
         .route("/api/channels/:cid/logs", get(api::logs))
+        .route("/api/channels/:cid/login", get(api::login))
+        .route("/api/channels/:cid/upload", axum::routing::post(api::upload))
+        .route("/api/channels/:cid/status", get(api::status))
         .route("/api/channels/:cid/rules", axum::routing::post(api::add_rules))
         .route(
             "/api/channels/:cid/rules/:rid",
@@ -176,6 +179,20 @@ mod tests {
         let chans = crate::store::list_channels(&db).unwrap();
         assert_eq!(chans.len(), 1);
         assert_eq!(chans[0].status, "error");
+    }
+
+    #[tokio::test]
+    async fn login_headless_skips_novnc() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,vpn_type,login_method,status) VALUES('o1','o','anyconnect','headless','running')", []).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().uri("/api/channels/o1/login").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["login_mode"], "headless");
     }
 
     #[tokio::test]
