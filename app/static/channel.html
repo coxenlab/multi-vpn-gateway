@@ -524,6 +524,8 @@
           return;
         }
         const { url } = res;
+        // EC/aTrust 容器内 noVNC 启动慢:探到在伺服再塞 iframe,否则早加载→连接被拒→永久白屏。
+        await window.waitNovncReady(url);
         let f = $("#vnc-frame");
         if (!f) {
           f = document.createElement("iframe");

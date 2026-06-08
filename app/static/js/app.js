@@ -6,6 +6,20 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   window.$ = $; window.$$ = $$;
 
+  /* noVNC 就绪探测:EC/aTrust 容器内 noVNC web(8080)在 status:running 后还要数十秒才起
+   * (Xvfb/x11vnc/GUI 链启动慢)。iframe 若早于服务就绪就 set src → 连接被拒 → 永久白屏,
+   * 且向导/详情不会自动重载它。这里先用跨源 no-cors fetch 探到 origin 在伺服再塞 src:服务起着
+   * → resolve(opaque),连接被拒 → reject。最多探 maxSec 秒,超时也返回(让用户看到 noVNC 自身
+   * 状态并可手动重载)。 */
+  window.waitNovncReady = async function (url, maxSec = 60) {
+    const deadline = Date.now() + maxSec * 1000;
+    while (Date.now() < deadline) {
+      try { await fetch(url, { mode: "no-cors", cache: "no-store" }); return true; }
+      catch (_) { await new Promise((r) => setTimeout(r, 2000)); }
+    }
+    return false;
+  };
+
   /* ── 状态机文案/样式映射 ── */
   const STATUS = {
     created:   { label: "已创建", cls: "is-created" },

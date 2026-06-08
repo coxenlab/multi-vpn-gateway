@@ -278,6 +278,7 @@
                         <p>noVNC 与本界面不同源，父页面读不到 RFB 事件，“VNC 连上”仅代表看到了登录页。请在容器内过完登录后，下一步用 SOCKS5 探活确认隧道真通。</p>
                       </div>
                     </div>
+                    <button class="btn btn-secondary btn-sm" id="vnc-reload-wiz" type="button" style="align-self:flex-start;">登录窗没出来？点此重新加载</button>
                   </div>
 
                   <!-- 无头注入路径（EC + 账号密码）：跳过 noVNC 交互登录 -->
@@ -837,22 +838,27 @@
     // ── ③ 登录验证：账密无头跳过；交互登录拉真 noVNC iframe ──
     async function loadVnc() {
       if (model.login === "password" || model.login === "headless") return;  // 无头无 noVNC
+      const ph = document.getElementById("vnc-placeholder");
       try {
         const { url } = await api.login(window.createdId);
+        // EC 容器内 noVNC 启动慢:探到在伺服再塞 iframe,否则早加载→连接被拒→永久白屏。
+        if (ph) ph.textContent = "正在等待容器内登录界面就绪…(EC 首次启动需数十秒,请稍候)";
+        await window.waitNovncReady(url);
         let f = document.getElementById("vnc-frame");
         if (!f) {
           f = document.createElement("iframe");
           f.id = "vnc-frame"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
-          const ph = document.getElementById("vnc-placeholder");
-          if (ph) ph.replaceWith(f); else $("#login-interactive").prepend(f);
+          const p = document.getElementById("vnc-placeholder");
+          if (p) p.replaceWith(f); else $("#login-interactive").prepend(f);
         }
         f.src = url;
       } catch (e) {
-        const ph = document.getElementById("vnc-placeholder");
         if (ph) ph.textContent = "拉取登录窗失败：" + e.message;
         toast("拉取登录窗失败:" + e.message, false);
       }
     }
+    // 登录窗没出来时手动重载(兜底竞态/容器慢)
+    document.getElementById("vnc-reload-wiz")?.addEventListener("click", loadVnc);
 
     $("#go-4").addEventListener("click", () => { buildProbeCmd(); gotoStep(4); });
 
