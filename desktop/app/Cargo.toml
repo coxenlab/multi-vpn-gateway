@@ -1,0 +1,13 @@
+[package]
+name = "vpnmgr-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "VPN 管理网关桌面壳(Tauri v2)"
+
+[build-dependencies]
+tauri-build = { version = "2.6.2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.2", features = ["tray-icon"] }
+url = "2"
+vpnmgr-core = { path = "../core" }

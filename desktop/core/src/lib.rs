@@ -4,6 +4,7 @@ pub mod docker;
 pub mod manager;
 pub mod mihomo;
 pub mod server;
+pub mod app;
 pub mod routes;
 pub mod registry;
 pub mod adapters;
