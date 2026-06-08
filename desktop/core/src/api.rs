@@ -547,7 +547,14 @@ pub async fn mirrors_del(State(st): State<AppState>, Path(mid): Path<i64>) -> Js
 pub async fn mirrors_test(Json(b): Json<Value>) -> Json<Value> {
     let host = b.get("host").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let t0 = std::time::Instant::now();
-    let ok = preflight::mirror_reachable(&host).await;
+    // 对照 Python mirrors_test:任何 HTTP 响应(不抛)即可达,不看状态码
+    // (区别于 preflight 的 mirror_reachable 用 <500——那个对照 _mirror_reachable)
+    let ok = reqwest::Client::new()
+        .get(format!("https://{host}/v2/"))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .is_ok();
     let ms = if ok { Some(t0.elapsed().as_millis() as i64) } else { None };
     Json(json!({ "reachable": ok, "latency_ms": ms }))
 }

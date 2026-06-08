@@ -262,9 +262,15 @@ pub async fn create_bridge_network(docker: &Docker, name: &str) -> Result<()> {
         .map_err(|e| anyhow!("create_network {name}: {e}"))
 }
 
+/// pull_retag 的结果(对照 _pull_worker:成功 vs arch 不匹配弃用 vs 真失败 Err)。
+pub enum PullOutcome {
+    Tagged(String),       // 成功 retag,携带实际 arch
+    ArchMismatch(String), // 拉到非目标 arch,已弃用(删除),携带实际 arch
+}
+
 /// 从 mirror 拉取 repo:tag(指定 platform)→ 校验 arch → retag 回原名 → 删 mirror 标。
-/// 对照 _pull_worker 单镜像源那一轮:成功 Ok(arch),不匹配/失败 Err。
-pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, host_arch: &str) -> Result<String> {
+/// 对照 _pull_worker 单镜像源那一轮:成功 Tagged、arch 不匹配 ArchMismatch、真失败 Err。
+pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, host_arch: &str) -> Result<PullOutcome> {
     let src = format!("{mirror}/{repo}");
     let platform = format!("linux/{host_arch}");
     let opts = CreateImageOptions { from_image: src.clone(), tag: tag.to_string(), platform, ..Default::default() };
@@ -276,14 +282,14 @@ pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, ho
     let arch = image_arch(docker, &full_src).await.unwrap_or_default();
     if !arch.is_empty() && arch != host_arch {
         let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
-        return Err(anyhow!("拉到 {arch}(非 {host_arch})"));
+        return Ok(PullOutcome::ArchMismatch(arch));
     }
     docker
         .tag_image(&full_src, Some(TagImageOptions { repo: repo.to_string(), tag: tag.to_string() }))
         .await
         .map_err(|e| anyhow!("tag {repo}:{tag}: {e}"))?;
     let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
-    Ok(if arch.is_empty() { host_arch.to_string() } else { arch })
+    Ok(PullOutcome::Tagged(if arch.is_empty() { host_arch.to_string() } else { arch }))
 }
 
 /// 一次性容器测 /dev/net/tun(对照 check_dev_net_tun)。Ok(true)=exit0;Ok(false)=非0;Err=起不来。

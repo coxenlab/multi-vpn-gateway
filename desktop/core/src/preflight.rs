@@ -52,7 +52,8 @@ pub fn resolve_image(vpn_type: &str, version: Option<&str>) -> anyhow::Result<St
     let spec = registry::get(vpn_type)?;
     let mut image = spec.image.clone();
     if image.contains("{version}") {
-        image = image.replace("{version}", version.unwrap_or("7.6.3"));
+        // 对照 Python `version or "7.6.3"`:空串也算 falsy → 回退默认
+        image = image.replace("{version}", version.filter(|v| !v.is_empty()).unwrap_or("7.6.3"));
     }
     Ok(image)
 }
@@ -429,11 +430,15 @@ pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<Str
                 log = log.split_off(log.len().saturating_sub(20));
                 continue;
             }
-            set_task(&tid2, json!({ "status": "running", "progress": format!("从 {m} 拉取 {repo}:{tag}…"), "log_tail": log, "error": Value::Null }));
+            set_task(&tid2, json!({ "status": "running", "progress": format!("从 {m} 拉取 {repo}:{tag}(linux/{host_arch})…"), "log_tail": log, "error": Value::Null }));
             match crate::docker::pull_retag(&docker, m, &repo, &tag, &host_arch).await {
-                Ok(arch) => {
+                Ok(crate::docker::PullOutcome::Tagged(arch)) => {
                     set_task(&tid2, json!({ "status": "done", "progress": format!("完成:{repo}:{tag}({arch})"), "log_tail": log, "error": Value::Null }));
                     return;
+                }
+                Ok(crate::docker::PullOutcome::ArchMismatch(arch)) => {
+                    log.push(format!("{m} 拉到 {arch}(非 {host_arch}),弃用"));
+                    log = log.split_off(log.len().saturating_sub(20));
                 }
                 Err(e) => {
                     log.push(format!("{m} 失败:{e}"));
@@ -514,6 +519,9 @@ mod tests {
         let img = resolve_image("easyconnect", Some("7.6.3")).unwrap();
         assert!(img.contains("7.6.3"));
         assert!(resolve_image("nonexistent-type", None).is_err());
+        // 对照 Python `version or "7.6.3"`:None 与空串都回退默认
+        assert!(resolve_image("easyconnect", None).unwrap().contains("7.6.3"));
+        assert!(resolve_image("easyconnect", Some("")).unwrap().contains("7.6.3"));
     }
 
     #[test]
