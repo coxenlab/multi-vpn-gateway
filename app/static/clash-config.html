@@ -171,6 +171,25 @@
           <div class="tabpanel active" data-panel="rule" style="padding-top:var(--space-6);">
             <p class="tab-lead">已经在用 Clash 的人：本工具只接管命中的客户域名 / IP，其余流量照走你 Clash 的原有逻辑（机场 / DIRECT / 广告拦截），两边互不影响。先加一个 <span class="mono">vpn-router</span> 节点，再选订阅或内联其一。</p>
             <div class="stack-4">
+              <!-- 7c：本机 Clash 检测 + Verge 一键导入(host-only;无后端能力时整卡隐藏) -->
+              <article class="card step-card" id="card-detect" data-od-id="m-detect" style="display:none;">
+                <div class="card-head">
+                  <div class="method-head" style="flex:1;">
+                    <div><h3>本机 Clash 检测</h3><p class="t-xs muted" id="detect-line" style="margin-top:2px;">检测中…</p></div>
+                    <span class="tag" id="detect-tag">—</span>
+                  </div>
+                </div>
+                <div class="card-body" style="padding:0;">
+                  <div class="code-head"><span>Clash Verge Rev「Merge」一键导入块</span><button class="copy-btn" id="copy-merge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
+                  <pre class="code" id="code-merge"></pre>
+                  <div class="card-body">
+                    <div class="note-line">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                      <span>Clash Verge Rev:订阅 → 新建「Merge」类型 → 粘贴本块 → 拖到你的订阅之后启用。规则/节点自动并入,之后增删目标经 <span class="mono">vpn-rules</span> 订阅同步。</span>
+                    </div>
+                  </div>
+                </div>
+              </article>
               <!-- 前置：加节点 -->
               <article class="card step-card" data-od-id="m-proxy">
                 <div class="card-head">
@@ -257,6 +276,14 @@
                   <pre class="code" id="code-pac-url"></pre>
                   <div class="code-head"><span>macOS 一键设置</span><button class="copy-btn" id="copy-pac-cmd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
                   <pre class="code" id="code-pac-cmd"></pre>
+                  <!-- 7c：桌面版直接执行 networksetup(host-only;无后端能力时隐藏) -->
+                  <div class="card-body" id="pac-host-wrap" style="display:none;">
+                    <div class="row-between" style="gap:12px; flex-wrap:wrap;">
+                      <span class="t-sm" id="pac-host-status">—</span>
+                      <button class="btn btn-primary" id="pac-apply">一键应用 PAC 系统代理</button>
+                    </div>
+                    <p class="t-xs muted" style="margin-top:8px; line-height:1.5;">桌面版可直接改本机当前网络服务的「自动代理」,无需手敲命令。停用前记得在此取消。</p>
+                  </div>
                   <div class="card-body">
                     <div class="note-line">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
@@ -472,6 +499,54 @@
       $("#copy-pac-cmd").addEventListener("click", () => copyText(pacCmd, "已复制命令"));
       $("#copy-sys").addEventListener("click", () => copyText(sysOn + "\n" + sysOff, "已复制命令"));
       $("#copy-env").addEventListener("click", () => copyText(envSocks, "已复制命令"));
+
+      // 7c 宿主接管层「真执行」(仅 Tauri/host 后端有这些端点;feature-detect,失败保持隐藏)
+      try {
+        const [det, merge] = await Promise.all([api.clashDetect(), api.mergeProfile()]);
+        $("#card-detect").style.display = "";
+        const tag = $("#detect-tag"), line = $("#detect-line");
+        if (det.running) {
+          tag.textContent = "已检测到"; tag.classList.add("ok");
+          line.innerHTML = `本机有 ${det.meta ? "mihomo/Clash.Meta " : "Clash "}在运行${det.version ? "（" + det.version + "）" : ""},控制台 <span class="mono">${det.controller || "127.0.0.1:9090"}</span>。推荐用下面的 Verge 导入块,或方式①订阅。`;
+        } else {
+          tag.textContent = "未运行";
+          line.textContent = "未检测到运行中的 Clash(9090 无应答)。若你用 Clash 先启动它;否则用「全局接管」Tab 的 PAC / 系统代理。";
+        }
+        $("#code-merge").textContent = merge;
+        $("#copy-merge").addEventListener("click", () => copyText(merge, "已复制 Verge 导入块"));
+      } catch (e) { /* 非 host 后端:整卡保持隐藏 */ }
+
+      // PAC 一键应用(host-only)
+      try {
+        const st0 = await api.systemProxyGet();
+        if (st0 && st0.supported) {
+          $("#pac-host-wrap").style.display = "";
+          renderPacHost(st0);
+          $("#pac-apply").addEventListener("click", onPacApply);
+        }
+      } catch (e) { /* 非 host 后端:保持隐藏 */ }
+    }
+
+    function renderPacHost(st) {
+      const status = $("#pac-host-status"), btn = $("#pac-apply");
+      const on = !!(st.enabled && st.is_ours);
+      status.textContent = on
+        ? `已接管:${st.service} 自动代理 → 本工具 PAC`
+        : (st.enabled ? `${st.service} 自动代理当前指向其它,应用将覆盖` : `${st.service || "默认网络"} 未启用自动代理`);
+      btn.textContent = on ? "取消 PAC 系统代理" : "一键应用 PAC 系统代理";
+      btn.dataset.on = on ? "1" : "";
+    }
+    async function onPacApply() {
+      const btn = $("#pac-apply");
+      const enable = btn.dataset.on !== "1";
+      btn.disabled = true;
+      try {
+        const r = await api.systemProxySet(enable);
+        renderPacHost(r.state);
+        toast(enable ? "已应用 PAC 系统代理 ✓" : "已取消系统代理 ✓");
+      } catch (e) {
+        toast("操作失败:" + (e.message || e), false);
+      } finally { btn.disabled = false; }
     }
 
     boot();

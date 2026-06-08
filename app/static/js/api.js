@@ -50,6 +50,11 @@
     proxies: () => req("GET", "/api/proxies"),
     entrySetup: () => req("GET", "/api/entry/setup-commands"),
     snippet: () => req("GET", "/api/clash-snippet"),
+    // 7c 宿主接管层(Tauri/host-only;调用方 try/catch 做 feature-detect)
+    clashDetect: () => req("GET", "/api/entry/clash-detect"),
+    mergeProfile: () => req("GET", "/api/entry/merge-profile"),
+    systemProxyGet: () => req("GET", "/api/entry/system-proxy"),
+    systemProxySet: (enable) => req("POST", "/api/entry/system-proxy", { enable }),
     mirrors: () => req("GET", "/api/mirrors"),
     addMirror: (host) => req("POST", "/api/mirrors", { host }),
     patchMirror: (id, body) => req("PATCH", `/api/mirrors/${id}`, body),

@@ -6,7 +6,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use crate::store::NewChannel;
-use crate::{registry, store, manager, webutil, dockerhub, preflight, AppState};
+use crate::{registry, store, manager, webutil, entry, dockerhub, preflight, AppState};
 
 pub async fn vpn_types() -> Json<Value> {
     Json(json!(registry::list_adapters().unwrap_or_default()))
@@ -409,6 +409,37 @@ pub async fn entry_pac(State(st): State<AppState>) -> axum::response::Response {
 pub async fn entry_setup_commands(State(st): State<AppState>) -> Json<Value> {
     let ui = st.cfg.ui_port.to_string();
     Json(webutil::setup_commands(&st.cfg.mihomo_host_port, &ui))
+}
+
+// ── 7c:宿主接管层「真执行」(层1 检测/Verge profile + 层2 系统代理 networksetup) ──
+// 仅 Tauri/host 模型可用(Rust core 跑在宿主)。前端 feature-detect:404/失败则隐藏按钮。
+
+/// 检测本机 Clash 客户端(读-only)。
+pub async fn clash_detect() -> Json<Value> {
+    Json(serde_json::to_value(entry::detect_clash().await).unwrap_or_else(|_| json!({})))
+}
+
+/// Clash Verge Rev 可导入的 Merge profile(text/yaml)。
+pub async fn clash_merge_profile(State(st): State<AppState>) -> axum::response::Response {
+    let ui = st.cfg.ui_port.to_string();
+    let body = entry::verge_merge_profile(&st.cfg.mihomo_host_port, &ui);
+    ([(axum::http::header::CONTENT_TYPE, "text/yaml; charset=utf-8")], body).into_response()
+}
+
+/// 读系统自动代理当前状态(读-only,安全)。
+pub async fn system_proxy_get(State(st): State<AppState>) -> Json<Value> {
+    let ui = st.cfg.ui_port.to_string();
+    Json(serde_json::to_value(entry::system_proxy_status(&ui).await).unwrap_or_else(|_| json!({})))
+}
+
+/// 一键应用/清除系统自动代理(PAC)。body `{enable: bool}`。⚠️ 改系统设置,前端按钮显式触发。
+pub async fn system_proxy_set(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    let ui = st.cfg.ui_port.to_string();
+    let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
+    match entry::system_proxy_apply(&ui, enable).await {
+        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
+        Err(e) => err500(&format!("{e}")),
+    }
 }
 
 // ── Phase 6:versions / preflight / images / mirrors ──────────────────────────

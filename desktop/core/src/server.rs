@@ -39,6 +39,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/clash-snippet", get(api::clash_snippet))
         .route("/entry/proxy.pac", get(api::entry_pac))
         .route("/api/entry/setup-commands", get(api::entry_setup_commands))
+        // 7c 宿主接管层(Tauri/host-only;前端 feature-detect)
+        .route("/api/entry/clash-detect", get(api::clash_detect))
+        .route("/api/entry/merge-profile", get(api::clash_merge_profile))
+        .route(
+            "/api/entry/system-proxy",
+            get(api::system_proxy_get).post(api::system_proxy_set),
+        )
         .route("/api/vpn-types/:vtype/versions", get(api::vpn_versions))
         .route("/api/preflight", get(api::preflight_check))
         // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法
