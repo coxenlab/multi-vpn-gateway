@@ -48,7 +48,8 @@ pub async fn add_rules(
     let patterns: Vec<String> = b
         .get("patterns")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>())
+        .filter(|v| !v.is_empty()) // 对照 main.py:空 [] 是 falsy → 回退到单个 pattern
         .or_else(|| b.get("pattern").and_then(|v| v.as_str()).map(|s| vec![s.to_string()]))
         .unwrap_or_default();
     let forced = b.get("kind").and_then(|v| v.as_str());

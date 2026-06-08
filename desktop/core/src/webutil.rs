@@ -7,7 +7,10 @@ pub fn classify(token: &str) -> Option<(String, String)> {
         return None;
     }
     let addr = t.split('/').next().unwrap_or("");
-    if addr.parse::<std::net::IpAddr>().is_err() {
+    // 对照 Python ipaddress.ip_address:接受带 zone id 的 scoped IPv6(fe80::1%eth0);
+    // std::net::IpAddr 不认 zone,故校验前剥掉(发出的 CIDR 仍用原 token,与 Python 一致)。
+    let addr_no_zone = addr.split('%').next().unwrap_or("");
+    if addr_no_zone.parse::<std::net::IpAddr>().is_err() {
         // 域名:剥 scheme / path / userinfo / port
         let after_scheme = t.splitn(2, "://").last().unwrap_or("");
         let no_path = after_scheme.split('/').next().unwrap_or("");
@@ -246,6 +249,12 @@ mod tests {
         assert_eq!(classify(""), None);
         assert_eq!(classify("   "), None);
         assert_eq!(classify("https://"), None);
+    }
+
+    #[test]
+    fn classify_zone_scoped_ipv6_is_ip_not_domain() {
+        // 对照 Python ipaddress:scoped IPv6 仍是 IP(补 /128),不被当域名
+        assert_eq!(classify("fe80::1%eth0"), Some(("ip".into(), "fe80::1%eth0/128".into())));
     }
     #[test]
     fn bare_strips_plus_and_star() {
