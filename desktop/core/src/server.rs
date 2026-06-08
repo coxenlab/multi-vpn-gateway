@@ -24,6 +24,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/vpn-types", get(api::vpn_types))
         .route("/api/connections", get(api::connections))
         .route("/api/channels/:cid/logs", get(api::logs))
+        .route("/api/channels/:cid/rules", axum::routing::post(api::add_rules))
+        .route(
+            "/api/channels/:cid/rules/:rid",
+            axum::routing::delete(api::del_rule).patch(api::patch_rule),
+        )
         .fallback_service(static_svc)
         .with_state(state)
 }
@@ -129,6 +134,30 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(v["lines"][0].as_str().unwrap().contains("docker"), "docker 不可用时给单行说明");
+    }
+
+    #[tokio::test]
+    async fn add_rules_classifies_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        // rebuild 写 mihomo 配置:指到 tempfile,别碰 /cfg
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,vpn_type,login_method,status) VALUES('c1','c','easyconnect','interactive','running')", []).unwrap();
+        drop(conn);
+        let app = build_router(state_with_db(dir.path()));
+        let body = r#"{"patterns":["a.com","10.0.0.0/8","a.com"]}"#;
+        let resp = app.oneshot(
+            Request::builder().method("POST").uri("/api/channels/c1/rules")
+                .header("content-type", "application/json").body(Body::from(body)).unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["added"]["domain"], 1);
+        assert_eq!(v["added"]["ip"], 1);
+        assert_eq!(v["domains"][0]["pattern"], "a.com");
+        assert_eq!(v["ips"][0]["pattern"], "10.0.0.0/8");
     }
 
     #[tokio::test]
