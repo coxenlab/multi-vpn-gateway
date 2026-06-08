@@ -22,7 +22,8 @@
       "icons/icon.icns"
     ],
     "resources": {
-      "../../app/static": "static"
+      "../../app/static": "static",
+      "runtime": "runtime"
     },
     "macOS": {
       "signingIdentity": "-",

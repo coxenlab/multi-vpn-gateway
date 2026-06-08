@@ -14,15 +14,22 @@ use vpnmgr_core::{app, config::Config, infra, manager, vm};
 
 /// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 把主窗从 loading 页导航到真 UI。
 async fn boot(handle: &tauri::AppHandle) -> anyhow::Result<()> {
-    // Finder 双击启动的 app 走 launchd 的 PATH(本机为空 → 默认 /usr/bin:/bin:/usr/sbin:/sbin),
-    // 不含 Homebrew bin;而 colima/docker 装在 /opt/homebrew/bin(Apple Silicon)或 /usr/local/bin(Intel)。
-    // 不补则 vm.rs 的 Command::new("colima") 双击启动时必然 not-found、boot 卡在 ensure_running。
-    // 一次性把两个标准 Homebrew 位置前置进 PATH(后续 sidecar 内置 colima 后可去掉)。
+    // PATH 接管:让 vm.rs 的 Command::new("colima") 在任何启动场景都找得到二进制。
+    // ① 自带 sidecar(真零安装):打包后 colima/limactl/lima + share 落在 Contents/Resources/runtime,
+    //    前置 runtime/bin 进 PATH 最高优先 → colima 据此找自带 limactl、limactl 经 ../share/lima 找 guestagent。
+    // ② 回落 Homebrew:dev(无 bundle)或用户自有 colima;Finder 双击的 minimal PATH(launchd 仅 4 目录、
+    //    不含 /opt/homebrew/bin)也靠这层兜住。
     {
-        let path = std::env::var("PATH").unwrap_or_default();
-        if !path.split(':').any(|p| p == "/opt/homebrew/bin") {
-            std::env::set_var("PATH", format!("/opt/homebrew/bin:/usr/local/bin:{path}"));
+        let mut prefix = String::new();
+        if let Ok(res) = handle.path().resource_dir() {
+            let rt_bin = res.join("runtime").join("bin");
+            if rt_bin.join("colima").exists() {
+                prefix.push_str(&format!("{}:", rt_bin.display()));
+            }
         }
+        prefix.push_str("/opt/homebrew/bin:/usr/local/bin");
+        let path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{prefix}:{path}"));
     }
 
     vm::ensure_running(vm::PROFILE).await?;
