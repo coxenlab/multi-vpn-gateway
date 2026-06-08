@@ -20,7 +20,9 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api/system", get(routes::system))
         .route("/api/channels", get(routes::channels).post(api::create))
-        .route("/api/channels/:cid", axum::routing::patch(api::update))
+        .route("/api/channels/:cid", axum::routing::patch(api::update).delete(api::delete))
+        .route("/api/channels/:cid/start", axum::routing::post(api::start))
+        .route("/api/channels/:cid/stop", axum::routing::post(api::stop))
         .route("/api/proxies", get(routes::proxies))
         .route("/api/vpn-types", get(api::vpn_types))
         .route("/api/connections", get(api::connections))
@@ -193,6 +195,19 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
         assert_eq!(v["login_mode"], "headless");
+    }
+
+    #[tokio::test]
+    async fn stop_marks_stopped_even_without_docker() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,vpn_type,login_method,status) VALUES('c1','c','easyconnect','interactive','running')", []).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().method("POST").uri("/api/channels/c1/stop").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(crate::store::get_channel(&db, "c1").unwrap().unwrap().status, "stopped");
     }
 
     #[tokio::test]

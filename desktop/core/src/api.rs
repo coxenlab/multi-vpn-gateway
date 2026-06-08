@@ -329,3 +329,55 @@ pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum
     }
     Json(json!({ "status": new, "connected": ok, "latency_ms": ms })).into_response()
 }
+
+// ── start / stop / delete(byo 原地 start;hagb/oss 走重建) ──────────────────
+
+pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let ch = match store::get_channel(&db, &cid) {
+        Ok(Some(c)) => c,
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&format!("{e}")),
+    };
+    let runtime = registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
+    if runtime == "byo" {
+        // byo 客户端装在可写层,扛得住原地重启 → 不重建
+        if let Some(d) = st.docker.as_ref() {
+            let _ = manager::start(d, &cid).await;
+        }
+        let _ = store::set_status(&db, &cid, "running");
+        return Json(json!({ "ok": true })).into_response();
+    }
+    // hagb/oss:原地 start 扛不住 → 重建
+    let vnc = ch.vnc_password.clone().unwrap_or_default();
+    match provision(&st, &ch, &vnc).await {
+        Ok((container_id, novnc)) => {
+            let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
+            let _ = manager::rebuild(&st.cfg, &db).await;
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => {
+            let _ = store::set_status(&db, &cid, "error");
+            err500(&format!("{e}"))
+        }
+    }
+}
+
+pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> Json<Value> {
+    let db = st.cfg.db_path();
+    if let Some(d) = st.docker.as_ref() {
+        let _ = manager::stop(d, &cid).await;
+    }
+    let _ = store::set_status(&db, &cid, "stopped");
+    Json(json!({ "ok": true }))
+}
+
+pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> Json<Value> {
+    let db = st.cfg.db_path();
+    if let Some(d) = st.docker.as_ref() {
+        let _ = manager::remove(d, &cid).await;
+    }
+    let _ = store::del_channel(&db, &cid);
+    let _ = manager::rebuild(&st.cfg, &db).await;
+    Json(json!({ "ok": true }))
+}
