@@ -107,32 +107,47 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
 
 // ── Task 3: probe(命门 #1)+ 日志折叠 ───────────────────────────────────────
 
-/// 命门 #1:唯一登录成功判据。socks5h 远程解析经 vpn-{id}:1080 → probe_url。
-/// 任何错误 / 空 probe_url →(false, None);status<500 才算通。对照 manager.probe。
-pub async fn probe(ch: &ChannelPublic) -> (bool, Option<i64>) {
+/// 探活 sidecar 镜像:带 curl + ca-certificates 的自建 oss 镜像(spec §9 首启即内置/docker-load)。
+/// 任意通道类型(含 EC/aTrust)都用它当 socks5h 客户端,与被探的 vpn 容器类型无关。
+const PROBE_IMAGE: &str = "vpnmgr/oss-vpn:latest";
+
+/// 命门 #1:唯一登录成功判据。**host-VM 模型**:Rust core 在宿主、够不着 VM 内网 172.x,
+/// 故探活搬进 VM 内一次性容器(`vpnmgr_vpnnet` 上),`curl --socks5-hostname vpn-{id}:1080`
+/// (socks5h 远程解析)打 probe_url。语义不变:容忍自签证书(`-k`)、6s 超时、status<500 才算通。
+/// docker 不可用 / 空 probe_url / 起不来 →(false, None)。
+pub async fn probe(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelPublic) -> (bool, Option<i64>) {
     if ch.probe_url.is_empty() {
         return (false, None);
     }
-    let proxy_url = format!("socks5h://vpn-{}:1080", ch.id);
-    let build = || -> Result<reqwest::Client> {
-        Ok(reqwest::Client::builder()
-            .proxy(reqwest::Proxy::all(&proxy_url)?)
-            .danger_accept_invalid_certs(true) // 内网自签证书:连通性探活不应因证书校验误判
-            .timeout(std::time::Duration::from_secs(6))
-            .build()?)
+    let docker = match docker {
+        Some(d) => d,
+        None => return (false, None),
     };
-    let client = match build() {
-        Ok(c) => c,
-        Err(_) => return (false, None),
-    };
-    let t0 = std::time::Instant::now();
-    match client.get(&ch.probe_url).send().await {
-        Ok(r) => {
-            let ms = t0.elapsed().as_millis() as i64;
-            (r.status().as_u16() < 500, Some(ms))
-        }
+    let proxy = format!("vpn-{}:1080", ch.id);
+    let name = format!("vpncore-probe-{}", ch.id);
+    let cmd = vec![
+        "curl", "-s", "-o", "/dev/null",
+        "-w", "%{http_code} %{time_total}",
+        "--socks5-hostname", proxy.as_str(),
+        "-k", "--max-time", "6",
+        ch.probe_url.as_str(),
+    ];
+    match crate::docker::run_oneshot_capture(docker, &name, PROBE_IMAGE, cmd, &cfg.vpn_net).await {
+        Ok(out) => parse_probe_output(&out),
         Err(_) => (false, None),
     }
+}
+
+/// 解析 `curl -w '%{http_code} %{time_total}'` 输出 →(status<500 且非 000,时延 ms)。
+/// curl 连不上 → http_code=000 →(false, None),保持命门 #1「探不通即未登录」。
+pub fn parse_probe_output(out: &str) -> (bool, Option<i64>) {
+    let mut it = out.split_whitespace();
+    let code: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let secs: f64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    if code == 0 {
+        return (false, None);
+    }
+    (code < 500, Some((secs * 1000.0) as i64))
 }
 
 /// 折叠相邻完全相同的行(对照 manager.logs):重复 n>1 次时,首行后插
@@ -390,10 +405,22 @@ mod tests {
     // ── Task 3: probe + log dedup ──────────────────────────────────────────
     #[tokio::test]
     async fn probe_empty_url_is_false() {
-        let c = ch("a"); // probe_url 空
-        let (ok, ms) = probe(&c).await;
+        let c = ch("a"); // probe_url 空 → 不碰 docker 直接 false
+        let cfg = Config::from_getter(|_| None);
+        let (ok, ms) = probe(None, &cfg, &c).await;
         assert!(!ok);
         assert!(ms.is_none());
+    }
+
+    #[test]
+    fn probe_output_parsing() {
+        // 命门 #1 语义:<500 算通 + 时延;000(连不上)→ false/None;4xx 也算通(内网门户常 401/403)
+        assert_eq!(parse_probe_output("200 0.234"), (true, Some(234)));
+        assert_eq!(parse_probe_output("302 1.5"), (true, Some(1500)));
+        assert_eq!(parse_probe_output("403 0.1"), (true, Some(100)));
+        assert_eq!(parse_probe_output("500 0.2"), (false, Some(200)));
+        assert_eq!(parse_probe_output("000 0.000"), (false, None));
+        assert_eq!(parse_probe_output(""), (false, None));
     }
 
     #[test]

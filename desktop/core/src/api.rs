@@ -315,7 +315,7 @@ pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum
         Ok(None) => return err404("not found"),
         Err(e) => return err500(&format!("{e}")),
     };
-    let (ok, ms) = manager::probe(&ch).await; // 命门 #1
+    let (ok, ms) = manager::probe(st.docker.as_ref(), &st.cfg, &ch).await; // 命门 #1
     let new = if ok {
         "logged_in"
     } else if ch.status == "logged_in" {

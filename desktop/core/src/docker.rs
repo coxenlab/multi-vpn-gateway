@@ -292,6 +292,46 @@ pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, ho
     Ok(PullOutcome::Tagged(if arch.is_empty() { host_arch.to_string() } else { arch }))
 }
 
+/// 在指定网络上跑一次性容器并捕获 stdout(host-VM probe 用:宿主够不着 VM 内网 172.x,
+/// 故探活搬进 VM 内一次性容器,经 socks5h://vpn-{id}:1080 打 probe_url)。create→start→wait→读 stdout→rm。
+/// 幂等:先力删同名。
+pub async fn run_oneshot_capture(docker: &Docker, name: &str, image: &str, cmd: Vec<&str>, network: &str) -> Result<String> {
+    use bollard::container::{Config, WaitContainerOptions};
+    use bollard::models::HostConfig;
+    let _ = rm_force(docker, name).await;
+    let config = Config {
+        image: Some(image.to_string()),
+        // 用 entrypoint 覆盖直接跑命令:oss 镜像自带 entrypoint(要 VPN_PROTOCOL),
+        // 当 cmd 传会被 entrypoint 截走而非执行 curl,故整体覆盖 entrypoint。
+        entrypoint: Some(cmd.into_iter().map(String::from).collect()),
+        host_config: Some(HostConfig {
+            network_mode: Some(network.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    docker
+        .create_container(Some(CreateContainerOptions { name, platform: None }), config)
+        .await
+        .map_err(|e| anyhow!("create {name}: {e}"))?;
+    docker.start_container(name, None::<StartContainerOptions<String>>).await
+        .map_err(|e| anyhow!("start {name}: {e}"))?;
+    let mut wait = docker.wait_container(name, None::<WaitContainerOptions<String>>);
+    while wait.next().await.is_some() {}
+    // 只取 stdout(curl -w 写 stdout;-s 静默 stderr)
+    let mut stream = docker.logs(name, Some(LogsOptions::<String> {
+        stdout: true, stderr: false, ..Default::default()
+    }));
+    let mut buf = String::new();
+    while let Some(item) = stream.next().await {
+        if let Ok(o) = item {
+            buf.push_str(&String::from_utf8_lossy(o.into_bytes().as_ref()));
+        }
+    }
+    let _ = rm_force(docker, name).await;
+    Ok(buf)
+}
+
 /// 一次性容器测 /dev/net/tun(对照 check_dev_net_tun)。Ok(true)=exit0;Ok(false)=非0;Err=起不来。
 pub async fn run_tun_probe(docker: &Docker, image: &str) -> Result<bool> {
     use bollard::container::{Config, WaitContainerOptions};
