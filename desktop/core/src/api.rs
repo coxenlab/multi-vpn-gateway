@@ -62,7 +62,7 @@ pub async fn add_rules(
     for (kind, pat) in &plan.to_add {
         let _ = store::add_rule(&db, &cid, kind, pat);
     }
-    let code = manager::rebuild(&st.cfg, &db).await;
+    let code = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
     let rs = store::list_rules(&db, &cid).unwrap_or_default();
     let (domains, ips) = crate::routes::split_rules(rs);
     Json(json!({
@@ -77,7 +77,7 @@ pub async fn add_rules(
 pub async fn del_rule(State(st): State<AppState>, Path((_cid, rid)): Path<(String, i64)>) -> Json<Value> {
     let db = st.cfg.db_path();
     let _ = store::del_rule(&db, rid);
-    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, &db).await }))
+    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await }))
 }
 
 pub async fn patch_rule(
@@ -87,7 +87,7 @@ pub async fn patch_rule(
 ) -> Json<Value> {
     let db = st.cfg.db_path();
     let _ = store::set_rule_enabled(&db, rid, b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false));
-    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, &db).await }))
+    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await }))
 }
 
 // ── 通道创建/编辑(命门 #5:oss 凭据经 provision→oss_connect 注入) ──────────
@@ -201,7 +201,7 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
     match provision(&st, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
             let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-            let _ = manager::rebuild(&st.cfg, &db).await;
+            let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
             channel_json(&db, &cid)
         }
         Err(e) => {
@@ -237,7 +237,7 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
         match provision(&st, &ch2, &vnc).await {
             Ok((container_id, novnc)) => {
                 let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-                let _ = manager::rebuild(&st.cfg, &db).await;
+                let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
             }
             Err(e) => {
                 let _ = store::set_status(&db, &cid, "error");
@@ -354,7 +354,7 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     match provision(&st, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
             let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-            let _ = manager::rebuild(&st.cfg, &db).await;
+            let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
             Json(json!({ "ok": true })).into_response()
         }
         Err(e) => {
@@ -379,7 +379,7 @@ pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> Json
         let _ = manager::remove(d, &cid).await;
     }
     let _ = store::del_channel(&db, &cid);
-    let _ = manager::rebuild(&st.cfg, &db).await;
+    let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
     Json(json!({ "ok": true }))
 }
 

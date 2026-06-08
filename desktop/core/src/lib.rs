@@ -2,6 +2,7 @@ pub mod config;
 pub mod store;
 pub mod docker;
 pub mod vm;
+pub mod infra;
 pub mod manager;
 pub mod mihomo;
 pub mod server;

@@ -52,13 +52,20 @@ pub fn build_mihomo_config(mut base: Yaml, channels: &[ChannelPublic], rules: &[
     base
 }
 
-/// mihomo 配置文件路径:env MIHOMO_CONFIG_PATH,默认 /cfg/config.yaml(对照 manager.py CFG)。
-fn mihomo_config_path() -> String {
+/// mihomo 宿主侧工作副本路径:env MIHOMO_CONFIG_PATH,默认 /cfg/config.yaml(对照 manager.py CFG)。
+/// compose:即共享挂载本身;host-VM:`<data_dir>/config.yaml`(由 infra::ensure_params 注入),
+/// 投递进容器靠 put_archive,见 [`rebuild`] 与 [`crate::infra::ensure_mihomo`]。
+pub fn mihomo_config_path() -> String {
     std::env::var("MIHOMO_CONFIG_PATH").unwrap_or_else(|_| "/cfg/config.yaml".into())
 }
 
 /// 命门 #3:写 CFG + PUT /configs?force=true(不重启 mihomo、不断连)。返回状态码串或错误串。
-pub async fn rebuild(cfg: &Config, db: &std::path::Path) -> String {
+///
+/// host-VM 模型下 mihomo 跑在 VM 容器里、宿主无 `/cfg` 共享挂载,故:读宿主工作副本
+/// (`mihomo_config_path()`)当 base、并入通道/规则、写回工作副本,再经 `put_archive` 把成品
+/// 投递进容器 `/cfg/config.yaml`(`docker` 为 Some 时),最后 PUT 让 mihomo 从容器内绝对路径重载。
+/// compose 模型下宿主写的就是共享挂载本身,put_archive 失败被忽略(容器名不同),不影响重载。
+pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::path::Path) -> String {
     let inner = async {
         let channels = crate::store::list_channels(db)?;
         let rules = crate::store::all_rules(db)?;
@@ -69,13 +76,24 @@ pub async fn rebuild(cfg: &Config, db: &std::path::Path) -> String {
             .unwrap_or_else(|| Yaml::Mapping(serde_yaml::Mapping::new()));
         let merged = build_mihomo_config(base, &channels, &rules);
         let yaml = serde_yaml::to_string(&merged)?;
-        std::fs::write(&cfg_path, yaml)?;
+        std::fs::write(&cfg_path, &yaml)?; // 宿主工作副本(compose:即共享挂载)
+        if let Some(d) = docker {
+            // host-VM:投递进容器卷;best-effort(compose 下容器名不同会失败,但共享挂载已落地)
+            let _ = crate::docker::put_file(
+                d,
+                crate::infra::MIHOMO_CONTAINER,
+                crate::infra::MIHOMO_CFG_DIR,
+                crate::infra::MIHOMO_CFG_FILE,
+                yaml.as_bytes(),
+            )
+            .await;
+        }
         let client = reqwest::Client::new();
         let resp = client
             .put(format!("{}/configs", cfg.mihomo_ctrl_url))
             .query(&[("force", "true")])
             .bearer_auth(&cfg.mihomo_secret)
-            .json(&serde_json::json!({ "path": cfg_path }))
+            .json(&serde_json::json!({ "path": crate::infra::MIHOMO_CFG_PATH }))
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await?;
@@ -168,7 +186,7 @@ pub async fn create_channel(
     )?;
 
     let dns = if spec.runtime == "oss" {
-        crate::docker::container_ip_on_net(docker, "mihomo", &cfg.vpn_net)
+        crate::docker::container_ip_on_net(docker, crate::infra::MIHOMO_CONTAINER, &cfg.vpn_net)
             .await
             .map(|ip| vec![ip])
     } else {

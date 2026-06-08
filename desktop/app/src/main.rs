@@ -10,14 +10,30 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
-use vpnmgr_core::{app, config::Config, vm};
+use vpnmgr_core::{app, config::Config, infra, manager, vm};
 
-/// 后台启动序列:起自带 VM → 连 docker → 起 axum → 把主窗从 loading 页导航到真 UI。
+/// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 把主窗从 loading 页导航到真 UI。
 async fn boot(handle: &tauri::AppHandle) -> anyhow::Result<()> {
     vm::ensure_running(vm::PROFILE).await?;
     vm::wait_docker_ready(vm::PROFILE, 180).await?; // 设 DOCKER_HOST 指向专属 profile
-    let cfg = Config::load(); // DOCKER_HOST 已就位 → bootstrap 连专属 VM
+
+    // mihomo#1 端口/密钥首启生成并持久化,经 env 注入 Config(对照 gen_env.py;须在 Config::load 之前)。
+    let data_dir = Config::load().data_dir; // data_dir 不依赖 MIHOMO_* env
+    let _ = infra::ensure_params(&data_dir);
+
+    let cfg = Config::load(); // DOCKER_HOST + MIHOMO_* 已就位 → bootstrap 连专属 VM
     let (listener, state) = app::bootstrap(cfg).await?;
+
+    // 建 vpnmgr_vpnnet bridge + 起 mihomo#1 分流路由(设计 §5 改造C),再并入 DB 里的通道/规则。
+    // best-effort:mihomo 起不来不挡管理 UI(env-check/preflight 会如实报状态)。
+    if let Some(d) = state.docker.as_ref() {
+        if let Err(e) = infra::ensure_mihomo(d, &state.cfg).await {
+            eprintln!("mihomo#1 未就绪: {e}");
+        } else {
+            let _ = manager::rebuild(&state.cfg, Some(d), &state.cfg.db_path()).await;
+        }
+    }
+
     let port = listener.local_addr()?.port();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = app::serve(listener, state).await {
