@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Result};
 use bollard::container::{CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions, StopContainerOptions, UploadToContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-use bollard::image::CreateImageOptions;
+use bollard::image::{CreateImageOptions, RemoveImageOptions, TagImageOptions};
+use bollard::network::{CreateNetworkOptions, InspectNetworkOptions};
 use bollard::Docker;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -206,9 +207,130 @@ pub async fn raw_logs(docker: &Docker, name: &str, tail: i64) -> Result<Vec<Stri
     Ok(buf.lines().map(String::from).collect())
 }
 
+// ── Phase 6:infra 低层助手(对照 preflight.py / dockerhub.py 的 docker 调用) ──
+
+/// 404 判定(对照 docker.errors.NotFound / ImageNotFound)。
+pub fn is_not_found(e: &bollard::errors::Error) -> bool {
+    matches!(e, bollard::errors::Error::DockerResponseServerError { status_code: 404, .. })
+}
+
+/// daemon 可达(对照 dc.ping())。
+pub async fn ping(docker: &Docker) -> Result<()> {
+    docker.ping().await.map(|_| ()).map_err(|e| anyhow!("{e}"))
+}
+
+/// Docker 版本串(对照 dc.version()["Version"])。
+pub async fn docker_version(docker: &Docker) -> Result<String> {
+    let v = docker.version().await?;
+    Ok(v.version.unwrap_or_else(|| "?".into()))
+}
+
+/// 镜像层占用 GB(对照 dc.df()["LayersSize"]/1024^3)。
+pub async fn layers_size_gb(docker: &Docker) -> Result<f64> {
+    let df = docker.df().await?;
+    Ok(df.layers_size.unwrap_or(0) as f64 / 1024f64.powi(3))
+}
+
+/// 本机是否已有该镜像:Some(true)/Some(false)=404/None=其它错误(对照 _image_present)。
+pub async fn image_present(docker: &Docker, image: &str) -> Option<bool> {
+    match docker.inspect_image(image).await {
+        Ok(_) => Some(true),
+        Err(e) if is_not_found(&e) => Some(false),
+        Err(_) => None,
+    }
+}
+
+/// 本地镜像架构(对照 img.attrs["Architecture"]);缺失/错误 → None。
+pub async fn image_arch(docker: &Docker, image: &str) -> Option<String> {
+    docker.inspect_image(image).await.ok().and_then(|i| i.architecture).filter(|s| !s.is_empty())
+}
+
+/// docker 网络是否存在。
+pub async fn network_exists(docker: &Docker, name: &str) -> bool {
+    docker.inspect_network(name, None::<InspectNetworkOptions<String>>).await.is_ok()
+}
+
+/// 创建 bridge 网络(幂等:已存在则跳过)。
+pub async fn create_bridge_network(docker: &Docker, name: &str) -> Result<()> {
+    if network_exists(docker, name).await {
+        return Ok(());
+    }
+    docker
+        .create_network(CreateNetworkOptions { name: name.to_string(), driver: "bridge".to_string(), ..Default::default() })
+        .await
+        .map(|_| ())
+        .map_err(|e| anyhow!("create_network {name}: {e}"))
+}
+
+/// 从 mirror 拉取 repo:tag(指定 platform)→ 校验 arch → retag 回原名 → 删 mirror 标。
+/// 对照 _pull_worker 单镜像源那一轮:成功 Ok(arch),不匹配/失败 Err。
+pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, host_arch: &str) -> Result<String> {
+    let src = format!("{mirror}/{repo}");
+    let platform = format!("linux/{host_arch}");
+    let opts = CreateImageOptions { from_image: src.clone(), tag: tag.to_string(), platform, ..Default::default() };
+    let mut stream = docker.create_image(Some(opts), None, None);
+    while let Some(item) = stream.next().await {
+        item.map_err(|e| anyhow!("pull {src}:{tag}: {e}"))?;
+    }
+    let full_src = format!("{src}:{tag}");
+    let arch = image_arch(docker, &full_src).await.unwrap_or_default();
+    if !arch.is_empty() && arch != host_arch {
+        let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+        return Err(anyhow!("拉到 {arch}(非 {host_arch})"));
+    }
+    docker
+        .tag_image(&full_src, Some(TagImageOptions { repo: repo.to_string(), tag: tag.to_string() }))
+        .await
+        .map_err(|e| anyhow!("tag {repo}:{tag}: {e}"))?;
+    let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+    Ok(if arch.is_empty() { host_arch.to_string() } else { arch })
+}
+
+/// 一次性容器测 /dev/net/tun(对照 check_dev_net_tun)。Ok(true)=exit0;Ok(false)=非0;Err=起不来。
+pub async fn run_tun_probe(docker: &Docker, image: &str) -> Result<bool> {
+    use bollard::container::{Config, WaitContainerOptions};
+    use bollard::models::{DeviceMapping, HostConfig};
+    let name = "vpncore-tun-probe";
+    let _ = rm_force(docker, name).await;
+    let config = Config {
+        image: Some(image.to_string()),
+        entrypoint: Some(vec!["/bin/sh".into(), "-c".into(), "test -c /dev/net/tun".into()]),
+        host_config: Some(HostConfig {
+            network_mode: Some("none".into()),
+            devices: Some(vec![DeviceMapping {
+                path_on_host: Some("/dev/net/tun".into()),
+                path_in_container: Some("/dev/net/tun".into()),
+                cgroup_permissions: Some("rwm".into()),
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    docker.create_container(Some(CreateContainerOptions { name, platform: None }), config).await?;
+    docker.start_container(name, None::<StartContainerOptions<String>>).await?;
+    let mut wait = docker.wait_container(name, None::<WaitContainerOptions<String>>);
+    let mut code = 0i64;
+    while let Some(item) = wait.next().await {
+        if let Ok(r) = item {
+            code = r.status_code;
+        }
+    }
+    let _ = rm_force(docker, name).await;
+    Ok(code == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn not_found_classifies_404() {
+        let e404 = bollard::errors::Error::DockerResponseServerError { status_code: 404, message: "no such image".into() };
+        let e500 = bollard::errors::Error::DockerResponseServerError { status_code: 500, message: "boom".into() };
+        assert!(is_not_found(&e404));
+        assert!(!is_not_found(&e500));
+    }
+
 
     #[test]
     fn fmt_uptime_units() {
