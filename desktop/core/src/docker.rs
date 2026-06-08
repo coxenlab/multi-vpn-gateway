@@ -137,6 +137,22 @@ pub async fn exec_capture(docker: &Docker, name: &str, cmd: Vec<&str>) -> Result
     Ok(out)
 }
 
+/// fire-and-forget exec(对照 Python `c.exec_run(..., detach=True)`)。
+/// 用于不会自行退出的前台进程(openfortivpn --persistent)与 ensure_novnc_bridge 的等待脚本:
+/// exec_capture 会阻塞在 output 流上直到进程退出 —— 这类进程永不退出会挂死,故必须 detach。
+pub async fn exec_detach(docker: &Docker, name: &str, cmd: Vec<&str>) -> Result<()> {
+    let exec = docker
+        .create_exec(name, CreateExecOptions {
+            cmd: Some(cmd.into_iter().map(String::from).collect()),
+            ..Default::default()
+        })
+        .await?;
+    docker
+        .start_exec(&exec.id, Some(StartExecOptions { detach: true, ..Default::default() }))
+        .await?;
+    Ok(())
+}
+
 /// 命门 #5:exec attach_stdin,写 data 后 shutdown 发 EOF。
 pub async fn exec_inject_stdin(docker: &Docker, name: &str, cmd: Vec<&str>, data: &[u8]) -> Result<String> {
     let exec = docker
@@ -162,12 +178,13 @@ pub async fn exec_inject_stdin(docker: &Docker, name: &str, cmd: Vec<&str>, data
     Ok(out)
 }
 
-/// 命门 #5(byo):内存 tar(mode 0600)→ upload_to_container。
+/// byo 安装器上传:内存 tar → upload_to_container。对照 Python put_file。
+/// mode 0o755:安装器须可执行(用户在 noVNC 桌面里直接跑)。命门 #5 由「不进 argv」满足,与文件 mode 无关。
 pub async fn put_file(docker: &Docker, name: &str, dst_dir: &str, filename: &str, data: &[u8]) -> Result<()> {
     let mut ar = tar::Builder::new(Vec::new());
     let mut header = tar::Header::new_gnu();
     header.set_size(data.len() as u64);
-    header.set_mode(0o600);
+    header.set_mode(0o755);
     header.set_cksum();
     ar.append_data(&mut header, filename, data)?;
     let tar_bytes = ar.into_inner()?;
