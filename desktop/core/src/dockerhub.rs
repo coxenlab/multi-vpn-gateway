@@ -50,7 +50,7 @@ pub fn parse_tags(body: &Value) -> Vec<RawVersion> {
             out.push(RawVersion { tag: name.to_string(), arch: archs });
         }
     }
-    out.sort_by(|a, b| ver_key(&b.tag).cmp(&ver_key(&a.tag))); // 降序
+    out.sort_by_key(|v| std::cmp::Reverse(ver_key(&v.tag))); // 降序
     out
 }
 
