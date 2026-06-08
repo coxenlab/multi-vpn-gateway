@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use bollard::container::{CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions, StopContainerOptions, UploadToContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-use bollard::image::{CreateImageOptions, RemoveImageOptions, TagImageOptions};
+use bollard::image::{CreateImageOptions, ImportImageOptions, RemoveImageOptions, TagImageOptions};
 use bollard::network::{CreateNetworkOptions, InspectNetworkOptions};
 use bollard::Docker;
 use chrono::{DateTime, Utc};
@@ -65,6 +65,22 @@ pub async fn ensure_image(docker: &Docker, image: &str) -> Result<()> {
         item.map_err(|e| anyhow!("pull {image}: {e}"))?;
     }
     Ok(())
+}
+
+/// docker-load 一个本地镜像 tarball(= `docker load`,POST /images/load)。打包内置镜像首启落进 VM 用。
+/// tar 可为 gzip(daemon 自识别)。幂等:镜像已在则跳过返回 false;真载入返回 true。
+pub async fn load_image_if_absent(docker: &Docker, image: &str, tar_path: &std::path::Path) -> Result<bool> {
+    if image_present(docker, image).await == Some(true) {
+        return Ok(false);
+    }
+    let bytes = tokio::fs::read(tar_path)
+        .await
+        .map_err(|e| anyhow!("读镜像 tarball {}: {e}", tar_path.display()))?;
+    let mut stream = docker.import_image(ImportImageOptions { quiet: true }, bytes.into(), None);
+    while let Some(item) = stream.next().await {
+        item.map_err(|e| anyhow!("docker load {image}: {e}"))?;
+    }
+    Ok(true)
 }
 
 pub async fn rm_force(docker: &Docker, name: &str) -> Result<()> {

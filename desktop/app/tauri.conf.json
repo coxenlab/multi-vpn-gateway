@@ -23,7 +23,8 @@
     ],
     "resources": {
       "../../app/static": "static",
-      "runtime": "runtime"
+      "runtime": "runtime",
+      "bundled-images": "images"
     },
     "macOS": {
       "signingIdentity": "-",

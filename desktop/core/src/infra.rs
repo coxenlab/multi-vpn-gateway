@@ -180,6 +180,17 @@ fn mihomo_container_config(cfg: &Config, host_port: &str, ctrl_port: &str) -> Co
 /// 配置投递:先 create(不 start)使卷挂载就绪 → put_archive 基础配置到 `/cfg/config.yaml` →
 /// start。mihomo 启动即读到带 external-controller/secret 的配置,控制 API 立刻在对的端口/密钥上起来。
 /// 启动后由调用方紧随 `manager::rebuild` 把 DB 里的通道/规则并入(命门 #2/#3)。
+/// 首启把打包内置的镜像 tarball docker-load 进 VM。当前只 `vpnmgr/oss-vpn`(自建、registry 拉不到,
+/// 只能 load;byo-desktop 1.15GB 暂不内置 → 用户首次用 byo 时再按需取)。`images_dir` = 打包后的
+/// `Contents/Resources/images`;幂等(镜像已在则跳过)。best-effort,缺文件/dev 未打包则静默跳过。
+pub async fn ensure_bundled_images(docker: &Docker, images_dir: &Path) -> Result<()> {
+    let oss = images_dir.join("oss-vpn.tar.gz");
+    if oss.exists() && docker::load_image_if_absent(docker, "vpnmgr/oss-vpn:latest", &oss).await? {
+        eprintln!("已载入内置镜像 vpnmgr/oss-vpn:latest");
+    }
+    Ok(())
+}
+
 pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
     docker::create_bridge_network(docker, &cfg.vpn_net).await?;
 
