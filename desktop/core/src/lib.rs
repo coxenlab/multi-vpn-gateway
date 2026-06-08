@@ -7,6 +7,7 @@ pub mod server;
 pub mod routes;
 pub mod registry;
 pub mod adapters;
+pub mod webutil;
 
 use std::sync::Arc;
 

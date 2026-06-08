@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.52", features = ["full"] }
-axum = "0.7"
+axum = { version = "0.7", features = ["multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 bollard = "=0.17.1"
@@ -21,6 +21,8 @@ bytes = "=1.11.1"
 tar = "=0.4.46"
 futures-util = "0.3"
 chrono = "0.4"
+rand = "0.8"
+ipnet = "2"
 
 [dev-dependencies]
 tempfile = "3"
