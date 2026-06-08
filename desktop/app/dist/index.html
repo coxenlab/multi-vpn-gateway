@@ -4,12 +4,48 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>VPN 管理网关</title>
+    <style>
+      :root {
+        --cobalt: #2f6feb;
+        --ink: #1e293b;
+        --muted: #64748b;
+        --bg: #f8fafc;
+        --line: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font-family: -apple-system, "Inter", "PingFang SC", sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .card { text-align: center; max-width: 420px; padding: 0 32px; }
+      .spinner {
+        width: 36px;
+        height: 36px;
+        margin: 0 auto 28px;
+        border: 3px solid var(--line);
+        border-top-color: var(--cobalt);
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      h1 { font-size: 17px; font-weight: 600; margin: 0 0 10px; letter-spacing: 0.2px; }
+      p { font-size: 13px; line-height: 1.6; color: var(--muted); margin: 0; }
+      .hint { margin-top: 18px; font-size: 12px; color: #94a3b8; }
+    </style>
   </head>
-  <body
-    style="font-family: -apple-system, 'Inter', sans-serif; color: #475569; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f8fafc"
-  >
-    <!-- 占位:Tauri 要求 frontendDist 目录存在。运行时主窗经 WebviewUrl::External
-         直连 http://127.0.0.1:UI/ 伺服的真实 6 屏 UI,本页正常不会被加载。 -->
-    <p>正在启动 VPN 管理网关…</p>
+  <body>
+    <!-- 启动画面:Tauri setup 先加载本页(内置,tauri://localhost);后台起自带 colima VM,
+         VM + 内嵌 axum 就绪后,Rust 侧把主窗导航到 http://127.0.0.1:UI/ 的真实 6 屏 UI。 -->
+    <div class="card">
+      <div class="spinner"></div>
+      <h1>正在启动自带运行时</h1>
+      <p>首次启动需初始化自带的 Linux 虚拟机并准备容器环境,可能需要几分钟,请稍候。</p>
+      <p class="hint">此过程不影响你机器上的其它 Docker / 虚拟机。</p>
+    </div>
   </body>
 </html>

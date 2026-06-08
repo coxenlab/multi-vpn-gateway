@@ -4432,9 +4432,9 @@ dependencies = [
 name = "vpnmgr-desktop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "tauri",
  "tauri-build",
- "url",
  "vpnmgr-core",
 ]
 
