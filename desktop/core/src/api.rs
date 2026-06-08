@@ -6,7 +6,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use crate::store::NewChannel;
-use crate::{registry, store, manager, webutil, AppState};
+use crate::{registry, store, manager, webutil, dockerhub, preflight, AppState};
 
 pub async fn vpn_types() -> Json<Value> {
     Json(json!(registry::list_adapters().unwrap_or_default()))
@@ -409,4 +409,145 @@ pub async fn entry_pac(State(st): State<AppState>) -> axum::response::Response {
 pub async fn entry_setup_commands(State(st): State<AppState>) -> Json<Value> {
     let ui = st.cfg.ui_port.to_string();
     Json(webutil::setup_commands(&st.cfg.mihomo_host_port, &ui))
+}
+
+// ── Phase 6:versions / preflight / images / mirrors ──────────────────────────
+
+#[derive(Deserialize)]
+pub struct PreflightQuery {
+    pub vpn_type: Option<String>,
+    pub version: Option<String>,
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+fn default_scope() -> String {
+    "preflight".into()
+}
+
+pub async fn vpn_versions(Path(vtype): Path<String>) -> axum::response::Response {
+    let spec = match registry::get(&vtype) {
+        Ok(s) => s,
+        Err(_) => return err404("unknown type"),
+    };
+    if !spec.versioned {
+        return Json(json!({ "versions": [] })).into_response();
+    }
+    let repo = spec.version_repo.clone().unwrap_or_default();
+    let arch = registry::host_arch();
+    let vs = dockerhub::versions(&repo, &arch, &spec.fallback_versions).await;
+    Json(json!({ "versions": vs })).into_response()
+}
+
+fn enabled_mirror_hosts(st: &AppState) -> Vec<String> {
+    store::list_mirrors(&st.cfg.db_path())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.enabled != 0)
+        .map(|m| m.host)
+        .collect()
+}
+
+pub async fn preflight_check(State(st): State<AppState>, Query(q): Query<PreflightQuery>) -> Json<Value> {
+    let mirrors = enabled_mirror_hosts(&st);
+    let mihomo_alive = if q.scope == "full" { Some(st.mihomo.alive().await) } else { None };
+    let arch = registry::host_arch();
+    let out = preflight::run_checks(
+        st.docker.as_ref(),
+        q.vpn_type.as_deref(),
+        q.version.as_deref(),
+        &arch,
+        &st.cfg.vpn_net,
+        &q.scope,
+        &mirrors,
+        mihomo_alive,
+    )
+    .await;
+    Json(out)
+}
+
+pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String>, Json(b): Json<Value>) -> axum::response::Response {
+    match action.as_str() {
+        "create_network" => {
+            let name = b
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&st.cfg.vpn_net)
+                .to_string();
+            match st.docker.as_ref() {
+                Some(d) => match crate::docker::create_bridge_network(d, &name).await {
+                    Ok(_) => Json(json!({ "ok": true })).into_response(),
+                    Err(e) => err500(&format!("{e}")),
+                },
+                None => err500("docker unavailable"),
+            }
+        }
+        "pull_image" => {
+            let image = b.get("image").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let repo = image.split(':').next().unwrap_or("").to_string();
+            if !preflight::known_repos().contains(&repo) || preflight::is_buildable(&image) {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": "image not pullable" }))).into_response();
+            }
+            let docker = match st.docker.as_ref() {
+                Some(d) => d.clone(),
+                None => return err500("docker unavailable"),
+            };
+            let mirrors = enabled_mirror_hosts(&st);
+            let tid = preflight::start_pull(docker, &image, &registry::host_arch(), mirrors);
+            Json(json!({ "task_id": tid })).into_response()
+        }
+        _ => (StatusCode::BAD_REQUEST, Json(json!({ "error": "unknown action" }))).into_response(),
+    }
+}
+
+pub async fn preflight_fix_status(Path(task_id): Path<String>) -> axum::response::Response {
+    match preflight::get_task(&task_id) {
+        Some(st) => Json(st).into_response(),
+        None => err404("unknown task"),
+    }
+}
+
+pub async fn images_inventory(State(st): State<AppState>) -> Json<Value> {
+    let mirrors = enabled_mirror_hosts(&st);
+    let arch = registry::host_arch();
+    Json(preflight::image_inventory(st.docker.as_ref(), &arch, &mirrors).await)
+}
+
+pub async fn mirrors_list(State(st): State<AppState>) -> Json<Value> {
+    Json(json!(store::list_mirrors(&st.cfg.db_path()).unwrap_or_default()))
+}
+
+pub async fn mirrors_add(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    let host = b.get("host").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if host.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "host required" }))).into_response();
+    }
+    let db = st.cfg.db_path();
+    match store::add_mirror(&db, &host) {
+        Ok(mid) => match store::list_mirrors(&db).unwrap_or_default().into_iter().find(|m| m.id == mid) {
+            Some(m) => Json(serde_json::to_value(m).unwrap()).into_response(),
+            None => err500("mirror added but not found"),
+        },
+        Err(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "mirror already exists" }))).into_response(),
+    }
+}
+
+pub async fn mirrors_patch(State(st): State<AppState>, Path(mid): Path<i64>, Json(b): Json<Value>) -> Json<Value> {
+    let priority = b.get("priority").and_then(|v| v.as_i64());
+    let enabled = b.get("enabled").and_then(|v| v.as_bool());
+    let _ = store::set_mirror(&st.cfg.db_path(), mid, priority, enabled);
+    Json(json!({ "ok": true }))
+}
+
+pub async fn mirrors_del(State(st): State<AppState>, Path(mid): Path<i64>) -> Json<Value> {
+    let _ = store::del_mirror(&st.cfg.db_path(), mid);
+    Json(json!({ "ok": true }))
+}
+
+pub async fn mirrors_test(Json(b): Json<Value>) -> Json<Value> {
+    let host = b.get("host").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let t0 = std::time::Instant::now();
+    let ok = preflight::mirror_reachable(&host).await;
+    let ms = if ok { Some(t0.elapsed().as_millis() as i64) } else { None };
+    Json(json!({ "reachable": ok, "latency_ms": ms }))
 }

@@ -39,6 +39,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/clash-snippet", get(api::clash_snippet))
         .route("/entry/proxy.pac", get(api::entry_pac))
         .route("/api/entry/setup-commands", get(api::entry_setup_commands))
+        .route("/api/vpn-types/:vtype/versions", get(api::vpn_versions))
+        .route("/api/preflight", get(api::preflight_check))
+        // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法
+        .route("/api/preflight/fix/:x", get(api::preflight_fix_status).post(api::preflight_fix))
+        .route("/api/images", get(api::images_inventory))
+        .route("/api/mirrors", get(api::mirrors_list).post(api::mirrors_add))
+        .route("/api/mirrors/:mid", axum::routing::patch(api::mirrors_patch).delete(api::mirrors_del))
+        .route("/api/mirrors/test", axum::routing::post(api::mirrors_test))
         .fallback_service(static_svc)
         .with_state(state)
 }
@@ -227,6 +235,52 @@ mod tests {
         assert!(resp.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/plain"));
         let body = String::from_utf8(axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
         assert!(body.contains("IP-CIDR,10.0.0.0/8,vpn-router,no-resolve"));
+    }
+
+    #[tokio::test]
+    async fn vpn_versions_unknown_404() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().uri("/api/vpn-types/nope/versions").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn vpn_versions_non_versioned_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().uri("/api/vpn-types/anyconnect/versions").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["versions"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn mirrors_crud() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.clone().oneshot(Request::builder().method("POST").uri("/api/mirrors")
+            .header("content-type", "application/json").body(Body::from(r#"{"host":"my.mirror.io"}"#)).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["host"], "my.mirror.io");
+        let resp = app.oneshot(Request::builder().uri("/api/mirrors").body(Body::empty()).unwrap()).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert!(v.as_array().unwrap().iter().any(|m| m["host"] == "my.mirror.io"));
+    }
+
+    #[tokio::test]
+    async fn preflight_no_docker_overall_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().uri("/api/preflight?vpn_type=easyconnect&version=7.6.3").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["overall"], "fail");
     }
 
     #[tokio::test]
