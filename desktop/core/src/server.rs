@@ -3,7 +3,7 @@ use axum::Router;
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
-use crate::{routes, AppState};
+use crate::{routes, api, AppState};
 
 /// 组路由:三个 API 路由先注册,静态 ServeDir 作 fallback(命门:顺序——API 不被静态盖住)。
 /// 静态响应加 Cache-Control: no-cache(对照 _NoCacheStatic,防浏览器启发式缓存吃旧 UI)。
@@ -21,6 +21,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/system", get(routes::system))
         .route("/api/channels", get(routes::channels))
         .route("/api/proxies", get(routes::proxies))
+        .route("/api/vpn-types", get(api::vpn_types))
+        .route("/api/connections", get(api::connections))
+        .route("/api/channels/:cid/logs", get(api::logs))
         .fallback_service(static_svc)
         .with_state(state)
 }
@@ -101,6 +104,31 @@ mod tests {
         assert_eq!(ch["status"], "down");
         assert_eq!(ch["domains"][0]["pattern"], "x.com");
         assert_eq!(ch["socks_proxy"], "ch-abc");
+    }
+
+    #[tokio::test]
+    async fn vpn_types_lists_adapters() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().uri("/api/vpn-types").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.is_array() && !v.as_array().unwrap().is_empty(), "至少有 easyconnect 等适配器");
+        assert!(v.as_array().unwrap().iter().any(|a| a["key"] == "easyconnect"));
+    }
+
+    #[tokio::test]
+    async fn logs_without_docker_returns_note_line() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().uri("/api/channels/x/logs").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["lines"][0].as_str().unwrap().contains("docker"), "docker 不可用时给单行说明");
     }
 
     #[tokio::test]
