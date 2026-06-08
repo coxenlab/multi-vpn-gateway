@@ -46,6 +46,11 @@ pub struct InfraParams {
     pub mihomo_host_port: u16,
     /// 控制台端口映射到宿主的高位端口(Rust core 经此打 mihomo#1 控制 API)。
     pub mihomo_ctrl_port: u16,
+    /// 管理界面(axum)映射到宿主的高位端口。持久化以避免固定 8787 与本机其它服务/多实例相撞,
+    /// 又保证重启稳定(PAC/系统代理 URL `http://127.0.0.1:{ui_port}/entry/proxy.pac` 依赖它)。
+    /// `#[serde(default)]`:旧 infra.json 无此字段 → 反序列化为 0,ensure_params 据此补生成并回写。
+    #[serde(default)]
+    pub ui_port: u16,
     /// external-controller bearer 密钥。
     pub secret: String,
 }
@@ -86,20 +91,35 @@ fn free_high_port(used: &mut Vec<u16>) -> Result<u16> {
 pub fn ensure_params(data_dir: &Path) -> Result<InfraParams> {
     std::fs::create_dir_all(data_dir)?;
     let pf = data_dir.join("infra.json");
-    let params: InfraParams = if pf.exists() {
-        serde_json::from_str(&std::fs::read_to_string(&pf)?)
-            .map_err(|e| anyhow!("解析 {}: {e}", pf.display()))?
+    let (mut params, mut dirty): (InfraParams, bool) = if pf.exists() {
+        (
+            serde_json::from_str(&std::fs::read_to_string(&pf)?)
+                .map_err(|e| anyhow!("解析 {}: {e}", pf.display()))?,
+            false,
+        )
     } else {
         let mut used = Vec::new();
-        let p = InfraParams {
-            mihomo_host_port: free_high_port(&mut used)?,
-            mihomo_ctrl_port: free_high_port(&mut used)?,
-            secret: random_secret(),
-        };
-        write_0600(&pf, &serde_json::to_string_pretty(&p)?)?;
-        p
+        (
+            InfraParams {
+                mihomo_host_port: free_high_port(&mut used)?,
+                mihomo_ctrl_port: free_high_port(&mut used)?,
+                ui_port: free_high_port(&mut used)?,
+                secret: random_secret(),
+            },
+            true,
+        )
     };
+    // 旧 infra.json(serde default → ui_port=0):补一个随机高位、避开已有 mihomo 端口,回写持久化。
+    if params.ui_port == 0 {
+        let mut used = vec![params.mihomo_host_port, params.mihomo_ctrl_port];
+        params.ui_port = free_high_port(&mut used)?;
+        dirty = true;
+    }
+    if dirty {
+        write_0600(&pf, &serde_json::to_string_pretty(&params)?)?;
+    }
 
+    set_env_if_unset("UI_PORT", &params.ui_port.to_string());
     set_env_if_unset("MIHOMO_HOST_PORT", &params.mihomo_host_port.to_string());
     set_env_if_unset("MIHOMO_CTRL_PORT", &params.mihomo_ctrl_port.to_string());
     set_env_if_unset("MIHOMO_SECRET", &params.secret);
