@@ -11,3 +11,8 @@ tauri-build = { version = "2.6.2", features = [] }
 tauri = { version = "2.11.2", features = ["tray-icon"] }
 anyhow = "1"
 vpnmgr-core = { path = "../core" }
+# core→fernet→openssl 默认动态链 Homebrew /opt/homebrew/opt/openssl@3 的 libssl/libcrypto:
+# 那是非自包含的绝对路径,且 hardened-runtime + ad-hoc 自签会因 Team ID 不符拒载 → 打包后一启动即崩。
+# 在二进制层强开 openssl `vendored`:从源码静态编进本二进制(随我们自己的签名),.app 自包含、可双击。
+# 只影响 app 打包构建;core 自身的 cargo test 仍走系统 openssl,dev 不受累。
+openssl = { version = "0.10", features = ["vendored"] }

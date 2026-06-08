@@ -14,8 +14,29 @@ use vpnmgr_core::{app, config::Config, infra, manager, vm};
 
 /// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 把主窗从 loading 页导航到真 UI。
 async fn boot(handle: &tauri::AppHandle) -> anyhow::Result<()> {
+    // Finder 双击启动的 app 走 launchd 的 PATH(本机为空 → 默认 /usr/bin:/bin:/usr/sbin:/sbin),
+    // 不含 Homebrew bin;而 colima/docker 装在 /opt/homebrew/bin(Apple Silicon)或 /usr/local/bin(Intel)。
+    // 不补则 vm.rs 的 Command::new("colima") 双击启动时必然 not-found、boot 卡在 ensure_running。
+    // 一次性把两个标准 Homebrew 位置前置进 PATH(后续 sidecar 内置 colima 后可去掉)。
+    {
+        let path = std::env::var("PATH").unwrap_or_default();
+        if !path.split(':').any(|p| p == "/opt/homebrew/bin") {
+            std::env::set_var("PATH", format!("/opt/homebrew/bin:/usr/local/bin:{path}"));
+        }
+    }
+
     vm::ensure_running(vm::PROFILE).await?;
     vm::wait_docker_ready(vm::PROFILE, 180).await?; // 设 DOCKER_HOST 指向专属 profile
+
+    // 打包后:静态 6 屏 UI 随 bundle 落在 .app 的 Contents/Resources/static;经 env 指过去
+    // (须在 Config::load 之前,Config 读 STATIC_DIR)。开发态(cargo run)该路径不存在 → 不设,
+    // Config 回落编译期 baked 的 ../../app/static,dev/bundle 同一份代码两态自洽。
+    if let Ok(res) = handle.path().resource_dir() {
+        let static_dir = res.join("static");
+        if static_dir.join("index.html").exists() {
+            std::env::set_var("STATIC_DIR", &static_dir);
+        }
+    }
 
     // mihomo#1 端口/密钥首启生成并持久化,经 env 注入 Config(对照 gen_env.py;须在 Config::load 之前)。
     let data_dir = Config::load().data_dir; // data_dir 不依赖 MIHOMO_* env
