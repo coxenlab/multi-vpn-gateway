@@ -1,8 +1,9 @@
 //! Docker 环境/容器体检 + 镜像类修复。对照 app/preflight.py。
 //! 检查函数永不抛:内部错误转 warn/fail 的 CheckResult。
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashSet;
+use bollard::Docker;
 use crate::registry;
 
 /// 自建镜像本地构建上下文(镜像名前缀 → 仓库内目录)。对照 _BUILD_CONTEXT。
@@ -130,9 +131,212 @@ pub const INFRA_IMAGES: &[InfraImage] = &[
     InfraImage { image: "app", kind: "compose", title: "管理后端(FastAPI)", build_context: Some("app"), arch: &[] },
 ];
 
+// ── 检查函数 + run_checks(对照 preflight.py;永不抛) ──────────────────────────
+
+pub async fn check_docker_daemon(docker: &Docker) -> CheckResult {
+    match crate::docker::ping(docker).await {
+        Ok(_) => result("docker_daemon", "引擎", "Docker 守护进程可达", "pass", "", None),
+        Err(e) => result("docker_daemon", "引擎", "Docker 守护进程可达", "fail",
+            &format!("无法连接 Docker:{e}"),
+            Some(json!({"kind":"tutorial","action":"install_docker","label":"查看安装/启动 Docker 教程"}))),
+    }
+}
+
+pub async fn check_image_present(docker: &Docker, image: &str) -> CheckResult {
+    match crate::docker::image_present(docker, image).await {
+        Some(true) => result("image_present", "镜像", "目标镜像本地就绪", "pass", image, None),
+        Some(false) => {
+            if is_buildable(image) {
+                let ctx = build_context_of(image.split(':').next().unwrap_or("")).unwrap_or("");
+                result("image_present", "镜像", "目标镜像本地就绪", "fail",
+                    &format!("自建镜像未构建。请在仓库根执行:docker build -t {image} {ctx}"),
+                    Some(json!({"kind":"none"})))
+            } else {
+                result("image_present", "镜像", "目标镜像本地就绪", "fail",
+                    &format!("本地缺少镜像 {image},起容器会失败(自动拉取可能因 Docker Hub 网络不通而失败)"),
+                    Some(json!({"kind":"auto","action":"pull_image","label":"走国内镜像源拉取","params":{"image":image}})))
+            }
+        }
+        None => result("image_present", "镜像", "目标镜像本地就绪", "warn", "检查出错", None),
+    }
+}
+
+pub async fn check_image_arch_match(docker: &Docker, image: &str, host_arch: &str) -> CheckResult {
+    match crate::docker::image_present(docker, image).await {
+        Some(false) => return result("image_arch_match", "镜像", "镜像架构匹配宿主", "skip", "镜像就绪后再检测架构", None),
+        None => return result("image_arch_match", "镜像", "镜像架构匹配宿主", "warn", "检查出错", None),
+        Some(true) => {}
+    }
+    let arch = crate::docker::image_arch(docker, image).await.unwrap_or_default();
+    if arch.is_empty() {
+        return result("image_arch_match", "镜像", "镜像架构匹配宿主", "warn",
+            "无法判定本地镜像架构(多架构存储下可能为空),起容器后留意是否走模拟", None);
+    }
+    if arch == host_arch {
+        return result("image_arch_match", "镜像", "镜像架构匹配宿主", "pass", &format!("{arch} 原生"), None);
+    }
+    if is_buildable(image) {
+        return result("image_arch_match", "镜像", "镜像架构匹配宿主", "warn",
+            &format!("自建镜像架构 {arch} ≠ 宿主 {host_arch},建议本地重建"), None);
+    }
+    result("image_arch_match", "镜像", "镜像架构匹配宿主", "fail",
+        &format!("本地镜像是 {arch},宿主是 {host_arch} → 会走模拟(如 aTrust 核心会崩)"),
+        Some(json!({"kind":"auto","action":"pull_image","label":format!("拉取 {host_arch} 版并重打标签"),"params":{"image":image,"arch":host_arch}})))
+}
+
+pub async fn check_vpn_network(docker: &Docker, vpn_net: &str) -> CheckResult {
+    if crate::docker::network_exists(docker, vpn_net).await {
+        result("vpn_network", "运行条件", "VPN docker 网络存在", "pass", vpn_net, None)
+    } else {
+        result("vpn_network", "运行条件", "VPN docker 网络存在", "fail",
+            &format!("docker 网络 {vpn_net} 不存在,容器无法接入"),
+            Some(json!({"kind":"auto","action":"create_network","label":"创建该网络","params":{"name":vpn_net}})))
+    }
+}
+
+pub async fn check_dev_net_tun(docker: &Docker, image: &str, image_ok: bool) -> CheckResult {
+    if !image_ok {
+        return result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "skip", "镜像就绪后检测", None);
+    }
+    match crate::docker::run_tun_probe(docker, image).await {
+        Ok(true) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "pass", "", None),
+        Ok(false) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn", "容器内未见 /dev/net/tun,VPN 隧道可能起不来", None),
+        Err(e) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn", &format!("无法判定(尽力而为):{e}"), None),
+    }
+}
+
+pub async fn check_disk_space(docker: &Docker) -> CheckResult {
+    match crate::docker::layers_size_gb(docker).await {
+        Ok(gb) => result("disk_space", "运行条件", "磁盘空间", "pass",
+            &format!("Docker 镜像层已占用约 {gb:.1} GB;每个 VPN 镜像 1.5–5GB,注意留足空间"), None),
+        Err(e) => result("disk_space", "运行条件", "磁盘空间", "skip", &format!("无法读取:{e}"), None),
+    }
+}
+
+pub async fn check_docker_version(docker: &Docker) -> CheckResult {
+    match crate::docker::docker_version(docker).await {
+        Ok(v) => result("docker_version", "引擎", "Docker 版本", "pass", &format!("Docker {v}"), None),
+        Err(e) => result("docker_version", "引擎", "Docker 版本", "warn", &format!("读取失败:{e}"), None),
+    }
+}
+
+pub async fn check_mirror_reachable(mirrors: &[String]) -> CheckResult {
+    for h in mirrors {
+        if mirror_reachable(h).await {
+            return result("mirror_reachable", "镜像", "国内镜像源可达", "pass", &format!("{h} 可达"), None);
+        }
+    }
+    result("mirror_reachable", "镜像", "国内镜像源可达", "warn",
+        "配置的镜像源都不可达,自动拉取可能失败",
+        Some(json!({"kind":"tutorial","action":"switch_registry_mirror","label":"查看切换 Docker 国内源教程"})))
+}
+
+pub fn check_mihomo(alive: bool) -> CheckResult {
+    if alive {
+        result("mihomo_health", "分流底座", "mihomo 分流实例", "pass", "running", None)
+    } else {
+        result("mihomo_health", "分流底座", "mihomo 分流实例", "warn", "mihomo 未运行,通道起来了也不会分流", None)
+    }
+}
+
+/// 对照 _mirror_reachable:GET https://{host}/v2/ status<500。async(避免 tokio 内 blocking)。
+pub async fn mirror_reachable(host: &str) -> bool {
+    reqwest::Client::new()
+        .get(format!("https://{host}/v2/"))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map(|r| r.status().as_u16() < 500)
+        .unwrap_or(false)
+}
+
+/// 对照 run_checks。docker None → daemon fail + 其余 skip。
+#[allow(clippy::too_many_arguments)]
+pub async fn run_checks(
+    docker: Option<&Docker>,
+    vpn_type: Option<&str>,
+    version: Option<&str>,
+    host_arch: &str,
+    vpn_net: &str,
+    scope: &str,
+    mirrors: &[String],
+    mihomo_alive: Option<bool>,
+) -> Value {
+    let image = vpn_type.and_then(|t| resolve_image(t, version).ok());
+    let mut checks: Vec<CheckResult> = Vec::new();
+
+    let daemon = match docker {
+        Some(d) => check_docker_daemon(d).await,
+        None => result("docker_daemon", "引擎", "Docker 守护进程可达", "fail", "无法连接 Docker:daemon 不可用", None),
+    };
+    let daemon_fail = daemon.status == "fail";
+    checks.push(daemon);
+    if daemon_fail {
+        for (cid, title) in [
+            ("image_present", "目标镜像本地就绪"),
+            ("image_arch_match", "镜像架构匹配宿主"),
+            ("vpn_network", "VPN docker 网络存在"),
+            ("dev_net_tun", "/dev/net/tun 可用"),
+            ("disk_space", "磁盘空间"),
+        ] {
+            checks.push(result(cid, "—", title, "skip", "Docker 不可达,跳过", None));
+        }
+        return aggregate(checks, host_arch, image);
+    }
+    let d = docker.unwrap();
+
+    let image_ok = if let Some(img) = &image {
+        let present = check_image_present(d, img).await;
+        let ok = present.status == "pass";
+        checks.push(present);
+        checks.push(check_image_arch_match(d, img, host_arch).await);
+        ok
+    } else {
+        checks.push(result("image_present", "镜像", "目标镜像本地就绪", "skip", "未指定通道类型", None));
+        checks.push(result("image_arch_match", "镜像", "镜像架构匹配宿主", "skip", "未指定通道类型", None));
+        false
+    };
+
+    checks.push(check_vpn_network(d, vpn_net).await);
+    checks.push(match &image {
+        Some(img) => check_dev_net_tun(d, img, image_ok).await,
+        None => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "skip", "未指定通道类型", None),
+    });
+    checks.push(check_disk_space(d).await);
+    if scope == "full" {
+        checks.push(check_docker_version(d).await);
+        checks.push(result("host_arch", "引擎", "宿主架构", "pass", host_arch, None));
+        checks.push(check_mirror_reachable(mirrors).await);
+        checks.push(check_mihomo(mihomo_alive.unwrap_or(false)));
+    }
+    aggregate(checks, host_arch, image)
+}
+
+fn aggregate(checks: Vec<CheckResult>, host_arch: &str, image: Option<String>) -> Value {
+    let overall = aggregate_overall(&checks);
+    json!({ "host_arch": host_arch, "target_image": image, "overall": overall, "checks": checks })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn run_checks_no_docker_daemon_fails_rest_skip() {
+        let out = run_checks(None, Some("easyconnect"), Some("7.6.3"), "arm64", "vpnmgr_vpnnet", "preflight", &[], None).await;
+        assert_eq!(out["overall"], "fail");
+        let checks = out["checks"].as_array().unwrap();
+        assert_eq!(checks[0]["id"], "docker_daemon");
+        assert_eq!(checks[0]["status"], "fail");
+        assert!(checks.iter().skip(1).all(|c| c["status"] == "skip"));
+        assert_eq!(out["target_image"].as_str().unwrap(), "hagb/docker-easyconnect:7.6.3");
+    }
+
+    #[test]
+    fn mihomo_check_reflects_alive() {
+        assert_eq!(check_mihomo(true).status, "pass");
+        assert_eq!(check_mihomo(false).status, "warn");
+    }
 
     #[test]
     fn buildable_only_vpnmgr() {
