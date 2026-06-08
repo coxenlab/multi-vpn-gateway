@@ -19,7 +19,8 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/api/system", get(routes::system))
-        .route("/api/channels", get(routes::channels))
+        .route("/api/channels", get(routes::channels).post(api::create))
+        .route("/api/channels/:cid", axum::routing::patch(api::update))
         .route("/api/proxies", get(routes::proxies))
         .route("/api/vpn-types", get(api::vpn_types))
         .route("/api/connections", get(api::connections))
@@ -158,6 +159,23 @@ mod tests {
         assert_eq!(v["added"]["ip"], 1);
         assert_eq!(v["domains"][0]["pattern"], "a.com");
         assert_eq!(v["ips"][0]["pattern"], "10.0.0.0/8");
+    }
+
+    #[tokio::test]
+    async fn create_without_docker_500s_and_marks_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let app = build_router(state_with_db(dir.path())); // docker: None
+        let body = r#"{"name":"t","vpn_type":"easyconnect","server":"vpn.x.com","probe_url":"https://oa.x.com"}"#;
+        let resp = app.oneshot(
+            Request::builder().method("POST").uri("/api/channels")
+                .header("content-type", "application/json").body(Body::from(body)).unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let chans = crate::store::list_channels(&db).unwrap();
+        assert_eq!(chans.len(), 1);
+        assert_eq!(chans[0].status, "error");
     }
 
     #[tokio::test]
