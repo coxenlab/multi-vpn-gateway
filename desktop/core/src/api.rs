@@ -381,3 +381,31 @@ pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> Json
     let _ = manager::rebuild(&st.cfg, &db).await;
     Json(json!({ "ok": true }))
 }
+
+// ── Clash 接入 / 入口接入(命门 #2:IP 带 no-resolve、域名经 bare) ────────────
+
+fn text_plain(body: String) -> axum::response::Response {
+    ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
+}
+
+pub async fn clash_provider(State(st): State<AppState>) -> axum::response::Response {
+    let rules = store::all_rules(&st.cfg.db_path()).unwrap_or_default();
+    text_plain(webutil::clash_provider_text(&rules))
+}
+
+pub async fn clash_snippet(State(st): State<AppState>) -> axum::response::Response {
+    let rules = store::all_rules(&st.cfg.db_path()).unwrap_or_default();
+    let ui = st.cfg.ui_port.to_string();
+    text_plain(webutil::clash_snippet_text(&rules, &st.cfg.mihomo_host_port, &ui))
+}
+
+pub async fn entry_pac(State(st): State<AppState>) -> axum::response::Response {
+    let rules = store::all_rules(&st.cfg.db_path()).unwrap_or_default();
+    let pac = webutil::pac_text(&rules, &st.cfg.mihomo_host_port);
+    ([(axum::http::header::CONTENT_TYPE, "application/x-ns-proxy-autoconfig")], pac).into_response()
+}
+
+pub async fn entry_setup_commands(State(st): State<AppState>) -> Json<Value> {
+    let ui = st.cfg.ui_port.to_string();
+    Json(webutil::setup_commands(&st.cfg.mihomo_host_port, &ui))
+}

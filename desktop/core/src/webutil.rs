@@ -93,6 +93,130 @@ pub fn login_url(port: i64, vnc_password: &str) -> String {
     )
 }
 
+use crate::store::Rule;
+
+/// 对照 clash_provider:behavior classical 的 rule-provider payload。命门 #2:域名经 bare。
+pub fn clash_provider_text(rules: &[Rule]) -> String {
+    let mut lines = vec!["payload:".to_string()];
+    for r in rules.iter().filter(|r| r.enabled != 0) {
+        if r.kind == "ip" {
+            lines.push(format!("  - IP-CIDR,{}", r.pattern));
+        } else {
+            lines.push(format!("  - DOMAIN-SUFFIX,{}", bare(&r.pattern)));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+/// 对照 clash_snippet:节点 + provider 订阅 + 内联两种(二选一)。命门 #2:IP/域名都带 no-resolve(入口侧语义)。
+pub fn clash_snippet_text(rules: &[Rule], mihomo_host_port: &str, ui_port: &str) -> String {
+    let port = if mihomo_host_port.is_empty() { "?" } else { mihomo_host_port };
+    let ui = if ui_port.is_empty() { "<UI端口>" } else { ui_port };
+    let mut l = vec![
+        "# ① 在你现有 Clash 的 proxies: 下加这个节点".to_string(),
+        "proxies:".into(),
+        "  - name: vpn-router".into(),
+        "    type: socks5".into(),
+        "    server: 127.0.0.1".into(),
+        format!("    port: {port}"),
+        "".into(),
+        "# ② 方式甲(推荐):订阅一份规则,绑新域名/IP 自动同步,之后不再动 Clash".into(),
+        "rule-providers:".into(),
+        "  vpn-rules:".into(),
+        "    type: http".into(),
+        "    behavior: classical".into(),
+        "    format: yaml".into(),
+        format!("    url: http://127.0.0.1:{ui}/clash/vpn-rules.yaml"),
+        "    interval: 60".into(),
+        "    path: ./providers/vpn-rules.yaml".into(),
+        "# rules: 顶部加一行引用(no-resolve 对清单内 IP-CIDR 生效)".into(),
+        "  - RULE-SET,vpn-rules,vpn-router,no-resolve".into(),
+        "".into(),
+        "# ② 方式乙:直接内联(不想用 provider 时)".into(),
+    ];
+    let enabled: Vec<&Rule> = rules.iter().filter(|r| r.enabled != 0).collect();
+    if enabled.is_empty() {
+        l.push("  # (还没绑定任何规则)".into());
+    } else {
+        for r in enabled {
+            if r.kind == "ip" {
+                l.push(format!("  - IP-CIDR,{},vpn-router,no-resolve", r.pattern));
+            } else {
+                l.push(format!("  - DOMAIN-SUFFIX,{},vpn-router,no-resolve", bare(&r.pattern)));
+            }
+        }
+    }
+    l.push("".into());
+    l.push(format!("# ③ 无 Clash 时:把系统/浏览器代理指向 127.0.0.1:{port}"));
+    l.push("#    本工具 mihomo 自身分流:命中→VPN 容器,其余→直连。".into());
+    l.join("\n")
+}
+
+/// 对照 entry_pac:命中域名/v4 网段走入口 SOCKS5,其余 DIRECT(v6 网段略过,isInNet 仅 v4)。
+pub fn pac_text(rules: &[Rule], mihomo_host_port: &str) -> String {
+    let port = if mihomo_host_port.is_empty() { "?" } else { mihomo_host_port };
+    let proxy = format!("SOCKS5 127.0.0.1:{port}; SOCKS 127.0.0.1:{port}; DIRECT");
+    let mut domains = Vec::new();
+    let mut nets = Vec::new();
+    for r in rules.iter().filter(|r| r.enabled != 0) {
+        if r.kind == "domain" {
+            let d = bare(&r.pattern).trim().to_lowercase();
+            if !d.is_empty() {
+                domains.push(d);
+            }
+        } else if let Ok(ipnet::IpNet::V4(n)) = r.pattern.parse::<ipnet::IpNet>() {
+            nets.push((n.network().to_string(), n.netmask().to_string()));
+        }
+    }
+    let dom_js = domains.iter().map(|d| format!("\"{d}\"")).collect::<Vec<_>>().join(",");
+    let net_js = nets.iter().map(|(a, m)| format!("[\"{a}\",\"{m}\"]")).collect::<Vec<_>>().join(",");
+    let mut s = String::new();
+    s.push_str("// 本工具自动生成 · 命中客户域名/IP 走入口,其余 DIRECT\n");
+    s.push_str(&format!("var PROXY = \"{proxy}\";\n"));
+    s.push_str(&format!("var DOMAINS = [{dom_js}];\n"));
+    s.push_str(&format!("var NETS = [{net_js}];\n"));
+    s.push_str("function FindProxyForURL(url, host) {\n");
+    s.push_str("  host = (host || '').toLowerCase();\n");
+    s.push_str("  for (var i = 0; i < DOMAINS.length; i++) {\n");
+    s.push_str("    var d = DOMAINS[i];\n");
+    s.push_str("    if (host === d || host.slice(-(d.length + 1)) === '.' + d) return PROXY;\n");
+    s.push_str("  }\n");
+    s.push_str("  if (/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(host)) {\n");
+    s.push_str("    for (var j = 0; j < NETS.length; j++) {\n");
+    s.push_str("      if (isInNet(host, NETS[j][0], NETS[j][1])) return PROXY;\n");
+    s.push_str("    }\n");
+    s.push_str("  }\n");
+    s.push_str("  return 'DIRECT';\n");
+    s.push_str("}\n");
+    s
+}
+
+/// 对照 entry_setup_commands:各平台指向入口的开/关命令。
+pub fn setup_commands(mihomo_host_port: &str, ui_port: &str) -> serde_json::Value {
+    let port = if mihomo_host_port.is_empty() { "?" } else { mihomo_host_port };
+    let pac_url = if ui_port.is_empty() {
+        "/entry/proxy.pac".to_string()
+    } else {
+        format!("http://127.0.0.1:{ui_port}/entry/proxy.pac")
+    };
+    serde_json::json!({
+        "port": port,
+        "pac_url": pac_url,
+        "macos": {
+            "socks_on": format!("networksetup -setsocksfirewallproxy Wi-Fi 127.0.0.1 {port}"),
+            "socks_off": "networksetup -setsocksfirewallproxystate Wi-Fi off",
+            "pac_on": format!("networksetup -setautoproxyurl Wi-Fi {pac_url}"),
+            "pac_off": "networksetup -setautoproxystate Wi-Fi off",
+        },
+        "windows": format!("设置 → 网络和 Internet → 代理 → 手动设置代理填 127.0.0.1:{port};或「使用安装脚本」填 PAC URL"),
+        "env": {
+            "socks": format!("export ALL_PROXY=socks5h://127.0.0.1:{port}"),
+            "http": format!("export HTTPS_PROXY=http://127.0.0.1:{port} HTTP_PROXY=http://127.0.0.1:{port}"),
+            "unset": "unset ALL_PROXY HTTPS_PROXY HTTP_PROXY",
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +290,40 @@ mod tests {
         assert!(u.contains("path=websockify/"), "尾斜杠不可少(tinyproxy 301 不被 WS 跟随)");
         assert!(u.contains("autoconnect=true"));
         assert!(u.contains("password=deadbeef"));
+    }
+
+    fn rl(kind: &str, pat: &str, en: i64) -> crate::store::Rule {
+        crate::store::Rule { id: 0, channel_id: "c".into(), kind: kind.into(), pattern: pat.into(), enabled: en }
+    }
+
+    #[test]
+    fn clash_provider_classical_skips_disabled() {
+        let rs = vec![rl("ip", "10.0.0.0/8", 1), rl("domain", "+.x.com", 1), rl("domain", "off.com", 0)];
+        let out = clash_provider_text(&rs);
+        assert!(out.starts_with("payload:"));
+        assert!(out.contains("  - IP-CIDR,10.0.0.0/8"));
+        assert!(out.contains("  - DOMAIN-SUFFIX,x.com")); // bare 去 +.
+        assert!(!out.contains("off.com"));
+    }
+
+    #[test]
+    fn clash_snippet_inline_has_no_resolve_and_node() {
+        let rs = vec![rl("ip", "10.0.0.0/8", 1), rl("domain", "*.y.com", 1)];
+        let out = clash_snippet_text(&rs, "7899", "8787");
+        assert!(out.contains("name: vpn-router"));
+        assert!(out.contains("port: 7899"));
+        assert!(out.contains("http://127.0.0.1:8787/clash/vpn-rules.yaml"));
+        assert!(out.contains("IP-CIDR,10.0.0.0/8,vpn-router,no-resolve"));
+        assert!(out.contains("DOMAIN-SUFFIX,y.com,vpn-router,no-resolve"));
+    }
+
+    #[test]
+    fn pac_text_ipv4_netmask_and_domains() {
+        let rs = vec![rl("ip", "10.0.0.0/8", 1), rl("domain", "x.com", 1), rl("ip", "fd00::/8", 1)];
+        let out = pac_text(&rs, "7899");
+        assert!(out.contains("SOCKS5 127.0.0.1:7899"));
+        assert!(out.contains(r#"["10.0.0.0","255.0.0.0"]"#), "v4 netmask 由 ipnet 算");
+        assert!(out.contains(r#""x.com""#));
+        assert!(!out.contains("fd00"), "v6 网段 PAC 略过(isInNet 仅 v4)");
     }
 }

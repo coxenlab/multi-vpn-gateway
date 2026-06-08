@@ -35,6 +35,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/channels/:cid/rules/:rid",
             axum::routing::delete(api::del_rule).patch(api::patch_rule),
         )
+        .route("/clash/vpn-rules.yaml", get(api::clash_provider))
+        .route("/api/clash-snippet", get(api::clash_snippet))
+        .route("/entry/proxy.pac", get(api::entry_pac))
+        .route("/api/entry/setup-commands", get(api::entry_setup_commands))
         .fallback_service(static_svc)
         .with_state(state)
 }
@@ -208,6 +212,21 @@ mod tests {
         let resp = app.oneshot(Request::builder().method("POST").uri("/api/channels/c1/stop").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(crate::store::get_channel(&db, "c1").unwrap().unwrap().status, "stopped");
+    }
+
+    #[tokio::test]
+    async fn clash_snippet_served_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('c','ip','10.0.0.0/8',1)", []).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().uri("/api/clash-snippet").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("content-type").unwrap().to_str().unwrap().starts_with("text/plain"));
+        let body = String::from_utf8(axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert!(body.contains("IP-CIDR,10.0.0.0/8,vpn-router,no-resolve"));
     }
 
     #[tokio::test]
