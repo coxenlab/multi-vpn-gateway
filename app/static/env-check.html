@@ -77,6 +77,7 @@
               <button class="tab active" data-tab="diag">诊断</button>
               <button class="tab" data-tab="mirrors">镜像源</button>
               <button class="tab" data-tab="images">镜像清单</button>
+              <button class="tab" data-tab="trouble">常见报错</button>
             </div>
 
             <!-- ─── Tab 诊断 ─── -->
@@ -105,6 +106,124 @@
             <div class="tabpanel" data-panel="images" style="padding-top:var(--space-5);">
               <p class="t-xs muted" style="margin-bottom:var(--space-3);">本系统用到的全部镜像 + 下载/构建/离线命令。可拉取的支持一键拉取(本机架构);自建镜像需在仓库根构建。</p>
               <div id="img-list"></div>
+            </div>
+
+            <!-- ─── Tab 常见报错(图文排查) ─── -->
+            <style>
+              .tb-list { display:flex; flex-direction:column; gap:var(--space-3); }
+              .tb-card { display:flex; gap:var(--space-3); padding:var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--surface); }
+              .tb-ic { flex:none; width:40px; height:40px; border-radius:var(--radius-sm); display:grid; place-items:center; }
+              .tb-ic svg { width:21px; height:21px; }
+              .tb-ic.sev-danger { background:var(--danger-soft); color:var(--danger); }
+              .tb-ic.sev-warn   { background:var(--warn-soft);   color:color-mix(in oklab, var(--warn), black 18%); }
+              .tb-ic.sev-info   { background:var(--accent-soft); color:var(--accent); }
+              .tb-body { flex:1; min-width:0; }
+              .tb-title { font-weight:600; font-size:var(--text-sm); display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap; }
+              .tb-tag { font-weight:500; font-size:var(--text-xs); color:var(--muted); border:1px solid var(--border); border-radius:var(--radius-pill); padding:1px 8px; }
+              .tb-tag.wip { color:color-mix(in oklab, var(--warn), black 20%); border-color:var(--warn-soft); background:var(--warn-soft); }
+              .tb-card p { font-size:var(--text-sm); color:var(--fg); margin:var(--space-2) 0 0; line-height:1.6; }
+              .tb-card p .lbl { color:var(--muted); margin-right:6px; }
+              .tb-card p.cause { color:var(--muted); }
+              .tb-acts { display:flex; gap:var(--space-2); flex-wrap:wrap; margin-top:var(--space-3); }
+              .tb-flow { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:var(--space-3); font-size:var(--text-xs); color:var(--muted); }
+              .tb-flow .node { border:1px solid var(--border); border-radius:var(--radius-sm); padding:3px 9px; background:var(--surface-2); font-family:var(--font-mono); }
+              .tb-flow .node.bad { border-color:var(--danger-soft); background:var(--danger-soft); color:var(--danger); }
+              .tb-flow .arr { color:var(--muted); }
+            </style>
+            <div class="tabpanel" data-panel="trouble" style="padding-top:var(--space-5);">
+              <p class="t-xs muted" style="margin-bottom:var(--space-4);">起容器 / 登录 / 探活 各环节常见报错的排查与解决。蓝=照指引操作即可,黄=需注意,红=较严重。运行中报错也会经友好提示给出同款建议。</p>
+              <div class="tb-list">
+
+                <!-- 1 Docker 引擎未就绪 -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">Docker 引擎未就绪 <span class="tb-tag">cannot connect / not running</span></div>
+                    <p class="cause"><span class="lbl">原因</span>底层 colima 虚拟机 / Docker 没起来或连不上,通道无法运行。</p>
+                    <p><span class="lbl">解决</span>切到「诊断」跑全量体检,按结果启动引擎。桌面 app 自带并会自启;手动可在终端 <span class="mono">colima start</span>。</p>
+                    <div class="tb-acts"><button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=diag]').click()">去诊断体检</button></div>
+                  </div>
+                </div>
+
+                <!-- 2 镜像拉取失败 -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">镜像拉取失败 / ImageNotFound <span class="tb-tag">unexpected EOF</span></div>
+                    <p class="cause"><span class="lbl">原因</span>Docker Hub CDN 直连不稳(常见 EOF 中断)或限流,镜像没下下来。</p>
+                    <p><span class="lbl">解决</span>「镜像源」加一个国内源并启用 → 回「镜像清单」一键重拉。<b>切勿手动加 <span class="mono">--platform amd64</span></b>(会拉错架构)。</p>
+                    <div class="tb-acts">
+                      <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=mirrors]').click()">去配镜像源</button>
+                      <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=images]').click()">去重拉镜像</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 3 aTrust amd64/Rosetta -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">aTrust 核心服务异常 / 反复重启 <span class="tb-tag">arm64 机专属</span></div>
+                    <p class="cause"><span class="lbl">原因</span>镜像被拉成了 amd64,在 Apple Silicon 上经 Rosetta 跑会 EINTR 崩溃(点重启也无反应)。</p>
+                    <p><span class="lbl">解决</span>删掉该通道重建,确保拉到<b>原生 arm64</b>(「镜像清单」按本机架构拉取);全程别带 <span class="mono">--platform amd64</span>。</p>
+                    <div class="tb-flow"><span class="node">arm64 原生</span><span class="arr">→ 正常</span><span class="node bad">amd64 / Rosetta</span><span class="arr">→ 崩溃</span></div>
+                  </div>
+                </div>
+
+                <!-- 4 noVNC 白屏 -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">noVNC 登录窗白屏 / 无法连接 <span class="tb-tag">EC 首启尤其慢</span></div>
+                    <p class="cause"><span class="lbl">原因</span>容器内桌面服务(Xvfb / x11vnc / websockify)启动慢,登录窗早于服务就绪加载 → 竞态白屏。</p>
+                    <p><span class="lbl">解决</span>等数十秒后点登录页的「重新加载登录窗」;EC 首次启动需更久。仍不行 → 在通道详情「重启」该通道。</p>
+                  </div>
+                </div>
+
+                <!-- 5 探活未连通(命门:登录判据) -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l8 3v5c0 5-3.5 8-8 11-4.5-3-8-6-8-11V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">检测连通显示「未连通」 <span class="tb-tag">容器在跑也可能未连通</span></div>
+                    <p class="cause"><span class="lbl">原因</span>容器起来 ≠ 登录成功。系统只认 SOCKS5 探活真通才算连上;多半是还没在登录界面登录成功,或会话过期。</p>
+                    <p><span class="lbl">解决</span>进通道「登录」用 noVNC 登录成功后再「检测连通」;账密无头类确认账号 / 网关地址无误。</p>
+                    <div class="tb-flow"><span class="node">容器</span><span class="arr">→</span><span class="node">SOCKS5</span><span class="arr">→</span><span class="node bad">内网</span><span class="arr">未通 = 未登录</span></div>
+                  </div>
+                </div>
+
+                <!-- 6 网络缺失 -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">Docker 网络缺失 <span class="tb-tag">network not found</span></div>
+                    <p class="cause"><span class="lbl">原因</span>通道所需的 Docker 网络(vpnnet)还没建。</p>
+                    <p><span class="lbl">解决</span>「诊断」体检后点「创建网络」一键修复。</p>
+                    <div class="tb-acts"><button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=diag]').click()">去诊断修复</button></div>
+                  </div>
+                </div>
+
+                <!-- 7 Clash 劫持 DNS(隐形元凶) -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h11l-3-3M20 17H9l3 3"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">镜像总拉不动 / 内网域名解析失败 <span class="tb-tag">隐形元凶:Clash TUN</span></div>
+                    <p class="cause"><span class="lbl">原因</span>宿主 Clash 开了 TUN,把容器 / 虚拟机的明文 :53 DNS 劫成 fake-ip,看着网络正常,实际解析全错。</p>
+                    <p><span class="lbl">解决</span>拉镜像 / 排查连通期间临时关掉 Clash 的 TUN 模式;持续失败时先排除 Clash 再看别处。</p>
+                    <div class="tb-flow"><span class="node">容器</span><span class="arr">→ :53</span><span class="node bad">Clash fake-ip</span><span class="arr">→ 解析错</span></div>
+                  </div>
+                </div>
+
+                <!-- 8 容器起即退 Exited(1)(诚实标注排查中) -->
+                <div class="tb-card">
+                  <div class="tb-ic sev-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg></div>
+                  <div class="tb-body">
+                    <div class="tb-title">容器启动后立即退出(Exited 1) <span class="tb-tag wip">EC 偶发 · 排查中</span></div>
+                    <p class="cause"><span class="lbl">原因</span>多种。已排除架构问题(EC / aTrust 均原生 arm64,同镜像家族 aTrust 可正常起)。EasyConnect 守护进程日志写在容器内文件、不进标准输出,致命因暂未完全定位。</p>
+                    <p><span class="lbl">排查</span>看该通道「日志」tab;尝试在新建向导换一个 EC 版本重建。此项仍在跟进,定位后会补上确定解法。</p>
+                  </div>
+                </div>
+
+              </div>
             </div>
           </div>
         </div>
