@@ -274,6 +274,9 @@ def start(cid):
         manager.start(cid)
         store.set_status(cid, "running")
         return {"ok": True}
+    # 重建是同步的,aTrust/EC 要十几秒;期间先落「starting」,否则前端 8s 轮询拿到的
+    # 还是 stopped → 卡片一直显示「已停止」(用户以为没生效)。
+    store.set_status(cid, "starting")
     try:
         container_id, novnc = manager.create_channel(ch, ch["vnc_password"])
     except Exception as e:

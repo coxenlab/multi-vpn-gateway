@@ -349,7 +349,9 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
         let _ = store::set_status(&db, &cid, "running");
         return Json(json!({ "ok": true })).into_response();
     }
-    // hagb/oss:原地 start 扛不住 → 重建
+    // hagb/oss:原地 start 扛不住 → 重建。重建是同步的,aTrust/EC 要十几秒;期间先落
+    // 「starting」状态,否则前端 8s 轮询拿到的还是 stopped → 卡片一直显示「已停止」(用户以为没生效)。
+    let _ = store::set_status(&db, &cid, "starting");
     let vnc = ch.vnc_password.clone().unwrap_or_default();
     match provision(&st, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
