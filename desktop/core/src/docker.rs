@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use bollard::container::{CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions, StopContainerOptions, UploadToContainerOptions};
+use bollard::container::{CreateContainerOptions, LogsOptions, RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions, UploadToContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{CreateImageOptions, ImportImageOptions, RemoveImageOptions, TagImageOptions};
 use bollard::network::{CreateNetworkOptions, InspectNetworkOptions};
@@ -98,6 +98,27 @@ pub async fn stop(docker: &Docker, name: &str) -> Result<()> {
 pub async fn start(docker: &Docker, name: &str) -> Result<()> {
     let _ = docker.start_container(name, None::<StartContainerOptions<String>>).await;
     Ok(())
+}
+
+/// 原地重启容器(保留端口映射/配置)。看门狗据此重启 mihomo,让其分流口"重新出现"→
+/// 逼 lima 在当前活的 SSH 主连接上重建宿主端口转发(命门:仅 mihomo 这类可重启的基础设施用,
+/// EC/aTrust/oss 见 [[hagb-oss-no-inplace-restart]] 走重建)。
+pub async fn restart(docker: &Docker, name: &str) -> Result<()> {
+    docker
+        .restart_container(name, None::<RestartContainerOptions>)
+        .await
+        .map_err(|e| anyhow!("restart {name}: {e}"))
+}
+
+/// 容器是否在运行(缺失/任何错误 → false)。
+pub async fn is_running(docker: &Docker, name: &str) -> bool {
+    docker
+        .inspect_container(name, None)
+        .await
+        .ok()
+        .and_then(|i| i.state)
+        .and_then(|s| s.running)
+        .unwrap_or(false)
 }
 
 /// 由 ContainerPlan 创建并启动;dns 非空注入 HostConfig.dns(oss)。幂等(先力删同名)。

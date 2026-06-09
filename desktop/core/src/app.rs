@@ -30,15 +30,16 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
 
     let ui_port = cfg.ui_port;
     let mihomo = Controller::new(cfg.mihomo_ctrl_url.clone(), cfg.mihomo_secret.clone());
-    let state = AppState { cfg: Arc::new(cfg), docker, mihomo };
+    let state = AppState { cfg: Arc::new(cfg), docker, mihomo, health: crate::health::shared() };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ui_port)); // 命门 #4
     let listener = tokio::net::TcpListener::bind(addr).await?;
     Ok((listener, state))
 }
 
-/// 在已绑定 listener 上跑 axum 直到关闭。
+/// 在已绑定 listener 上跑 axum 直到关闭。起头 spawn 分流口健康看门狗(bin 与 Tauri 壳共用此入口)。
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> anyhow::Result<()> {
+    crate::health::spawn(state.clone());
     let app = crate::server::build_router(state);
     axum::serve(listener, app).await?;
     Ok(())

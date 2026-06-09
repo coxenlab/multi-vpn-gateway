@@ -41,6 +41,7 @@
     vpnTypes: () => req("GET", "/api/vpn-types"),
     vpnVersions: (type) => req("GET", `/api/vpn-types/${type}/versions`),
     system: () => req("GET", "/api/system"),
+    healProxy: () => req("POST", "/api/system/heal-proxy"),
     preflight: (vpnType, version, scope) =>
       req("GET", `/api/preflight?scope=${scope || "preflight"}${vpnType ? "&vpn_type=" + encodeURIComponent(vpnType) : ""}${version ? "&version=" + encodeURIComponent(version) : ""}`),
     preflightFix: (action, params) => req("POST", `/api/preflight/fix/${action}`, params || {}),

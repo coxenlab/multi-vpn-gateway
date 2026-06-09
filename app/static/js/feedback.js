@@ -262,4 +262,114 @@
 
   /* SVG 给 preflightPanel 等复用(同源克制图标) */
   window.fb.SVG = SVG;
+
+  /* ── 分流口健康全局横幅 ──────────────────────────────────────────────────
+   * 后端看门狗(/api/system 的 gateway_health)会在「容器全绿但宿主分流口不可达」
+   * (lima 转发睡醒/抖动后静默丢失)时自动 restart mihomo 自愈;本横幅把这个过程讲清楚,
+   * 并在自愈放弃/VM 断时给手动修复入口——解决「哪儿都连通就是打不开」的盲区。
+   * 所有屏都引 feedback.js,故此处自启,全站一致。命门 #1 不破:不碰通道登录态。 */
+  (function gatewayMonitor() {
+    if (!window.api || !window.api.system) return;
+    let host = null, wasBroken = false, healing = false;
+
+    function ensureHost() {
+      if (host && document.body.contains(host)) return host;
+      host = document.createElement("div");
+      host.className = "fb-gw-host";
+      host.style.cssText =
+        "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:90;" +
+        "width:min(680px,calc(100vw - 32px));box-shadow:var(--shadow-md,0 6px 24px rgba(0,0,0,.12));";
+      document.body.appendChild(host);
+      return host;
+    }
+    function clear() {
+      if (host) { host.remove(); host = null; }
+    }
+    function banner(variant, icon, title, msg, actionsHtml) {
+      const h = ensureHost();
+      h.innerHTML =
+        `<div class="banner ${variant}" style="background:var(--surface);">
+           <span class="bicon">${icon}</span>
+           <div style="flex:1;min-width:0;">
+             <div class="bt">${esc(title)}</div>
+             ${msg ? `<p>${esc(msg)}</p>` : ""}
+             ${actionsHtml || ""}
+           </div>
+         </div>`;
+      return h;
+    }
+    function healBtn(label) {
+      return `<div class="fb-eb-acts" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+                <button class="btn btn-secondary btn-sm fb-gw-heal" type="button">${esc(label || "手动修复")}</button>
+                <a class="btn btn-ghost btn-sm" href="env-check.html" style="text-decoration:none;">查看诊断</a>
+              </div>`;
+    }
+    function bindHeal() {
+      const b = host && host.querySelector(".fb-gw-heal");
+      if (!b) return;
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        b.textContent = "修复中…";
+        try {
+          const r = await window.api.healProxy();
+          if (r && r.reachable) window.toast("分流链路已修复");
+          else window.toast(r && r.error ? r.error : "修复未生效,请重开 app", { variant: "danger" });
+        } catch (e) {
+          window.toast("修复失败:" + (e && e.message ? e.message : e), { variant: "danger" });
+        }
+        poll(); // 立刻复检刷新横幅
+      });
+    }
+
+    function render(sys) {
+      const gh = sys && sys.gateway_health;
+      // 后端无此字段(老版本)或健康 → 收横幅;若刚从坏态恢复,提示一声。
+      if (!gh || gh === "healthy") {
+        if (wasBroken) window.toast("分流链路已恢复");
+        wasBroken = false; healing = false;
+        clear();
+        return;
+      }
+      wasBroken = true;
+      if (gh === "vm_down") {
+        healing = false;
+        banner("danger", SVG.cross, "与本地引擎(VM)连接中断",
+          "所有通道当前都不可达。请从托盘菜单退出并重新打开 app 以重建连接。", healBtn("重试修复"));
+        bindHeal();
+      } else if (sys.gave_up) {
+        healing = false;
+        banner("danger", SVG.cross, "分流口反复不可达,已暂停自动修复",
+          "容器正常但浏览器/Clash 连不到分流口,通道当前都打不开。点「手动修复」重试,或查看诊断。", healBtn());
+        bindHeal();
+      } else if (gh === "container_down") {
+        healing = false;
+        banner("danger", SVG.cross, "分流路由(mihomo)未运行",
+          "通道全部不可达。点「手动修复」重新拉起分流路由。", healBtn());
+        bindHeal();
+      } else if (gh === "forward_dead") {
+        // 自愈进行中:只报进度、不给按钮(避免与看门狗重复重启)。
+        healing = true;
+        banner("warn", SVG.spin, "分流链路中断,正在自动修复…",
+          "容器正常,但宿主分流口暂不可达(通常睡醒/网络抖动所致)。约 1 分钟内自动恢复,稍候。");
+      }
+    }
+
+    let busy = false;
+    async function poll() {
+      if (busy) return;
+      busy = true;
+      try {
+        render(await window.api.system());
+      } catch (_) {
+        /* /api/system 都不通 = 整个 UI 后端挂了,交给各屏自身错误处理,这里不抢戏 */
+      } finally {
+        busy = false;
+      }
+    }
+
+    const start = () => { poll(); setInterval(poll, 10000); };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+    else start();
+    window.fb.checkGateway = poll; // 供手动触发(如修复后)
+  })();
 })();

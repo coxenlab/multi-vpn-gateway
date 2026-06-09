@@ -19,6 +19,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/api/system", get(routes::system))
+        .route("/api/system/heal-proxy", axum::routing::post(routes::heal_proxy))
         .route("/api/channels", get(routes::channels).post(api::create))
         .route("/api/channels/:cid", axum::routing::patch(api::update).delete(api::delete))
         .route("/api/channels/:cid/start", axum::routing::post(api::start))
@@ -83,6 +84,7 @@ mod tests {
             cfg: Arc::new(cfg),
             docker: None,
             mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
+            health: crate::health::shared(),
         }
     }
 

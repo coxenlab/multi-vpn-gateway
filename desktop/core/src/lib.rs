@@ -15,6 +15,7 @@ pub mod entry;
 pub mod api;
 pub mod dockerhub;
 pub mod preflight;
+pub mod health;
 
 use std::sync::Arc;
 
@@ -24,4 +25,6 @@ pub struct AppState {
     pub cfg: Arc<config::Config>,
     pub docker: Option<bollard::Docker>,
     pub mihomo: mihomo::Controller,
+    /// 分流口健康快照(看门狗写、/api/system 读)。
+    pub health: health::SharedHealth,
 }

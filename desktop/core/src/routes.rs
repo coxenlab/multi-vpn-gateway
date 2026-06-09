@@ -7,13 +7,41 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
     let alive = st.mihomo.alive().await;
     let mihomo_port = st.cfg.mihomo_host_port.parse::<u64>().ok().filter(|n| *n != 0);
     let controller = st.cfg.mihomo_ctrl_port.as_ref().map(|p| format!("127.0.0.1:{p}"));
+    // 分流口健康快照(看门狗维护):前端横幅据此区分「自愈中 / 已放弃 / VM 挂」。
+    let h = st.health.lock().ok().map(|s| s.clone()).unwrap_or_default();
     Json(json!({
         "mihomo_status": if alive { "running" } else { "down" },
         "mihomo_port": mihomo_port,
         "controller": controller,
         "ui_port": st.cfg.ui_port,
         "bound_ip": "127.0.0.1", // 命门 #4
+        "gateway_health": h.gateway_health,
+        "proxy_port_reachable": h.proxy_port_reachable,
+        "healing": h.healing,
+        "gave_up": h.gave_up,
     }))
+}
+
+/// 手动修复分流口:`docker restart mihomo` 重建 lima 转发,轮询分流口恢复(横幅按钮 / env-check 用)。
+/// 不破命门 #1:不碰登录态;只修宿主→分流口这条转发链。
+pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
+    let docker = match st.docker.as_ref() {
+        Some(d) => d,
+        None => return Json(json!({"ok": false, "reachable": false, "error": "docker 不可用(VM 连接中断,请重开 app)"})),
+    };
+    if let Err(e) = crate::docker::restart(docker, crate::infra::MIHOMO_CONTAINER).await {
+        return Json(json!({"ok": false, "reachable": false, "error": e.to_string()}));
+    }
+    // 等分流口恢复(lima 重建转发 ~秒级),最多 ~15s。
+    let mut reachable = false;
+    for _ in 0..30 {
+        if crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
+            reachable = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Json(json!({"ok": true, "reachable": reachable}))
 }
 
 pub async fn proxies(State(st): State<AppState>) -> Json<Value> {
