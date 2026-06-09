@@ -129,14 +129,40 @@
 
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
   <script>
     let chs = [];
     let sys = {};
+    let loaded = false;   // 首次加载成功过？决定失败时给整页错误条 or 静默轮询提示
     const ruleCount = (c) => c.domains.length + (c.ips ? c.ips.length : 0);
 
-    async function load() {
+    // 静默拉数据(供轮询 / 各动作成功后刷新复用);抛错由调用方处理。
+    async function fetchAll() {
       [chs, sys] = await Promise.all([api.channels(), api.system()]);
       paint();
+      loaded = true;
+    }
+
+    // 首次加载:先铺骨架,失败给可重试错误条;轮询失败仅轻提示、页面留旧态。
+    async function load(isPoll) {
+      if (!loaded && !isPoll) {
+        const box = $("#channel-list");
+        box.innerHTML = "";
+        box.appendChild(fb.skeleton(5));
+      }
+      try {
+        await fetchAll();
+      } catch (e) {
+        if (isPoll) {
+          // 轮询失败:不打断界面,8 秒后自动再试,仅一条带「重试」的轻提示。
+          toast("刷新状态失败,将自动重试", { variant: "danger", action: { label: "立即重试", onClick: () => load(false) } });
+          return;
+        }
+        // 首次加载失败:整页错误条 + 重试(重跑 load)。
+        const box = $("#channel-list");
+        box.innerHTML = "";
+        fb.errorBanner(box, { fromError: e, onRetry: () => load(false), retryLabel: "重新加载" });
+      }
     }
 
     // 通道卡片
@@ -199,26 +225,41 @@
       if (!linked) { $("#chip-clash").classList.remove("ok"); $("#chip-clash").lastChild.textContent = "Clash 未接入"; }
     }
 
-    // 交互：检测连通（后端 SOCKS5 探活）
+    // 交互：检测连通（后端 SOCKS5 探活）—— 命门①：登录成功唯一判据=后端探活,不认 VNC。
     window.probe = async function (id, btn) {
-      btn.textContent = "检测中…"; btn.disabled = true;
+      // load() 会 paint() 整列重绘,btn 随之脱离 DOM;重试时按 id 重新查当前可见的探活按钮。
+      const reBtn = () => document.querySelector(`[data-od-id="ch-${id}"] button[onclick*="probe"]`);
+      if (btn) { btn.disabled = true; btn.replaceChildren(fb.spinner("检测中…")); }   // 进行中:克制 spinner
       try {
         const r = await api.status(id);
-        await load();
-        toast(r.connected ? `隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录` : "探活失败：未连通", r.connected);
-      } catch (e) { toast("探活出错：" + e.message, false); }
-      finally { btn.disabled = false; btn.textContent = "检测连通"; }
+        await load();                               // load() 自带 catch,不会外抛
+        if (r.connected)
+          toast(`隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录`, { variant: "success" });
+        else
+          toast("探活失败:未连通(请确认已在登录界面登录成功)", {
+            variant: "danger", action: { label: "重试", onClick: () => probe(id, reBtn()) },
+          });
+      } catch (e) {
+        const f = fb.friendlyError(e);
+        toast("探活出错:" + f.title, {
+          variant: "danger", action: { label: "重试", onClick: () => probe(id, reBtn()) },
+        });
+      } finally { if (btn) { btn.disabled = false; btn.textContent = "检测连通"; } }
     };
     // 电源:启动(后端走重建,复用同卷/MAC)/ 停止。成功后 load() 重绘卡片,故无需手动复位按钮。
     window.power = async function (id, action, btn) {
       const label = action === "start" ? "启动" : "停止";
-      btn.disabled = true; btn.textContent = label + "中…";
+      btn.disabled = true;
+      btn.replaceChildren(fb.spinner(label + "中…"));   // 进行中:克制 spinner
       try {
         await (action === "start" ? api.start(id) : api.stop(id));
         await load();
-        toast(action === "start" ? "已启动 · 正在重建容器,请稍候登录 / 检测连通" : "容器已停止");
+        toast(action === "start" ? "已启动 · 正在重建容器,请稍候登录 / 检测连通" : "容器已停止", { variant: "success" });
       } catch (e) {
-        toast(label + "出错:" + e.message, false);
+        const f = fb.friendlyError(e);
+        toast(label + "出错:" + f.title, {
+          variant: "danger", action: { label: "重试", onClick: () => power(id, action, btn) },
+        });
         btn.disabled = false; btn.textContent = label;
       }
     };
@@ -226,27 +267,56 @@
     window.bindRule = async function (id, form) {
       const toks = parseTokens(form.pat.value);
       if (!toks.length) { toast("请填写域名或 IP", false); return false; }
+      const sub = form.querySelector('button[type="submit"]');
+      const subTxt = sub ? sub.textContent : "";
+      if (sub) { sub.disabled = true; sub.replaceChildren(fb.spinner("绑定中…")); }   // 进行中
       try {
         const r = await api.addRules(id, toks);
-        form.pat.value = ""; await load();
-        if (r.added.domain || r.added.ip)
-          toast(`已绑定 ${r.added.domain} 域名 / ${r.added.ip} IP → 热加载生效`);
-        else if (r.rejected.length) toast("格式无法识别：" + r.rejected.join(", "), false);
-        else toast("这些规则已绑定", false);
-      } catch (e) { toast("绑定出错：" + e.message, false); }
+        if (r.added.domain || r.added.ip) {
+          form.pat.value = ""; await load();   // 成功才清空,失败保留输入便于改后重试
+          toast(`已绑定 ${r.added.domain} 域名 / ${r.added.ip} IP → 热加载生效`, { variant: "success" });
+        } else if (r.rejected.length) {
+          toast("格式无法识别:" + r.rejected.join(", "), { variant: "danger" });
+        } else {
+          toast("这些规则已绑定", { variant: "info" });
+        }
+      } catch (e) {
+        const f = fb.friendlyError(e);
+        toast("绑定出错:" + f.title, {
+          variant: "danger", action: { label: "重试", onClick: () => bindRule(id, form) },
+        });
+      } finally {
+        if (sub) { sub.disabled = false; sub.textContent = subTxt; }
+      }
       return false;
     };
     let pendingDel = null;
-    window.askDel = function (id) { pendingDel = id; $("#del-name").textContent = "vpn-" + id; openOverlay("del-modal"); };
-    $("#del-confirm").addEventListener("click", async () => {
+    const delErrHost = () => $("#del-modal .card-body");
+    const clearDelErr = () => { const b = $("#del-modal .fb-errbanner"); if (b) b.remove(); };
+    window.askDel = function (id) {
+      pendingDel = id; clearDelErr();
+      $("#del-name").textContent = "vpn-" + id; openOverlay("del-modal");
+    };
+    async function runDel() {
+      clearDelErr();
+      const btn = $("#del-confirm");
+      const txt = btn.textContent;
+      btn.disabled = true; btn.replaceChildren(fb.spinner("删除中…"));   // 进行中
+      const id = pendingDel;
       try {
-        await api.remove(pendingDel); closeOverlay("del-modal"); await load();
-        toast("已删除 vpn-" + pendingDel);
-      } catch (e) { toast("删除出错：" + e.message, false); }
-    });
+        await api.remove(id); closeOverlay("del-modal"); await load();
+        toast("已删除 vpn-" + id, { variant: "success" });
+      } catch (e) {
+        // 模态保持打开,模态内给可重试错误条(重试重跑删除,参数不变),置顶显示。
+        fb.errorBanner(delErrHost(), { fromError: e, onRetry: runDel, retryLabel: "重新删除", prepend: true });
+      } finally {
+        btn.disabled = false; btn.textContent = txt;
+      }
+    }
+    $("#del-confirm").addEventListener("click", runDel);
 
     load();
-    setInterval(load, 8000);
+    setInterval(() => load(true), 8000);
   </script>
 </body>
 </html>

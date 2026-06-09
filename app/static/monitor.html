@@ -42,6 +42,13 @@
     .table tr.is-direct td { color: var(--muted); }
     .rule-tag { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
 
+    /* 遥测更新状态 pill —— 唯一处用钴蓝点缀已在别处，故此处仅用 success/danger/muted 语义色 */
+    #feed-pill .dot { transition: background var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard); }
+    #feed-pill.is-live .dot { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+    #feed-pill.is-down .dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+    #feed-pill #feed-text { transition: color var(--motion-fast) var(--ease-standard); }
+    #feed-pill.is-down #feed-text { color: var(--danger); }
+
     @media (max-width: 600px) {
       .lat-row { grid-template-columns: 1fr 70px 48px 14px; gap: var(--space-2); }
       .table th.hide-sm, .table td.hide-sm { display: none; }
@@ -95,10 +102,14 @@
         </button>
         <h1>流量监控</h1>
         <span class="spacer"></span>
+        <span class="sys-chip" id="feed-pill" title="遥测数据更新状态"><span class="dot"></span><span id="feed-text">连接中…</span></span>
         <span class="sys-chip" id="ctrl-pill">external-controller 127.0.0.1:9090 · 只读遥测</span>
       </header>
 
       <div class="content stack-6">
+        <!-- 反馈层错误条挂载点（仅故障时填充，平时为空、不占视觉） -->
+        <div id="feed-error"></div>
+
         <!-- 说明：本页镜像 mihomo :9090 的实时遥测 -->
         <div class="banner info" data-od-id="monitor-note">
           <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
@@ -205,14 +216,77 @@
 
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
   <script>
     let chs = [], sys = {}, prevTotals = null, prevTs = null;
+
+    /* ───────── 反馈层状态：遥测更新 pill + 故障错误条(单条、自愈即清) ───────── */
+    let pollTimer = null;        // setInterval 句柄(避免重复启动多个轮询)
+    let feedDown = false;        // 当前是否处于离线/故障态(用于只渲染一次错误条)
+    let booted = false;          // 首次渲染是否已成功(决定首屏占位 vs 静默重试)
+
+    function setFeed(state, text) {
+      // state ∈ loading | live | down;text 为 pill 文案
+      const pill = $("#feed-pill");
+      pill.classList.toggle("is-live", state === "live");
+      pill.classList.toggle("is-down", state === "down");
+      $("#feed-text").textContent = text;
+    }
+    function nowHHMMSS() {
+      const d = new Date();
+      const p = (n) => String(n).padStart(2, "0");
+      return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+    }
+    function clearFeedError() {
+      if (!feedDown) return;
+      feedDown = false;
+      $("#feed-error").innerHTML = "";
+    }
+    function showFeedError(e, onRetry) {
+      // 同一故障只渲染一条错误条,避免每 1.5s 刷屏
+      if (feedDown) return;
+      feedDown = true;
+      $("#feed-error").innerHTML = "";
+      if (window.fb && fb.errorBanner) {
+        // 点「重试」时 fb 先 remove 自身;须放开 feedDown,使再次失败能重渲一条新错误条
+        fb.errorBanner("#feed-error", {
+          fromError: e, retryLabel: "重试",
+          onRetry: () => { feedDown = false; onRetry(); },
+        });
+      }
+    }
+
+    /* 首屏占位骨架(仅未成功渲染过时) */
+    function showInitialSkeleton() {
+      if (booted || !(window.fb && fb.skeleton)) return;
+      $("#lat-list").innerHTML = "";
+      $("#lat-list").appendChild(fb.skeleton(4));
+      $("#conn-body").innerHTML =
+        `<tr><td colspan="6" style="padding:var(--space-4);"></td></tr>`;
+      $("#conn-body").querySelector("td").appendChild(fb.skeleton(4));
+    }
+
     async function boot() {
-      sys = await api.system();
+      // 初始化-获取系统配置:进行中提示(loading pill + 首屏骨架)
+      setFeed("loading", "连接中…");
+      showInitialSkeleton();
+      $("#feed-error").innerHTML = ""; feedDown = false;
+      try {
+        sys = await api.system();
+      } catch (e) {
+        // 失败:友好错误条 + 带操作的 toast,重试重跑 boot(同一 api,参数不变)
+        setFeed("down", "连接失败");
+        feedDown = true;
+        if (window.fb && fb.errorBanner)
+          fb.errorBanner("#feed-error", { fromError: e, onRetry: boot, retryLabel: "重新连接" });
+        toast("无法连接遥测,数据未加载", { variant: "danger", action: { label: "重试", onClick: boot } });
+        return;
+      }
       $("#foot-port").textContent = ":" + sys.mihomo_port;
       $("#ctrl-pill").textContent = "external-controller " + (sys.controller || "?") + " · 只读遥测";
-      await tick();
-      setInterval(tick, 1500);
+      // 先起轮询(只起一次)再拉首帧 —— 即便首帧失败,后续仍会每 1.5s 自动重试自愈
+      if (!pollTimer) pollTimer = setInterval(tick, 1500);
+      await tick();                                // 首帧拉真实遥测(内部自带反馈)
     }
     function chanName(id) { const c = chs.find(x => x.id === id); return c ? c.name : "—"; }
 
@@ -372,7 +446,21 @@
         [chs, data, nodes] = await Promise.all([
           api.channels(), api.connections(), api.proxies().then(r => r.proxies || []),
         ]);
-      } catch (e) { return; }
+      } catch (e) {
+        // 失败:轮询会每 1.5s 自动重试,但给用户可见的离线指示 + 一条(只一条)友好错误条
+        const firstFail = !feedDown;
+        setFeed("down", "数据离线 · 重试中");
+        // 手动「重试」= 立刻再跑一帧 tick(同一组 api,参数不变),不等下个周期
+        showFeedError(e, () => { tick(); });
+        // 仅首次失败弹一次 toast,避免每帧刷屏
+        if (firstFail)
+          toast("遥测数据加载失败,将自动重试", { variant: "danger", action: { label: "立即重试", onClick: () => tick() } });
+        return;
+      }
+      // 成功:更新「更新于」时间戳 + 清掉可能存在的故障错误条(自愈)
+      booted = true;
+      clearFeedError();
+      setFeed("live", "更新于 " + nowHHMMSS());
       $("#nav-count").textContent = chs.length;
       liveNodes = nodes.filter(p => p.alive).length;   // 在线节点 = mihomo 里 alive 的 ch-*
       // 速率 = 总量差分 / 时间差；累计值变小 = mihomo 重载/重启归零，本帧不计差分（避免负值突刺）

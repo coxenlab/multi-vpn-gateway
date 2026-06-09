@@ -117,6 +117,8 @@
       </header>
 
       <div class="content stack-6">
+        <!-- 反馈层：boot 失败 / 全局错误条挂载点 -->
+        <div id="ch-feedback"></div>
         <!-- 面包屑 + 标识 -->
         <div class="page-head" data-od-id="ch-head" style="margin-bottom:0;">
           <div class="crumb"><a href="index.html">通道总览</a> / <span id="crumb-name">—</span></div>
@@ -211,6 +213,8 @@
           <div class="tabpanel" data-panel="login" id="login" style="padding-top:var(--space-6);">
             <div class="grid-2-1">
               <div class="stack-4">
+                <!-- 反馈层：noVNC 加载中 spinner / 就绪失败错误条挂载点 -->
+                <div id="vnc-feedback"></div>
                 <div class="vnc-frame" data-od-id="vnc">
                   <div class="vnc-bar">
                     <span class="vdot"></span>
@@ -414,6 +418,7 @@
 
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
   <script>
     // ── 选通道：?id= 命中 channels，缺省取第一个；数据来自真实后端 ──
     const params = new URLSearchParams(location.search);
@@ -422,11 +427,34 @@
     let k, kindLabel, containerId, hostName, methodLabel;
     let pwShown = false;
 
-    async function boot() {
-      const list = await api.channels();
-      ch = list.find(c => c.id === wantId) || list[0];
-      sys = await api.system();
-      if (!ch) { toast("通道不存在", false); return; }
+    // initial=true:首屏加载,失败→骨架屏让位给可重试错误条(不再白屏);
+    // initial=false(默认):动作后的静默重取,失败照常抛给调用方的 catch 处理。
+    async function boot(initial = false) {
+      if (initial) {
+        $("#ch-feedback").innerHTML = "";
+        $("#cfg-list").replaceChildren(fb.skeleton(6));
+      }
+      let list;
+      try {
+        list = await api.channels();
+        ch = list.find(c => c.id === wantId) || list[0];
+        if (!ch) {
+          $("#cfg-list").innerHTML = "";
+          fb.errorBanner("#ch-feedback", {
+            title: "通道不存在", message: "没找到对应的通道,可能已被删除。",
+            hint: "返回通道总览重新选择。", onRetry: () => { location.href = "index.html"; }, retryLabel: "返回总览",
+          });
+          return;
+        }
+        sys = await api.system();
+      } catch (e) {
+        if (initial) {
+          $("#cfg-list").innerHTML = "";
+          fb.errorBanner("#ch-feedback", { fromError: e, onRetry: () => boot(true) });
+          return;
+        }
+        throw e;   // 重取失败交给调用方 catch
+      }
 
       $("#nav-count").textContent = list.length;
       $("#foot-port").textContent = ":" + sys.mihomo_port;
@@ -514,9 +542,12 @@
 
     // ── 登录 tab：真 noVNC iframe（进入 login tab 时拉 url）──
     async function loadVnc() {
+      const fbHost = $("#vnc-feedback");
+      fbHost.replaceChildren(fb.spinner("正在拉取登录窗口…"));   // 进行中:克制 spinner
       try {
         const res = await api.login(ch.id);
         if (res.login_mode === "headless" || !res.url) {
+          fbHost.innerHTML = "";
           const slot = $("#vnc-frame") || $("#portal");
           if (slot) slot.outerHTML = `<div class="banner" style="margin:var(--space-4);">
             <div>该通道为<strong>无头类型</strong>,无交互登录界面。凭据已在容器内经 CLI 注入,
@@ -525,7 +556,20 @@
         }
         const { url } = res;
         // EC/aTrust 容器内 noVNC 启动慢:探到在伺服再塞 iframe,否则早加载→连接被拒→永久白屏。
-        await window.waitNovncReady(url);
+        const spEl = fbHost.querySelector(".fb-spinner span:last-child");
+        if (spEl) spEl.textContent = "等待远程桌面就绪…（最多 60s）";
+        const ready = await window.waitNovncReady(url);
+        if (!ready) {
+          // 就绪探测超时:别静默塞 iframe(早加载→白屏),给可重载错误条。命门①:此非登录成功信号。
+          fbHost.innerHTML = "";
+          fb.errorBanner(fbHost, {
+            title: "登录界面未就绪", message: "远程桌面(noVNC)在 60s 内没起好,通常是容器内桌面服务还在启动。",
+            hint: "稍等几十秒后点「重载」;若反复未就绪,可在概览重启容器。",
+            onRetry: () => loadVnc(), retryLabel: "重载",
+          });
+          return;
+        }
+        fbHost.innerHTML = "";
         let f = $("#vnc-frame");
         if (!f) {
           f = document.createElement("iframe");
@@ -534,7 +578,10 @@
           if (portal) portal.replaceWith(f);   // 用 iframe 替换仿真 portal 容器
         }
         f.src = url;
-      } catch (e) { toast("拉取登录窗失败：" + e.message, false); }
+      } catch (e) {
+        fbHost.innerHTML = "";
+        fb.errorBanner(fbHost, { fromError: e, onRetry: () => loadVnc() });
+      }
     }
 
     function syncStatus() {
@@ -571,8 +618,18 @@
         const r = await api.status(ch.id);
         await boot();
         setLastProbe();
-        toast(r.connected ? `隧道真通 · ${r.latency_ms ?? "?"} ms · SOCKS5 探活通过` : "探活失败：未连通", r.connected);
-      } catch (e) { toast("探活出错：" + e.message, false); }
+        if (r.connected) {
+          toast(`隧道真通 · ${r.latency_ms ?? "?"} ms · SOCKS5 探活通过`, { variant: "success" });
+        } else {
+          // 未连通不是异常——给可操作建议 + 重试(命门①:成功唯一判据=SOCKS5 探活,非 VNC)
+          toast("探活失败:内网未连通,确认已在登录界面成功登录后重试", {
+            variant: "danger", action: { label: "重试", onClick: () => doProbe(btn) },
+          });
+        }
+      } catch (e) {
+        const f = fb.friendlyError(e);
+        toast("探活出错:" + f.title, { variant: "danger", action: { label: "重试", onClick: () => doProbe(btn) } });
+      }
       finally { if (btn) { btn.disabled = false; if (!isIcon && orig != null) btn.textContent = orig; } }
     }
     $("#act-probe").addEventListener("click", (e) => doProbe(e.currentTarget));
@@ -596,8 +653,7 @@
     }
     $("#cfg-edit").addEventListener("click", openEdit);
     $("#e-cancel").addEventListener("click", closeEdit);
-    $("#cfg-edit-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
+    async function submitEdit() {
       const body = {
         name: $("#e-name").value,
         server: $("#e-server").value,
@@ -612,47 +668,84 @@
       btn.disabled = true; btn.textContent = connChanged ? "保存并重连中…" : "保存中…";
       try {
         await api.update(ch.id, body);
-        toast(connChanged ? "已保存,正在按新信息重连" : "已保存");
+        toast(connChanged ? "已保存,正在按新信息重连" : "已保存", { variant: "success" });
         location.reload();
       } catch (err) {
-        toast("保存失败:" + err.message, false);
+        const f = fb.friendlyError(err);
+        toast("保存失败:" + f.title, { variant: "danger", action: { label: "重试", onClick: submitEdit } });
         btn.disabled = false; btn.textContent = "保存";
       }
-    });
+    }
+    $("#cfg-edit-form").addEventListener("submit", (e) => { e.preventDefault(); submitEdit(); });
 
-    $("#act-restart").addEventListener("click", async (e) => {
-      const btn = e.currentTarget, orig = btn.textContent;
+    let restartClearT = null;
+    async function doRestart() {
+      clearTimeout(restartClearT);   // 取消上一次成功后的延时清空,避免清掉本次新建的 stepper
+      const btn = $("#act-restart"), orig = "重启";
       btn.textContent = "重启中…"; btn.disabled = true;
+      // 重启是多步流程(停 → 起 → 拉数据),用 stepper 把进度逐环节呈现;某步失败可单点重试整流程。
+      const host = $("#ch-feedback");
+      const sp = fb.stepper(host, [
+        { key: "stop",  label: "停止旧容器" },
+        { key: "start", label: "重建并启动" },
+        { key: "load",  label: "刷新通道数据" },
+      ]);
       try {
+        sp.setStep("stop", "active", "正在停止…");
         await api.stop(ch.id);
+        sp.setStep("stop", "done", "已停止");
+
+        sp.setStep("start", "active", "正在重建并启动…");
         await api.start(ch.id);
+        sp.setStep("start", "done", "已启动");
+
+        sp.setStep("load", "active", "正在拉取最新状态…");
         await boot();
         // 重建会换容器、换 noVNC 端口;若正显示着 noVNC iframe,把它重新指向新端口,
         // 否则用户面对的是指向旧(已死)端口的 iframe。
         if ($("#vnc-frame")) await loadVnc();
-        toast("容器已重启 · SOCKS5 监听就绪，请登录后探活");
-      } catch (err) { toast("重启出错：" + err.message, false); }
-      finally { btn.disabled = false; btn.textContent = orig; }
-    });
-    $("#act-power").addEventListener("click", async (e) => {
-      const btn = e.currentTarget;
-      btn.disabled = true;
+        sp.setStep("load", "done", "已就绪");
+        restartClearT = setTimeout(() => { host.innerHTML = ""; }, 1200);   // 成功后短暂保留再淡出
+        toast("容器已重启 · SOCKS5 监听就绪，请登录后探活", { variant: "success" });
+      } catch (err) {
+        // 把失败标在「正在进行」的那一步上(步内「重试」),再补一条友好错误条解释 + 重试整流程
+        const cur = host.querySelector('.fb-st-row[data-state="active"]');
+        if (cur) sp.setStep(cur.dataset.key, "error", doRestart);
+        fb.errorBanner(host, { fromError: err, onRetry: doRestart });
+      } finally { btn.disabled = false; btn.textContent = orig; }
+    }
+    $("#act-restart").addEventListener("click", doRestart);
+    async function doPower() {
+      const btn = $("#act-power"), starting = ch.status === "stopped", orig = btn.textContent;
+      btn.disabled = true; btn.textContent = starting ? "启动中…" : "停止中…";
       try {
-        if (ch.status === "stopped") { await api.start(ch.id); await boot(); toast("已启动，请登录后探活"); }
-        else { await api.stop(ch.id); await boot(); toast("容器已停止"); }
-      } catch (err) { toast("操作出错：" + err.message, false); }
+        if (starting) { await api.start(ch.id); await boot(); toast("已启动，请登录后探活", { variant: "success" }); }
+        else { await api.stop(ch.id); await boot(); toast("容器已停止", { variant: "success" }); }
+      } catch (err) {
+        const f = fb.friendlyError(err);
+        toast((starting ? "启动出错:" : "停止出错:") + f.title, { variant: "danger", action: { label: "重试", onClick: doPower } });
+        btn.textContent = orig;   // 失败:恢复原文案(成功走 boot→syncStatus 重写)
+      }
       finally { btn.disabled = false; }
-    });
+    }
+    $("#act-power").addEventListener("click", doPower);
 
     // ── 删除 ──
-    $("#del-confirm").addEventListener("click", async () => {
-      closeOverlay("del-modal");
+    async function doDelete() {
+      const btn = $("#del-confirm"), orig = btn.textContent;
+      btn.disabled = true; btn.textContent = "删除中…";   // 进行中:保持弹窗,失败仍可重试
       try {
         await api.remove(ch.id);
-        toast(`已删除 ${ch.name} · 域名规则已从 mihomo / Clash 摘除`);
+        closeOverlay("del-modal");
+        toast(`已删除 ${ch.name} · 域名规则已从 mihomo / Clash 摘除`, { variant: "success" });
         setTimeout(() => location.href = "index.html", 900);
-      } catch (e) { toast("删除出错：" + e.message, false); }
-    });
+      } catch (e) {
+        const f = fb.friendlyError(e);
+        toast("删除出错:" + f.title, { variant: "danger", action: { label: "重试", onClick: doDelete } });
+        btn.disabled = false; btn.textContent = orig;
+      }
+    }
+    $("#del-confirm").addEventListener("click", doDelete);
 
     // ── 分流规则：域名（DOMAIN-SUFFIX）+ IP/网段（IP-CIDR·no-resolve）──
     function ruleRow(type, d) {
@@ -674,40 +767,59 @@
           return;
         }
         body.innerHTML = o.list.map((d) => ruleRow(o.type, d)).join("");
-        $$(`${o.bodySel} [data-toggle]`).forEach(sw => sw.addEventListener("click", async () => {
+        $$(`${o.bodySel} [data-toggle]`).forEach(sw => sw.addEventListener("click", async function onToggle() {
           const d = o.list.find(x => String(x.id) === sw.dataset.toggle);
           if (!d) return;
           try {
-            await api.toggleRule(ch.id, d.id, !d.enabled);
+            await api.toggleRule(ch.id, d.id, !d.enabled);   // 先认后端,成功才翻 UI(无乐观回滚问题)
             d.enabled = d.enabled ? 0 : 1; render();
-            toast(`${d.pattern} 已${d.enabled ? "启用" : "停用"} → 热重载 chan${ch.id} 规则`);
-          } catch (e) { toast("操作出错：" + e.message, false); }
+            toast(`${d.pattern} 已${d.enabled ? "启用" : "停用"} → 热重载 chan${ch.id} 规则`, { variant: "success" });
+          } catch (e) {
+            const f = fb.friendlyError(e);
+            toast("操作出错:" + f.title, { variant: "danger", action: { label: "重试", onClick: onToggle } });
+          }
         }));
-        $$(`${o.bodySel} [data-del]`).forEach(b => b.addEventListener("click", async () => {
+        $$(`${o.bodySel} [data-del]`).forEach(b => b.addEventListener("click", async function onDel() {
           const d = o.list.find(x => String(x.id) === b.dataset.del);
           if (!d) return;
+          b.disabled = true;
           try {
             await api.delRule(ch.id, d.id);
             o.list.splice(o.list.indexOf(d), 1); render();
-            toast(`已删除 ${d.pattern} → PUT /providers/rules/chan${ch.id} 热重载`);
-          } catch (e) { toast("删除出错：" + e.message, false); }
+            toast(`已删除 ${d.pattern} → PUT /providers/rules/chan${ch.id} 热重载`, { variant: "success" });
+          } catch (e) {
+            b.disabled = false;
+            const f = fb.friendlyError(e);
+            toast("删除出错:" + f.title, { variant: "danger", action: { label: "重试", onClick: onDel } });
+          }
         }));
       }
       o.render = render;
-      $(o.formSel).addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const toks = parseTokens(e.target.pat.value);
-        if (!toks.length) { toast(`请填写${o.label}`, false); return; }
+      const form = $(o.formSel), submitBtn = form.querySelector('button[type="submit"]');
+      async function doAdd(toks) {
+        const orig = submitBtn ? submitBtn.innerHTML : null;
+        if (submitBtn) { submitBtn.disabled = true; submitBtn.replaceChildren(fb.spinner("绑定中…")); }
         try {
           const r = await api.addRules(ch.id, toks, o.kind);
-          e.target.pat.value = "";
+          form.pat.value = "";
           o.list = o.kind === "ip" ? r.ips : r.domains;
           render();
           const n = o.kind === "ip" ? r.added.ip : r.added.domain;
-          if (n) toast(`已绑定 ${n} 条${o.label} → 写 ./prov/chan${ch.id}.yaml 热重载，不断现有连接`);
-          else if (r.rejected.length) toast(`格式无法识别：${r.rejected.join("，")}`, false);
-          else toast(`这些${o.label}已绑定`, false);
-        } catch (err) { toast("绑定出错：" + err.message, false); }
+          if (n) toast(`已绑定 ${n} 条${o.label} → 写 ./prov/chan${ch.id}.yaml 热重载，不断现有连接`, { variant: "success" });
+          else if (r.rejected.length) toast(`格式无法识别:${r.rejected.join("，")}`, { variant: "danger" });
+          else toast(`这些${o.label}已绑定`, { variant: "info" });
+        } catch (err) {
+          const f = fb.friendlyError(err);
+          toast("绑定出错:" + f.title, { variant: "danger", action: { label: "重试", onClick: () => doAdd(toks) } });
+        } finally {
+          if (submitBtn) { submitBtn.disabled = false; if (orig != null) submitBtn.innerHTML = orig; }
+        }
+      }
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const toks = parseTokens(e.target.pat.value);
+        if (!toks.length) { toast(`请填写${o.label}`, false); return; }
+        doAdd(toks);
       });
       render();
     }
@@ -729,15 +841,18 @@
     // ── 日志（真 docker logs）──
     async function loadLogs() {
       $("#logs-title").textContent = `docker logs · ${containerId}`;
+      const body = $("#logs-body");
+      body.replaceChildren(fb.spinner("正在拉取日志…"));   // 进行中:别再静默
       try {
         const { lines } = await api.logs(ch.id, 500);
-        $("#logs-body").textContent = lines.join("\n");
+        body.textContent = lines.join("\n");
+        body.scrollTop = body.scrollHeight;
       } catch (e) {
-        $("#logs-body").textContent = "<拉取日志失败：" + e.message + ">";
+        body.innerHTML = "";
+        fb.errorBanner(body, { fromError: e, onRetry: () => loadLogs() });
       }
-      $("#logs-body").scrollTop = $("#logs-body").scrollHeight;
     }
-    $("#logs-refresh").addEventListener("click", () => { loadLogs(); toast("已刷新日志"); });
+    $("#logs-refresh").addEventListener("click", () => { loadLogs(); });
     // 切到日志 tab 时拉真日志
     const logsTab = document.querySelector('.tab[data-tab="logs"]');
     if (logsTab) logsTab.addEventListener("click", () => loadLogs());
@@ -758,11 +873,15 @@
           syncStatus();
           renderHealth();
         }
-      } catch (e) {}
+      } catch (e) {
+        // 8s 自愈轮询:静默不打扰用户(下轮自动重试),仅记日志便于诊断「定时更新是否在跑」
+        console.warn("[channel] 自动探活失败,8s 后重试:", e.message);
+      }
     }
 
-    // 启动：加载真实数据后渲染整屏
-    boot().then(() => {
+    // 启动：加载真实数据后渲染整屏（首屏失败→骨架让位给可重试错误条，不再白屏）
+    boot(true).then(() => {
+      if (!ch) return;                    // boot 失败已挂错误条，不继续接线探活
       // 兑现 index.html「登录/重新登录」跳转 channel.html?id=X#login 的意图
       if (location.hash === "#login") goLogin();
       refreshStatus();                    // 打开即探活一次（徽章不再卡在“待登录”）

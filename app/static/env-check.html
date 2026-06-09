@@ -115,21 +115,57 @@
   <script src="js/api.js"></script>
   <script src="js/preflightPanel.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
   <script>
-    api.vpnTypes().then(function (list) {
+    function loadDiagTypes() {
       const sel = document.getElementById("diag-type");
-      list.forEach(function (a) {
-        const o = document.createElement("option");
-        o.value = a.key;
-        o.textContent = a.label;
-        sel.appendChild(o);
+      sel.disabled = true;
+      const base = sel.options[0];   // 保留首项「(只查环境，不挑类型)」
+      api.vpnTypes().then(function (list) {
+        sel.innerHTML = "";
+        sel.appendChild(base);
+        list.forEach(function (a) {
+          const o = document.createElement("option");
+          o.value = a.key;
+          o.textContent = a.label;
+          sel.appendChild(o);
+        });
+        sel.disabled = false;
+      }).catch(function (e) {
+        sel.disabled = false;   // 失败不锁死：仍可「只查环境」跑体检
+        toast("VPN 类型列表加载失败", {
+          variant: "danger",
+          action: { label: "重试", onClick: loadDiagTypes },
+        });
       });
-    }).catch(function () {});
+    }
+    loadDiagTypes();
 
-    document.getElementById("diag-run").addEventListener("click", function () {
+    function runDiag() {
+      const btn = document.getElementById("diag-run");
       const t = document.getElementById("diag-type").value;
-      PreflightPanel(document.getElementById("diag-host"), { vpnType: t || undefined, scope: "full" }).run();
-    });
+      const host = document.getElementById("diag-host");
+      btn.disabled = true; const orig = btn.textContent;
+      btn.replaceChildren(fb.spinner("体检中…"));
+      // PreflightPanel.run() 自管 host(loading→结果/失败 banner),失败时 resolve(null)。
+      Promise.resolve(
+        PreflightPanel(host, { vpnType: t || undefined, scope: "full" }).run()
+      ).then(function (res) {
+        if (res === null) {
+          // 体检请求本身失败:清掉 preflightPanel 渲染的原始失败行,只留一条可重试的友好条。
+          host.innerHTML = "";
+          fb.errorBanner(host, {
+            title: "体检未能完成",
+            message: "环境体检请求失败,可能是后端或 Docker 引擎未就绪。",
+            hint: "稍后重试;若反复失败检查 Docker / 引擎状态。",
+            retryLabel: "重新体检", onRetry: runDiag,
+          });
+        }
+      }).finally(function () {
+        btn.disabled = false; btn.textContent = orig;
+      });
+    }
+    document.getElementById("diag-run").addEventListener("click", runDiag);
 
     api.system().then(function (sys) {
       const fp = document.getElementById("foot-port");
@@ -137,9 +173,17 @@
     }).catch(function () {});
 
     async function renderMirrors() {
-      let ms;
-      try { ms = await api.mirrors(); } catch (e) { return; }
       const box = document.getElementById("mir-list");
+      box.innerHTML = "";
+      box.appendChild(fb.skeleton(3));   // 加载占位
+      let ms;
+      try {
+        ms = await api.mirrors();
+      } catch (e) {
+        box.innerHTML = "";
+        fb.errorBanner(box, { fromError: e, retryLabel: "重新加载", onRetry: renderMirrors });
+        return;
+      }
       box.innerHTML = ms.map(m => `
         <div class="chk" data-id="${m.id}">
           <label class="row" style="gap:6px;flex:1;"><input type="checkbox" ${m.enabled ? "checked" : ""} data-toggle> ${m.host}</label>
@@ -151,28 +195,55 @@
           </div></div>`).join("");
       box.querySelectorAll(".chk").forEach((row, idx) => {
         const id = +row.dataset.id;
-        row.querySelector("[data-toggle]").addEventListener("change", e =>
-          api.patchMirror(id, { enabled: e.target.checked }).then(renderMirrors));
+        const toggle = row.querySelector("[data-toggle]");
+        toggle.addEventListener("change", e => {
+          const on = e.target.checked;
+          api.patchMirror(id, { enabled: on })
+            .then(() => { toast(on ? "已启用镜像源" : "已禁用镜像源", { variant: "info" }); renderMirrors(); })
+            .catch(err => {
+              e.target.checked = !on;   // 失败回滚视图
+              toast("切换失败", { variant: "danger", action: { label: "重试", onClick: () => { toggle.checked = on; toggle.dispatchEvent(new Event("change")); } } });
+            });
+        });
         row.querySelector("[data-del]").addEventListener("click", () =>
-          api.delMirror(id).then(renderMirrors));
-        row.querySelector("[data-up]").addEventListener("click", () => {
+          api.delMirror(id)
+            .then(() => { toast("已删除", { variant: "success" }); renderMirrors(); })
+            .catch(err => toast("删除失败", { variant: "danger", action: { label: "重试", onClick: () => row.querySelector("[data-del]").click() } })));
+        row.querySelector("[data-up]").addEventListener("click", (e) => {
           if (idx === 0) return;
           const prev = ms[idx - 1];
+          const btn = e.currentTarget; btn.disabled = true;
           Promise.all([api.patchMirror(id, { priority: prev.priority }),
-                       api.patchMirror(prev.id, { priority: ms[idx].priority })]).then(renderMirrors);
+                       api.patchMirror(prev.id, { priority: ms[idx].priority })])
+            .then(() => { toast("已上移", { variant: "info" }); renderMirrors(); })
+            .catch(err => { btn.disabled = false; toast("调整优先级失败", { variant: "danger", action: { label: "重试", onClick: () => btn.click() } }); });
         });
         row.querySelector("[data-test]").addEventListener("click", async (e) => {
-          e.target.textContent = "测速中…";
-          const r = await api.testMirror(ms[idx].host);
-          row.querySelector("[data-lat]").textContent = r.reachable ? `${r.latency_ms}ms` : "不可达";
-          e.target.textContent = "测速";
+          const btn = e.currentTarget;
+          btn.disabled = true; const orig = btn.textContent; btn.textContent = "测速中…";
+          const latEl = row.querySelector("[data-lat]");
+          try {
+            const r = await api.testMirror(ms[idx].host);
+            latEl.textContent = r.reachable ? `${r.latency_ms}ms` : "不可达";
+          } catch (err) {
+            latEl.textContent = "测速失败";
+            toast("测速失败", { variant: "danger", action: { label: "重试", onClick: () => btn.click() } });
+          } finally {
+            btn.disabled = false; btn.textContent = orig;
+          }
         });
       });
     }
     document.getElementById("mir-add").addEventListener("click", () => {
-      const h = document.getElementById("mir-host").value.trim();
-      if (h) api.addMirror(h).then(() => { document.getElementById("mir-host").value = ""; renderMirrors(); })
-              .catch(e => toast("添加失败:" + e.message, false));
+      const input = document.getElementById("mir-host");
+      const h = input.value.trim();
+      if (!h) return;
+      const btn = document.getElementById("mir-add");
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = "添加中…";
+      api.addMirror(h)
+        .then(() => { input.value = ""; toast("已添加镜像源", { variant: "success" }); return renderMirrors(); })
+        .catch(e => toast("添加失败", { variant: "danger", action: { label: "重试", onClick: () => btn.click() } }))
+        .finally(() => { btn.disabled = false; btn.textContent = orig; });
     });
     renderMirrors();
 
@@ -268,15 +339,27 @@
         pullBtn = document.createElement("button");
         pullBtn.className = "btn btn-primary btn-sm";
         pullBtn.textContent = `一键拉取(本机 ${hostArch})`;
-        pullBtn.addEventListener("click", async () => {
+        pullBtn.addEventListener("click", function doPull() {
           const image = `${e.repo}:${state.tag}`;
           pullBtn.disabled = true; const orig = pullBtn.textContent; pullBtn.textContent = "拉取中…";
           const tip = document.createElement("div"); tip.className = "banner info"; cmds.prepend(tip);
-          try {
-            await pullImageTask(image, st => { tip.textContent = st.progress || st.status; });
-            toast("镜像就绪"); renderImages();
-          } catch (err) { tip.className = "banner danger"; tip.textContent = "拉取失败:" + err.message; }
-          finally { pullBtn.disabled = false; pullBtn.textContent = orig; }
+          const sp = fb.spinner("拉取镜像…"); tip.appendChild(sp);
+          const spMsg = sp.querySelector("span:last-child");
+          pullImageTask(image, st => { if (spMsg) spMsg.textContent = st.progress || st.status || "拉取中…"; })
+            .then(() => {
+              tip.remove();
+              toast("镜像就绪", { variant: "success" });
+              renderImages();
+            })
+            .catch(err => {
+              tip.remove();
+              const wrap = document.createElement("div"); cmds.prepend(wrap);
+              fb.errorBanner(wrap, {
+                fromError: err, retryLabel: "重拉",
+                onRetry: () => { wrap.remove(); doPull(); },
+              });
+              pullBtn.disabled = false; pullBtn.textContent = orig;
+            });
         });
         actions.appendChild(pullBtn);
       }
@@ -306,10 +389,16 @@
       if (IMG_LOADING) return;
       IMG_LOADING = true;
       const box = document.getElementById("img-list");
-      box.innerHTML = `<div class="chk-loading">加载中…</div>`;
+      box.innerHTML = "";
+      box.appendChild(fb.skeleton(4));
       let data;
       try { data = await api.images(); }
-      catch (e) { box.innerHTML = `<div class="banner danger">加载镜像清单失败:${esc(e.message)}</div>`; IMG_LOADING = false; return; }
+      catch (e) {
+        box.innerHTML = "";
+        IMG_LOADING = false;
+        fb.errorBanner(box, { fromError: e, retryLabel: "重新加载", onRetry: renderImages });
+        return;
+      }
       box.innerHTML = "";
       [{ role: "vpn", title: "VPN 通道镜像" }, { role: "infra", title: "基础设施镜像" }].forEach(g => {
         const items = data.images.filter(e => e.role === g.role);

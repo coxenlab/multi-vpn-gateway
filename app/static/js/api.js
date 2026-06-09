@@ -1,6 +1,27 @@
 /* 真实后端 API 封装,所有屏共用。失败抛 Error(消息含状态码+响应体)。 */
 (function () {
   "use strict";
+
+  /* 把响应体解析成结构:有 JSON 就挂 .body(对象);{error}/{detail} 提到 .reason 供 friendlyError 用。
+   * .message 仍保持旧格式 "<status> <原文>",所有现有 catch(e => e.message) 调用零改动。 */
+  function apiError(status, raw, ct) {
+    const text = String(raw || "");
+    let body = null, reason = "";
+    if ((ct || "").includes("application/json") && text) {
+      try {
+        body = JSON.parse(text);
+        if (body && typeof body === "object")
+          reason = body.error || body.detail || body.message || "";
+      } catch (_) { /* 非合法 JSON,留 text 兜底 */ }
+    }
+    const e = new Error(`${status} ${text}`.trim());
+    e.status = status;          // HTTP 状态码(数字),friendlyError 据此分类
+    e.body = body;              // 解析后的 JSON(无则 null)
+    e.reason = reason || text;  // 后端给的人话原因(优先 {error}/{detail},否则原文)
+    e.raw = text;               // 响应体原文(技术细节折叠区用)
+    return e;
+  }
+
   async function req(method, url, body) {
     const opt = { method, headers: {} };
     if (body !== undefined) {
@@ -10,7 +31,7 @@
     const r = await fetch(url, opt);
     if (!r.ok) {
       const t = await r.text().catch(() => "");
-      throw new Error(`${r.status} ${t}`.trim());
+      throw apiError(r.status, t, r.headers.get("content-type"));
     }
     const ct = r.headers.get("content-type") || "";
     return ct.includes("application/json") ? r.json() : r.text();
@@ -32,7 +53,7 @@
       const fd = new FormData();
       fd.append("file", file, file.name);
       const r = await fetch(`/api/channels/${id}/upload`, { method: "POST", body: fd });
-      if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => "")}`.trim());
+      if (!r.ok) throw apiError(r.status, await r.text().catch(() => ""), r.headers.get("content-type"));
       const ct = r.headers.get("content-type") || "";
       return ct.includes("application/json") ? r.json() : r.text();
     },

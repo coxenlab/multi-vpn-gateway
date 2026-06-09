@@ -470,3 +470,95 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 .chk-detail { font-size: var(--text-xs); color: var(--muted); margin-top: 2px; }
 .chk-tip { font-size: var(--text-xs); color: color-mix(in oklab, var(--warn), black 18%); }
 .chk-loading { font-size: var(--text-sm); color: var(--muted); padding: var(--space-4); }
+
+/* ─── 反馈层(feedback.js) ─────────────────────────────────────────────────
+ * 全站共享:stepper / 错误条 / spinner / skeleton / 富 toast。Neutral Modern,克制动画。 */
+
+/* 旋转 spinner —— 唯一允许的旋转,仅作 loading 指示(克制:1px stroke 圆弧,匀速) */
+.fb-spin { animation: fb-rotate 0.8s linear infinite; transform-origin: center; }
+@keyframes fb-rotate { to { transform: rotate(360deg); } }
+
+.fb-spinner { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--text-sm); }
+.fb-spinner-ic { display: inline-grid; place-items: center; color: var(--accent); }
+.fb-spinner-ic svg { width: 16px; height: 16px; }
+
+/* skeleton shimmer —— 浅灰底,横向高光扫过(opacity/位移,无闪烁) */
+.fb-skeleton { display: flex; flex-direction: column; gap: var(--space-2); }
+.fb-sk-line {
+  height: 12px; border-radius: var(--radius-sm); width: 100%;
+  background: linear-gradient(90deg,
+    var(--surface-2) 0%,
+    color-mix(in oklab, var(--surface-2), var(--bg) 60%) 50%,
+    var(--surface-2) 100%);
+  background-size: 200% 100%;
+  animation: fb-shimmer 1.4s var(--ease-standard) infinite;
+}
+@keyframes fb-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* stepper —— 多环节进度(待定/进行中/成功/失败) */
+.fb-stepper { display: flex; flex-direction: column; gap: var(--space-1); }
+.fb-st-row { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-1); }
+.fb-st-ic {
+  width: 22px; height: 22px; border-radius: 50%; flex: none;
+  display: grid; place-items: center; color: var(--muted);
+  border: 1px solid var(--border); background: var(--surface);
+  transition: color var(--motion-fast) var(--ease-standard),
+              border-color var(--motion-fast) var(--ease-standard),
+              background var(--motion-fast) var(--ease-standard);
+}
+.fb-st-ic svg { width: 13px; height: 13px; }
+.fb-st-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+.fb-st-row[data-state="active"] .fb-st-ic { color: var(--accent); border-color: color-mix(in oklab, var(--accent), transparent 55%); background: var(--accent-soft); }
+.fb-st-row[data-state="done"]   .fb-st-ic { color: var(--accent-on); border-color: var(--success); background: var(--success); }
+.fb-st-row[data-state="error"]  .fb-st-ic { color: var(--accent-on); border-color: var(--danger); background: var(--danger); }
+.fb-st-body { flex: 1; min-width: 0; padding-top: 1px; }
+.fb-st-label { font-size: var(--text-sm); color: var(--muted); transition: color var(--motion-fast) var(--ease-standard); }
+.fb-st-row[data-state="active"] .fb-st-label,
+.fb-st-row[data-state="done"]   .fb-st-label { color: var(--fg); }
+.fb-st-row[data-state="active"] .fb-st-label { font-weight: 600; }
+.fb-st-row[data-state="error"]  .fb-st-label { color: var(--danger); font-weight: 600; }
+.fb-st-msg { font-size: var(--text-xs); color: var(--muted); margin-top: 2px; }
+.fb-st-msg:empty { display: none; }
+.fb-st-act { flex: none; align-self: center; }
+
+/* 友好错误条(errorBanner)—— 复用 .banner.danger,补折叠细节 + 操作区 */
+.fb-errbanner .bicon svg { width: 18px; height: 18px; }
+.fb-eb-body { flex: 1; min-width: 0; }
+.fb-eb-hint { color: color-mix(in oklab, var(--danger), black 14%) !important; }
+.fb-eb-toggle {
+  margin-top: var(--space-2); padding: 0; background: none; border: 0;
+  color: var(--muted); font-size: var(--text-xs); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.fb-eb-toggle::before {
+  content: ""; width: 0; height: 0; border-left: 4px solid currentColor;
+  border-top: 3px solid transparent; border-bottom: 3px solid transparent;
+  transition: transform var(--motion-fast) var(--ease-standard);
+}
+.fb-eb-toggle.open::before { transform: rotate(90deg); }
+.fb-eb-toggle:hover { color: var(--fg); }
+.fb-eb-detail {
+  margin-top: var(--space-2); padding: var(--space-3);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted);
+  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto;
+  animation: fb-fade-in var(--motion-fast) var(--ease-standard);
+}
+.fb-eb-acts { margin-top: var(--space-3); }
+@keyframes fb-fade-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+
+/* 富 toast —— 在现有 .toast 基础上加图标位/操作按钮/变体色,过渡复用 toast-in */
+.toast { transition: opacity var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-standard); }
+.toast-ic { display: inline-grid; place-items: center; flex: none; }
+.toast-ic svg { width: 16px; height: 16px; }
+.toast-msg { flex: 1; }
+.toast-success .toast-ic { color: color-mix(in oklab, var(--success), white 20%); }
+.toast-danger  .toast-ic { color: color-mix(in oklab, var(--danger), white 28%); }
+.toast-info    .toast-ic { color: color-mix(in oklab, var(--accent), white 28%); }
+.toast-act {
+  flex: none; margin-left: var(--space-2); padding: 4px 10px;
+  background: transparent; border: 1px solid color-mix(in oklab, var(--on-ink), transparent 70%);
+  border-radius: var(--radius-sm); color: var(--on-ink); font: inherit; font-size: var(--text-xs);
+  cursor: pointer; transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
+}
+.toast-act:hover { background: color-mix(in oklab, var(--on-ink), transparent 86%); border-color: color-mix(in oklab, var(--on-ink), transparent 40%); }

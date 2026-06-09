@@ -56,16 +56,34 @@
       try {
         if (action === "create_network") {
           await api.preflightFix("create_network", {});
-          toast("网络已创建"); await run();
+          toast("网络已创建", { variant: "success" }); await run();
         } else if (action === "pull_image") {
           const tip = document.createElement("div");
           tip.className = "banner info"; host.prepend(tip);
           try {
-            await pullImageTask(image, function (st) { tip.textContent = st.progress || st.status; });
-            toast("镜像就绪"); await run();
-          } catch (e) { tip.className = "banner danger"; tip.textContent = e.message; }
+            const sp = window.fb && fb.spinner ? fb.spinner("拉取镜像…") : null;
+            if (sp) { tip.innerHTML = ""; tip.appendChild(sp); }
+            await pullImageTask(image, function (st) {
+              const txt = st.progress || st.status || "拉取中…";
+              if (sp) { const m = sp.querySelector("span:last-child"); if (m) m.textContent = txt; else tip.textContent = txt; }
+              else tip.textContent = txt;
+            });
+            toast("镜像就绪", { variant: "success" }); await run();
+          } catch (e) {
+            tip.remove();
+            // 失败带「重拉」:复用 fb.errorBanner(归地基管的共享组件)
+            if (window.fb && fb.errorBanner) {
+              const wrap = document.createElement("div"); host.prepend(wrap);
+              fb.errorBanner(wrap, {
+                fromError: e, retryLabel: "重拉",
+                onRetry: function () { wrap.remove(); doFix("pull_image", image); },
+              });
+            } else {
+              tip.className = "banner danger"; tip.textContent = e.message; host.prepend(tip);
+            }
+          }
         }
-      } catch (e) { toast("修复失败:" + e.message, false); }
+      } catch (e) { toast("修复失败:" + (window.fb && fb.friendlyError ? fb.friendlyError(e).title : e.message), { variant: "danger" }); }
       finally { busy = false; }
     }
 

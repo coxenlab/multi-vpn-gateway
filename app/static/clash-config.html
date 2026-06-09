@@ -89,6 +89,8 @@
       </header>
 
       <div class="content content-narrow stack-6">
+        <!-- 反馈层宿主：页面加载/失败提示(默认空,boot 接管) -->
+        <div id="boot-feedback"></div>
         <!-- 页头说明 -->
         <div class="page-head" data-od-id="entry-intro">
           <div class="crumb">设置 / 入口接入</div>
@@ -378,6 +380,7 @@
 
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
   <script>
     // 高亮辅助：把 yaml 文本里的注释 / 键 / 串套上色彩 class
     const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -386,9 +389,33 @@
     const str = (s) => `<span class="str">${esc(s)}</span>`;
 
     let chs = [], sys = {}, cmds = {};
+
+    // 主加载：拉通道 + 系统态(整页依赖,失败必须可重试,不再静默白屏)
     async function boot() {
-      [chs, sys] = await Promise.all([api.channels(), api.system()]);
+      const fbHost = $("#boot-feedback");
+      fbHost.innerHTML = "";
+      const loading = fb.spinner("正在加载入口配置…");
+      loading.style.padding = "var(--space-3) 0";
+      fbHost.appendChild(loading);
+      try {
+        [chs, sys] = await Promise.all([api.channels(), api.system()]);
+      } catch (e) {
+        fbHost.innerHTML = "";
+        fb.errorBanner(fbHost, {
+          fromError: e,
+          onRetry: boot,
+          retryLabel: "重新加载",
+        });
+        toast("加载入口配置失败", { variant: "danger", action: { label: "重试", onClick: boot } });
+        return;
+      }
+      // entrySetup 可选(无后端能力时回落到内置默认命令),失败静默降级
       try { cmds = await api.entrySetup(); } catch (e) { cmds = {}; }
+      fbHost.innerHTML = "";
+      render();
+    }
+
+    function render() {
       const origin = location.origin;          // 如 http://127.0.0.1:42411
       const mport = sys.mihomo_port;
       const endpoint = `127.0.0.1:${mport}`;
@@ -500,11 +527,22 @@
       $("#copy-sys").addEventListener("click", () => copyText(sysOn + "\n" + sysOff, "已复制命令"));
       $("#copy-env").addEventListener("click", () => copyText(envSocks, "已复制命令"));
 
-      // 7c 宿主接管层「真执行」(仅 Tauri/host 后端有这些端点;feature-detect,失败保持隐藏)
+      // 7c 宿主接管层「真执行」(仅 Tauri/host 后端有这些端点;feature-detect)
+      runClashDetect();
+      runSystemProxyGet();
+    }
+
+    // 检测本机 Clash(9090) + 拉 Verge 导入块。非 host 后端(404)= 不支持,整卡静默隐藏;
+    // host 后端真失败 = 显示卡内可重试错误条(进行中→成功→失败+重试)。
+    async function runClashDetect() {
+      const card = $("#card-detect"), tag = $("#detect-tag"), line = $("#detect-line");
+      // 进行中:亮出卡 + 行内 spinner(克制),让用户知道在检测
+      card.style.display = "";
+      tag.textContent = "检测中";
+      line.replaceChildren(fb.spinner("正在检测本机 Clash(9090) 并生成导入块…"));
       try {
         const [det, merge] = await Promise.all([api.clashDetect(), api.mergeProfile()]);
-        $("#card-detect").style.display = "";
-        const tag = $("#detect-tag"), line = $("#detect-line");
+        tag.classList.remove("ok");
         if (det.running) {
           tag.textContent = "已检测到"; tag.classList.add("ok");
           line.innerHTML = `本机有 ${det.meta ? "mihomo/Clash.Meta " : "Clash "}在运行${det.version ? "（" + det.version + "）" : ""},控制台 <span class="mono">${det.controller || "127.0.0.1:9090"}</span>。推荐用下面的 Verge 导入块,或方式①订阅。`;
@@ -513,18 +551,41 @@
           line.textContent = "未检测到运行中的 Clash(9090 无应答)。若你用 Clash 先启动它;否则用「全局接管」Tab 的 PAC / 系统代理。";
         }
         $("#code-merge").textContent = merge;
-        $("#copy-merge").addEventListener("click", () => copyText(merge, "已复制 Verge 导入块"));
-      } catch (e) { /* 非 host 后端:整卡保持隐藏 */ }
+        if (!$("#copy-merge").dataset.bound) {
+          $("#copy-merge").addEventListener("click", () => copyText($("#code-merge").textContent, "已复制 Verge 导入块"));
+          $("#copy-merge").dataset.bound = "1";
+        }
+      } catch (e) {
+        // 404 = 该后端无此能力(feature-detect):还原成隐藏卡,不打扰用户
+        if (e && e.status === 404) { card.style.display = "none"; return; }
+        // host 后端真失败:状态行落人话 + 带「重新检测」的失败 toast(避免在 <p> 内嵌 banner)
+        const f = fb.friendlyError(e);
+        tag.textContent = "检测失败"; tag.classList.remove("ok");
+        line.textContent = f.title + "：" + f.message;
+        toast("Clash 检测失败", { variant: "danger", action: { label: "重新检测", onClick: runClashDetect } });
+      }
+    }
 
-      // PAC 一键应用(host-only)
+    // PAC 一键应用(host-only):读当前系统代理状态。404/不支持 = 隐藏;真失败 = 卡内可重试错误条。
+    async function runSystemProxyGet() {
+      const wrap = $("#pac-host-wrap"), status = $("#pac-host-status");
       try {
         const st0 = await api.systemProxyGet();
-        if (st0 && st0.supported) {
-          $("#pac-host-wrap").style.display = "";
-          renderPacHost(st0);
+        if (!st0 || !st0.supported) { wrap.style.display = "none"; return; }
+        wrap.style.display = "";
+        renderPacHost(st0);
+        if (!$("#pac-apply").dataset.bound) {
           $("#pac-apply").addEventListener("click", onPacApply);
+          $("#pac-apply").dataset.bound = "1";
         }
-      } catch (e) { /* 非 host 后端:保持隐藏 */ }
+      } catch (e) {
+        if (e && e.status === 404) { wrap.style.display = "none"; return; }
+        // host 后端真失败:状态位落人话 + 带「重新读取」的失败 toast(不在 <span> 内嵌 banner)
+        const f = fb.friendlyError(e);
+        wrap.style.display = "";
+        status.textContent = f.title + "：" + f.message;
+        toast("读取系统代理状态失败", { variant: "danger", action: { label: "重新读取", onClick: runSystemProxyGet } });
+      }
     }
 
     function renderPacHost(st) {
@@ -539,13 +600,17 @@
     async function onPacApply() {
       const btn = $("#pac-apply");
       const enable = btn.dataset.on !== "1";
+      const label = btn.textContent;          // 进行中:保留原文案,临时换 spinner
       btn.disabled = true;
+      btn.replaceChildren(fb.spinner(enable ? "正在应用…" : "正在取消…"));
       try {
         const r = await api.systemProxySet(enable);
-        renderPacHost(r.state);
-        toast(enable ? "已应用 PAC 系统代理 ✓" : "已取消系统代理 ✓");
+        renderPacHost(r.state);               // 成功:刷新状态文案 + 按钮文案
+        toast(enable ? "已应用 PAC 系统代理" : "已取消系统代理", { variant: "success" });
       } catch (e) {
-        toast("操作失败:" + (e.message || e), false);
+        btn.textContent = label;              // 失败:还原按钮文案,可再点重试
+        const f = fb.friendlyError(e);
+        toast(f.title, { variant: "danger", action: { label: "重试", onClick: onPacApply } });
       } finally { btn.disabled = false; }
     }
 

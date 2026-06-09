@@ -15,7 +15,9 @@
 
     /* 步骤面板：一次只显示一步 */
     .step-panel { display: none; }
-    .step-panel.active { display: block; }
+    /* 克制的进入过渡:轻 fade + 极小上移(复用 feedback 层 fb-fade-in,200ms) */
+    .step-panel.active { display: block; animation: fb-fade-in var(--motion-base, 200ms) var(--ease-standard, ease); }
+    @media (prefers-reduced-motion: reduce) { .step-panel.active { animation: none; } }
 
     /* 摘要卡随窄屏自然落到下方 */
     .summary-sticky { position: sticky; top: calc(var(--topbar-h) + var(--space-6)); }
@@ -166,6 +168,7 @@
                           <div class="cd">arm64 原生镜像，仅支持交互登录</div>
                         </label>
                       </div>
+                      <div id="types-err" style="margin-top:var(--space-3);"></div>
                     </div>
 
                     <div class="field" id="ecver-field">
@@ -241,6 +244,13 @@
                     <div class="code" id="run-preview"></div>
                   </div>
 
+                  <div id="run-steps-wrap" style="display:none;">
+                    <div class="row-between" style="margin-bottom:10px;">
+                      <span class="eyebrow">启动进度</span>
+                    </div>
+                    <div id="run-steps"></div>
+                  </div>
+
                   <div>
                     <div class="row-between" style="margin-bottom:10px;">
                       <span class="eyebrow">容器日志流</span>
@@ -248,6 +258,8 @@
                     </div>
                     <div class="code log-stream" id="run-log"><span class="ln cmt"># 点击“起容器”开始 containers.run …</span></div>
                   </div>
+
+                  <div id="run-err"></div>
                 </div>
                 <div class="card-foot row-between">
                   <button class="btn btn-secondary" data-back>上一步</button>
@@ -279,6 +291,7 @@
                       </div>
                     </div>
                     <button class="btn btn-secondary btn-sm" id="vnc-reload-wiz" type="button" style="align-self:flex-start;">登录窗没出来？点此重新加载</button>
+                    <div id="vnc-err"></div>
                   </div>
 
                   <!-- 无头注入路径（EC + 账号密码）：跳过 noVNC 交互登录 -->
@@ -339,6 +352,8 @@
                       <p class="t-sm muted" style="margin-top:10px;">SOCKS5 探活通过，通道状态置为 <span class="mono">logged_in</span>。可以进入下一步绑定分流规则。</p>
                     </div>
                   </div>
+
+                  <div id="probe-err"></div>
                 </div>
                 <div class="card-foot row-between">
                   <button class="btn btn-secondary" data-back>上一步</button>
@@ -367,6 +382,7 @@
                     <span class="help">域名走 <span class="mono">DOMAIN-SUFFIX</span>、IP/网段走 <span class="mono">IP-CIDR + no-resolve</span>；写入该通道的 rule-provider 文件，调 mihomo REST 热加载即时生效，不重启、不断现有连接。</span>
                   </div>
                   <div class="ch-domains" id="bound-list"><span class="t-sm muted">尚未绑定规则</span></div>
+                  <div id="bind-err"></div>
                 </div>
               </div>
 
@@ -422,9 +438,10 @@
     </div>
   </div>
 
-  <script src="js/preflightPanel.js"></script>
   <script src="js/api.js"></script>
+  <script src="js/preflightPanel.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
   <script>
     // ── 派生新通道的稳定标识（仅 docker-run 预览展示用；真实端口/MAC/卷由后端创建时分配落库）──
     function randMac() {
@@ -621,6 +638,7 @@
       } catch (e) {
         sel.innerHTML = `<option value="7.6.3" selected>7.6.3</option>`;
         model.ecver = "7.6.3";
+        toast("版本列表拉取失败,已回退 7.6.3", { variant: "info" });
       }
       syncSummary();
     }
@@ -632,11 +650,27 @@
     });
 
     // 启动:拉适配器列表 → 渲染网格 → 选中第一个
-    api.vpnTypes().then(list => {
-      ADAPTERS = list;
-      renderTypeGrid(list);
-      if (list.length) selectType(list[0].key);
-    }).catch(() => { /* 离线:保留 HTML 里的静态两卡兜底 */ });
+    function loadTypes() {
+      $("#types-err").innerHTML = "";
+      const grid = $("#type-grid");
+      const stash = grid.innerHTML;                 // 保留静态两卡,失败时回填
+      grid.replaceChildren(fb.skeleton(2));         // 加载中:占位骨架
+      api.vpnTypes().then(list => {
+        ADAPTERS = list;
+        renderTypeGrid(list);
+        if (list.length) selectType(list[0].key);
+      }).catch(e => {
+        // 离线/拉取失败:回填静态两卡兜底 + 露友好错误条(可重拉)
+        grid.innerHTML = stash;
+        fb.errorBanner("#types-err", {
+          fromError: e, retryLabel: "重新加载",
+          title: "通道类型加载失败",
+          message: "没取到适配器列表,已退回内置的 EasyConnect / aTrust 两类兜底。",
+          onRetry: loadTypes,
+        });
+      });
+    }
+    loadTypes();
 
     // ── 登录方式选择 ──
     function setLogin(v) {
@@ -785,64 +819,89 @@
       box.appendChild(ln);
       box.scrollTop = box.scrollHeight;
     }
-    $("#run-btn").addEventListener("click", async () => {
+    let runSteps = null;   // fb.stepper 实例(起容器进度)
+    async function runCreate() {
       if (started) return;
       started = true;
       const btn = $("#run-btn");
-      btn.disabled = true; btn.textContent = "启动中…";
+      btn.disabled = true; btn.replaceChildren(fb.spinner("启动中…"));
       setRunBadge("starting"); setSumBadge("starting");
       $("#run-log").innerHTML = "";
+      $("#run-err").innerHTML = "";
       appendLog("$ POST /api/channels …", "");
+
+      // 起容器进度 stepper:create(+ byo 才有 upload)
+      const pkgFile = (model.fields.package instanceof File) ? model.fields.package : null;
+      const steps = [{ key: "create", label: "创建容器(docker run)" }];
+      if (pkgFile) steps.push({ key: "upload", label: "上传安装器" });
+      $("#run-steps-wrap").style.display = "";
+      runSteps = fb.stepper($("#run-steps"), steps);
+
       try {
-        const isHeadless = model.login === "headless";
-        const cfg = {};
-        let pkgFile = null;
-        for (const [k, v] of Object.entries(model.fields)) {
-          if (v == null) continue;
-          if (v instanceof File && k === "package") { pkgFile = v; continue; }  // byo 二进制:defer 到 multipart
-          cfg[k] = (v instanceof File) ? await v.text() : v;  // oss .ovpn/wg .conf 仍读文本随 config 加密
+        let id = window.createdId;
+        if (!id) {                        // 仅容器未建时 create;重试 upload 失败时跳过,避免重复建容器(孤儿)
+          runSteps.setStep("create", "active", "正在拉起容器…");
+          const isHeadless = model.login === "headless";
+          const cfg = {};
+          for (const [k, v] of Object.entries(model.fields)) {
+            if (v == null) continue;
+            if (v instanceof File && k === "package") continue;  // byo 二进制:defer 到 multipart
+            cfg[k] = (v instanceof File) ? await v.text() : v;  // oss .ovpn/wg .conf 仍读文本随 config 加密
+          }
+          const ch = await api.create({
+            name: model.name, vpn_type: model.type,
+            ec_ver: model.type === "easyconnect" ? model.ecver : "",
+            login_method: isHeadless ? "headless" : model.login,
+            probe_url: model.probe,
+            // hagb 扁平兼容字段 + oss 的 config{}
+            server: cfg.server || "", username: cfg.username || "",
+            password: model.login === "password" ? (model.fields.password || "") : "",
+            config: cfg,
+          });
+          id = window.createdId = ch.id;
+          appendLog("status → " + ch.status, "ok");
         }
-        const ch = await api.create({
-          name: model.name, vpn_type: model.type,
-          ec_ver: model.type === "easyconnect" ? model.ecver : "",
-          login_method: isHeadless ? "headless" : model.login,
-          probe_url: model.probe,
-          // hagb 扁平兼容字段 + oss 的 config{}
-          server: cfg.server || "", username: cfg.username || "",
-          password: model.login === "password" ? (model.fields.password || "") : "",
-          config: cfg,
-        });
-        window.createdId = ch.id;
+        runSteps.setStep("create", "done", "已创建 vpn-" + id);
         if (pkgFile) {
-          appendLog("$ POST /api/channels/" + ch.id + "/upload …", "");
-          await api.upload(ch.id, pkgFile);
+          runSteps.setStep("upload", "active", "上传 " + pkgFile.name + " …");
+          appendLog("$ POST /api/channels/" + id + "/upload …", "");
+          await api.upload(id, pkgFile);
           appendLog("uploaded " + pkgFile.name, "ok");
+          runSteps.setStep("upload", "done", "已上传");
         }
-        appendLog("Created container vpn-" + ch.id, "ok");
-        appendLog("status → " + ch.status, "ok");
+        appendLog("Created container vpn-" + id, "ok");
         setRunBadge("running"); setSumBadge("running");
         btn.textContent = "已起容器"; $("#go-3").disabled = false;
-        toast("容器已起 · 进入登录");
+        toast("容器已起 · 进入登录", { variant: "success" });
       } catch (e) {
         started = false; btn.disabled = false; btn.textContent = "重试起容器";
         setRunBadge("error"); appendLog("起容器失败:" + e.message, "warn");
-        toast("起容器失败:" + e.message, false);
+        // 哪步失败标 error 并挂步内重试(重跑整个起容器流程)
+        const failKey = (runSteps && window.createdId && pkgFile) ? "upload" : "create";
+        if (runSteps) runSteps.setStep(failKey, "error", runCreate);
+        // 友好错误条:人话标题 + 折叠技术细节 + 「重试起容器」
+        fb.errorBanner("#run-err", { fromError: e, retryLabel: "重试起容器", onRetry: runCreate });
+        // 轻量提示同样带「重试」操作
+        toast("起容器失败", { variant: "danger", action: { label: "重试", onClick: runCreate } });
         // 复用预检面板诊断:重跑体检,高亮可修项
         appendLog("→ 正在体检 Docker 环境定位原因…", "");
         if (pf) pf.run();
         $("#pf-block").style.display = "flex";
       }
-    });
+    }
+    $("#run-btn").addEventListener("click", runCreate);
     $("#go-3").addEventListener("click", () => { gotoStep(3); loadVnc(); });
 
     // ── ③ 登录验证：账密无头跳过；交互登录拉真 noVNC iframe ──
     async function loadVnc() {
       if (model.login === "password" || model.login === "headless") return;  // 无头无 noVNC
       const ph = document.getElementById("vnc-placeholder");
+      $("#vnc-err").innerHTML = "";
       try {
+        if (ph) ph.replaceChildren(fb.spinner("正在拉起 noVNC 登录窗…"));
         const { url } = await api.login(window.createdId);
         // EC 容器内 noVNC 启动慢:探到在伺服再塞 iframe,否则早加载→连接被拒→永久白屏。
-        if (ph) ph.textContent = "正在等待容器内登录界面就绪…(EC 首次启动需数十秒,请稍候)";
+        if (ph) ph.replaceChildren(fb.spinner("正在等待容器内登录界面就绪…(EC 首次启动需数十秒,请稍候)"));
         await window.waitNovncReady(url);
         let f = document.getElementById("vnc-frame");
         if (!f) {
@@ -853,8 +912,10 @@
         }
         f.src = url;
       } catch (e) {
-        if (ph) ph.textContent = "拉取登录窗失败：" + e.message;
-        toast("拉取登录窗失败:" + e.message, false);
+        if (ph) ph.textContent = "拉取登录窗失败,请重试。";
+        // 友好错误条:登录界面未就绪类文案 + 「重新加载」(重跑 loadVnc)
+        fb.errorBanner("#vnc-err", { fromError: e, retryLabel: "重新加载登录窗", onRetry: loadVnc });
+        toast("拉取登录窗失败", { variant: "danger", action: { label: "重新加载", onClick: loadVnc } });
       }
     }
     // 登录窗没出来时手动重载(兜底竞态/容器慢)
@@ -872,27 +933,44 @@
         `  ${s[0]}${model.probe || "<内网探测URL>"}${s[1]} \\\n` +
         `  --max-time 5 -o /dev/null -w ${s[0]}"%{http_code} %{time_total}s"${s[1]}`;
     }
-    $("#probe-btn").addEventListener("click", async () => {
+    async function runProbe() {
       const btn = $("#probe-btn"), spin = $("#probe-spin");
       btn.disabled = true; spin.style.display = "";
+      $("#probe-err").innerHTML = "";
       try {
         const r = await api.status(window.createdId);
         if (r.connected) {
+          // 命门①:登录成功唯一判据 = 后端 SOCKS5 探活通过
           $("#probe-lat").textContent = r.latency_ms ?? "?";
           $("#probe-result").classList.add("show");
           $("#probe-badge").outerHTML = badgeHTML("logged_in").replace("<span", '<span id="probe-badge"');
           setSumBadge("logged_in"); $("#go-5").disabled = false;
-          toast(`隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录`);
-        } else { toast("探活未通过:请确认已在登录窗完成验证", false); }
-      } catch (e) { toast("探活出错:" + e.message, false); }
+          toast(`隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录`, { variant: "success" });
+        } else {
+          // 探活未通过(隧道还没真连上):友好错误条 + 「重新探活」
+          fb.errorBanner("#probe-err", {
+            title: "内网未连通", retryLabel: "重新探活", onRetry: runProbe,
+            message: "经 SOCKS5 探活没访问到目标,说明 VPN 还没真正连上。",
+            hint: "请确认已在登录界面完成验证;凭据 / 服务器无误后重试探活。",
+          });
+          toast("探活未通过", { variant: "danger", action: { label: "重试", onClick: runProbe } });
+        }
+      } catch (e) {
+        fb.errorBanner("#probe-err", { fromError: e, retryLabel: "重新探活", onRetry: runProbe });
+        toast("探活出错", { variant: "danger", action: { label: "重试", onClick: runProbe } });
+      }
       finally { btn.disabled = false; btn.textContent = "重新探活"; spin.style.display = "none"; }
-    });
+    }
+    $("#probe-btn").addEventListener("click", runProbe);
     $("#go-5").addEventListener("click", () => gotoStep(5));
 
     // ── ⑤ 绑定分流规则 + 完成（域名/IP 后端自动识别，可多条）──
-    $("#bind-form").addEventListener("submit", async () => {
+    async function bindRules() {
       const toks = parseTokens($("#f-domain").value);
-      if (!toks.length) { toast("请填写域名或 IP", false); return false; }
+      if (!toks.length) { toast("请填写域名或 IP", false); return; }
+      const btn = $("#bind-btn");
+      btn.disabled = true; btn.replaceChildren(fb.spinner("绑定中…"));
+      $("#bind-err").innerHTML = "";
       try {
         const r = await api.addRules(window.createdId, toks);
         $("#f-domain").value = "";
@@ -908,10 +986,16 @@
         $("#done-socks").textContent = `vpn-${window.createdId}:1080`;
         $("#done-domain").textContent = `${r.domains.length} 域名 / ${r.ips.length} IP`;
         $("#done-card").style.display = "";
-        toast(`已绑定 ${r.added.domain} 域名 / ${r.added.ip} IP → 热加载生效`);
-      } catch (e) { toast("绑定出错:" + e.message, false); }
-      return false;
-    });
+        toast(`已绑定 ${r.added.domain} 域名 / ${r.added.ip} IP → 热加载生效`, { variant: "success" });
+      } catch (e) {
+        // 失败:输入框未清空,重试可重读同一批 token
+        fb.errorBanner("#bind-err", { fromError: e, title: "绑定规则失败", retryLabel: "重新绑定", onRetry: bindRules });
+        toast("绑定失败", { variant: "danger", action: { label: "重试", onClick: bindRules } });
+      } finally {
+        btn.disabled = false; btn.textContent = "绑定";
+      }
+    }
+    $("#bind-form").addEventListener("submit", () => { bindRules(); return false; });
 
     // 初始化
     setLogin("password");
