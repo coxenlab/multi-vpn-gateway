@@ -200,6 +200,12 @@ pub async fn create_channel(
         &ch.id, &mac, ch.ec_ver.as_deref(), &spec, vnc_pwd, &cfg.vpn_net,
     )?;
 
+    // 对照 docker-py `containers.run()` 的 ImageNotFound 自动拉:镜像不在 VM 时走镜像源拉取。
+    // bollard 的 create_container 不会自动拉,缺镜像会硬失败(EC 某 tag / aTrust 未预载即出错)。
+    if let Some(image) = plan.config.image.as_deref() {
+        ensure_image_mirrored(docker, cfg, image).await?;
+    }
+
     let dns = if spec.runtime == "oss" {
         crate::docker::container_ip_on_net(docker, crate::infra::MIHOMO_CONTAINER, &cfg.vpn_net)
             .await
@@ -220,6 +226,45 @@ pub async fn create_channel(
         .await
         .ok_or_else(|| anyhow!("no 8080/tcp HostPort for vpn-{}", ch.id))?;
     Ok((id, Some(port)))
+}
+
+/// 对照 docker-py `containers.run()` 的自动拉:镜像已在 VM → 直接返回;否则走镜像源
+/// `pull_retag`(非裸 docker.io —— 后者 CDN-EOF 常断;aTrust 须架构正确)拉取并重打回原 tag。
+/// 镜像源取库内 enabled 的(无则用内置默认)。所有源失败 → Err(让 create 落 error、信息可读)。
+/// 注:同步阻塞直至拉完(大镜像数分钟,一次性);需进度可改走 preflight::start_pull 后台任务。
+pub async fn ensure_image_mirrored(docker: &bollard::Docker, cfg: &Config, image: &str) -> Result<()> {
+    if crate::docker::image_present(docker, image).await == Some(true) {
+        return Ok(());
+    }
+    let (repo, tag) = match image.split_once(':') {
+        Some((r, t)) if !t.is_empty() => (r.to_string(), t.to_string()),
+        _ => (image.trim_end_matches(':').to_string(), "latest".to_string()),
+    };
+    let host_arch = crate::registry::host_arch();
+    let mut mirrors: Vec<String> = crate::store::list_mirrors(&cfg.db_path())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.enabled != 0)
+        .map(|m| m.host)
+        .collect();
+    if mirrors.is_empty() {
+        mirrors = crate::preflight::DEFAULT_MIRRORS.iter().map(|s| s.to_string()).collect();
+    }
+    let mut errs: Vec<String> = Vec::new();
+    for m in &mirrors {
+        if !crate::preflight::mirror_reachable(m).await {
+            errs.push(format!("{m} 不可达"));
+            continue;
+        }
+        match crate::docker::pull_retag(docker, m, &repo, &tag, &host_arch).await {
+            Ok(crate::docker::PullOutcome::Tagged(_)) => return Ok(()),
+            Ok(crate::docker::PullOutcome::ArchMismatch(a)) => {
+                errs.push(format!("{m} 拉到 {a}(非 {host_arch}),弃用"))
+            }
+            Err(e) => errs.push(format!("{m}: {e}")),
+        }
+    }
+    Err(anyhow!("拉取镜像 {image} 失败(所有镜像源):{}", errs.join("; ")))
 }
 
 /// docker stop(忽略不存在)。
@@ -266,6 +311,7 @@ fn cfg_str<'a>(c: &'a serde_json::Map<String, serde_json::Value>, k: &str) -> &'
 pub fn oss_plan(
     protocol: &str,
     config: &serde_json::Map<String, serde_json::Value>,
+    forti_digest: Option<&str>,
 ) -> Result<Vec<OssAction>> {
     // server/username strip 首尾空白(对照 manager.py:尾随空格的用户名被网关拒登);密码不 strip(可能合法含空格)。
     let server = cfg_str(config, "server").trim().to_string();
@@ -300,13 +346,23 @@ pub fn oss_plan(
             ])
         }
         "openfortivpn" => {
-            // 简化:host/user/password 全写进 /config/forti.conf(命门 #5:密码不进 argv)。
-            // TODO 后续加 _forti_cert_digest 的 trusted-cert TOFU pin(自签网关否则可能拒连)。
+            // 对照 manager.py:host:port 走 CLI 位置参数(openfortivpn CLI 自行拆端口),
+            // conf 只放 password(+ trusted-cert),命门 #5 密码不进 argv。
+            // 旧实现把 host:port 塞进 conf 的 `host =` 指令 → openfortivpn 把整串("ip:port")
+            // 当主机名解析,getaddrinfo 直接失败(实测 "Name or service not known")。
             let host = server.split("://").last().unwrap_or(&server).to_string();
-            let conf = format!("host = {host}\nusername = {user}\npassword = {pwd}\n");
+            let mut conf = format!("password = {pwd}\n");
+            if let Some(d) = forti_digest.filter(|d| !d.is_empty()) {
+                // 自签网关 TOFU pin(对照 _forti_cert_digest);拿不到则不写,等同不 pin。
+                conf.push_str(&format!("trusted-cert = {d}\n"));
+            }
+            let run = format!(
+                "openfortivpn {} -u {} -c /config/forti.conf --persistent=20 >/tmp/connect.log 2>&1",
+                sh(&host), sh(&user)
+            );
             Ok(vec![
                 OssAction::WriteFile { path: "/config/forti.conf".into(), content: conf },
-                OssAction::Exec { cmd: vec!["sh".into(), "-c".into(), "openfortivpn -c /config/forti.conf --persistent=20 >/tmp/connect.log 2>&1".into()] },
+                OssAction::Exec { cmd: vec!["sh".into(), "-c".into(), run] },
             ])
         }
         other => Err(anyhow!("unknown oss protocol: {other}")),
@@ -321,7 +377,16 @@ pub async fn oss_connect(
     config: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<()> {
     let name = format!("vpn-{cid}");
-    for action in oss_plan(protocol, config)? {
+    // openfortivpn:连接前先抓网关证书指纹做 trusted-cert(对照 _forti_cert_digest);
+    // 自签 FortiGate 否则会拒连。拿不到(网关不可达等)→ None,不写 trusted-cert。
+    let forti_digest = if protocol == "openfortivpn" {
+        let server = cfg_str(config, "server").trim().to_string();
+        let host = server.split("://").last().unwrap_or(&server).to_string();
+        forti_cert_digest(docker, &name, &host).await
+    } else {
+        None
+    };
+    for action in oss_plan(protocol, config, forti_digest.as_deref())? {
         match action {
             OssAction::Feed { cmd, secret } => {
                 let argv: Vec<&str> = cmd.iter().map(String::as_str).collect();
@@ -341,6 +406,41 @@ pub async fn oss_connect(
         }
     }
     Ok(())
+}
+
+/// 对照 _forti_cert_digest:openssl 单次 TLS 握手取网关证书 sha256(DER)指纹,作
+/// openfortivpn 的 trusted-cert(TOFU,等同 FortiClient「信任此证书」)。只做握手 —— 不认证、
+/// 不建隧道、不占 FortiGate 会话。拿不到(网关不可达/无 openssl 等)→ None。指纹非机密。
+async fn forti_cert_digest(docker: &bollard::Docker, name: &str, host: &str) -> Option<String> {
+    let sni = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+    let cmd = format!(
+        "openssl s_client -connect {} -servername {} </dev/null 2>/dev/null \
+         | openssl x509 -outform DER 2>/dev/null | sha256sum",
+        sh(host), sh(sni)
+    );
+    let out = crate::docker::exec_capture(docker, name, vec!["sh", "-c", &cmd]).await.ok()?;
+    extract_hex64(&out)
+}
+
+/// 从 sha256sum 输出里抽出恰 64 位的十六进制串(对照 Python `\b([0-9a-fA-F]{64})\b`,无 regex 依赖)。
+/// 只认「极大长度恰为 64」的 hex 串,避免误取更长 hex 的子串。
+pub fn extract_hex64(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_hexdigit() {
+            let start = i;
+            while i < b.len() && b[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+            if i - start == 64 {
+                return Some(s[start..i].to_string());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// arm64 noVNC 自愈:root 起 websockify 8082→5901(best-effort,对照 ensure_novnc_bridge)。
@@ -461,7 +561,7 @@ mod tests {
         cfg.insert("server".into(), serde_json::json!("vpn.corp.com"));
         cfg.insert("username".into(), serde_json::json!("alice"));
         cfg.insert("password".into(), serde_json::json!("p@ss w0rd"));
-        let actions = oss_plan("anyconnect", &cfg).unwrap();
+        let actions = oss_plan("anyconnect", &cfg, None).unwrap();
         match &actions[0] {
             OssAction::Feed { cmd, secret } => {
                 let joined = cmd.join(" ");
@@ -477,10 +577,66 @@ mod tests {
     }
 
     #[test]
+    fn oss_plan_openfortivpn_host_port_not_in_conf_host_directive() {
+        // 回归:旧实现把 "ip:port" 塞进 conf 的 `host =` → openfortivpn getaddrinfo 整串失败。
+        // 现在:host:port 走 CLI 位置参数;conf 只放 password(+ trusted-cert),不含 host=/username=。
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("server".into(), serde_json::json!("203.0.113.10:10443"));
+        cfg.insert("username".into(), serde_json::json!("alice"));
+        cfg.insert("password".into(), serde_json::json!("p@ss w0rd"));
+        let actions = oss_plan("openfortivpn", &cfg, Some("ABCDEF0123")).unwrap();
+
+        let conf = actions.iter().find_map(|a| match a {
+            OssAction::WriteFile { path, content } if path == "/config/forti.conf" => Some(content.clone()),
+            _ => None,
+        }).expect("forti.conf WriteFile");
+        assert!(!conf.contains("host ="), "host 不进 conf(走 CLI):\n{conf}");
+        assert!(!conf.contains("username ="), "username 不进 conf(走 CLI -u)");
+        assert!(conf.contains("password = p@ss w0rd"), "password 进 conf(不进 argv,命门 #5)");
+        assert!(conf.contains("trusted-cert = ABCDEF0123"), "有指纹时写 trusted-cert");
+
+        let run = actions.iter().find_map(|a| match a {
+            OssAction::Exec { cmd } => Some(cmd.join(" ")),
+            _ => None,
+        }).expect("openfortivpn Exec");
+        assert!(run.contains("openfortivpn '203.0.113.10:10443'"), "host:port 整串走 CLI 位置参数(openfortivpn 自拆端口):\n{run}");
+        assert!(run.contains("-u 'alice'"), "username 走 CLI -u");
+        assert!(!run.contains("p@ss w0rd"), "命门 #5:密码绝不在 argv");
+    }
+
+    #[test]
+    fn oss_plan_openfortivpn_no_digest_omits_trusted_cert() {
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("server".into(), serde_json::json!("https://fw.example.com:443"));
+        cfg.insert("username".into(), serde_json::json!("u"));
+        cfg.insert("password".into(), serde_json::json!("pw"));
+        let actions = oss_plan("openfortivpn", &cfg, None).unwrap();
+        let conf = actions.iter().find_map(|a| match a {
+            OssAction::WriteFile { content, .. } => Some(content.clone()), _ => None,
+        }).unwrap();
+        assert!(!conf.contains("trusted-cert"), "无指纹则不写 trusted-cert");
+        // scheme 被剥离:host 走 CLI 用 fw.example.com:443
+        let run = actions.iter().find_map(|a| match a {
+            OssAction::Exec { cmd } => Some(cmd.join(" ")), _ => None,
+        }).unwrap();
+        assert!(run.contains("openfortivpn 'fw.example.com:443'"), "scheme 剥离后整串走 CLI:\n{run}");
+    }
+
+    #[test]
+    fn extract_hex64_picks_sha256sum_line() {
+        // sha256sum 输出形如 "<64hex>  -\n"
+        let h = "a".repeat(64);
+        assert_eq!(extract_hex64(&format!("{h}  -\n")), Some(h.clone()));
+        assert_eq!(extract_hex64("not hex here"), None);
+        assert_eq!(extract_hex64(&"a".repeat(63)), None, "63 位不取");
+        assert_eq!(extract_hex64(&"a".repeat(65)), None, "65 位整串不取(非恰 64)");
+    }
+
+    #[test]
     fn oss_plan_openvpn_config_file_via_write_not_argv() {
         let mut cfg = serde_json::Map::new();
         cfg.insert("config_file".into(), serde_json::json!("client\nremote vpn 1194\n<secret-key>"));
-        let actions = oss_plan("openvpn", &cfg).unwrap();
+        let actions = oss_plan("openvpn", &cfg, None).unwrap();
         // 有 WriteFile 写 .ovpn(私钥经文件,不进 argv)
         assert!(actions.iter().any(|a| matches!(a, OssAction::WriteFile { path, .. } if path.contains(".ovpn") || path.contains("client"))));
         // 最终 Exec openvpn,argv 不含私钥内容
