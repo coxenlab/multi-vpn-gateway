@@ -304,10 +304,14 @@
                 <a class="btn btn-ghost btn-sm" href="env-check.html" style="text-decoration:none;">查看诊断</a>
               </div>`;
     }
+    let healInFlight = false; // 修复进行中:挡住 10s 轮询重渲染(会把禁用按钮重置成可点 → 双发)
+
     function bindHeal() {
       const b = host && host.querySelector(".fb-gw-heal");
       if (!b) return;
       b.addEventListener("click", async () => {
+        if (healInFlight) return;
+        healInFlight = true;
         b.disabled = true;
         b.textContent = "修复中…";
         try {
@@ -317,16 +321,48 @@
         } catch (e) {
           window.toast("修复失败:" + (e && e.message ? e.message : e), { variant: "danger" });
         }
+        healInFlight = false;
         poll(); // 立刻复检刷新横幅
       });
     }
 
+    /* 侧栏状态芯片真实化:原「mihomo 运行中」是写死的 HTML(诊断时误导),
+     * 这里跟着每次 /api/system 轮询同步真实状态(全部屏共用此一处)。
+     * 定性优先用 gateway_health(看门狗查容器+探口)——mihomo_status 走 ctrl 口探活,
+     * 转发断时它也 down,单看它会把「链路中断」错报成「未运行」,与横幅自相矛盾。 */
+    function syncChip(sys) {
+      const chip = document.querySelector(".sidebar-foot .sys-chip");
+      if (!chip) return;
+      const txt = chip.querySelector("span:not(.dot):not(.k)");
+      if (!sys) { chip.classList.remove("ok", "bad"); return; } // 后端未应答:置灰,不乱定性
+      const gh = sys.gateway_health;
+      const running = sys.mihomo_status === "running";
+      let ok = false, label;
+      if (gh === "forward_dead") label = "mihomo 分流链路中断";
+      else if (gh === "container_down") label = "mihomo 未运行";
+      else if (gh === "vm_down") label = "底座(VM)连接断开";
+      else { ok = running; label = running ? "mihomo 运行中" : "mihomo 未运行"; }
+      chip.classList.toggle("ok", ok);
+      chip.classList.toggle("bad", !ok);
+      if (txt) txt.textContent = label;
+    }
+
     function render(sys) {
+      syncChip(sys);
+      if (healInFlight) return; // 修复请求在途:别重绘横幅(保住「修复中…」禁用态)
       const gh = sys && sys.gateway_health;
       // 后端无此字段(老版本)或健康 → 收横幅;若刚从坏态恢复,提示一声。
       if (!gh || gh === "healthy") {
         if (wasBroken) window.toast("分流链路已恢复");
         wasBroken = false; healing = false;
+        if (sys && sys.tunnel_fallback) {
+          // 降级态:分流口已由备援 SSH 隧道接管(底座转发服务僵死)。现有口可用,
+          // 但新端口(如新建通道的登录窗)不会再被转发——持续提示,别让用户撞墙。
+          banner("warn", SVG.check, "分流口已由备援隧道接管",
+            "底座(VM)端口转发服务异常,已自动改走 SSH 隧道。现有通道不受影响;" +
+            "新建通道的登录窗可能打不开。方便时重启电脑(重建底座 VM)可彻底修复。");
+          return;
+        }
         clear();
         return;
       }
@@ -361,7 +397,9 @@
       try {
         render(await window.api.system());
       } catch (_) {
-        /* /api/system 都不通 = 整个 UI 后端挂了,交给各屏自身错误处理,这里不抢戏 */
+        /* /api/system 都不通 = 整个 UI 后端挂了,交给各屏自身错误处理,这里不抢戏;
+         * 只把芯片置灰,别让写死的初始绿点一直撒谎 */
+        syncChip(null);
       } finally {
         busy = false;
       }

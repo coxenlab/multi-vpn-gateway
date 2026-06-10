@@ -19,10 +19,14 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "proxy_port_reachable": h.proxy_port_reachable,
         "healing": h.healing,
         "gave_up": h.gave_up,
+        "tunnel_fallback": h.tunnel_fallback,
     }))
 }
 
-/// 手动修复分流口:`docker restart mihomo` 重建 lima 转发,轮询分流口恢复(横幅按钮 / env-check 用)。
+/// 手动修复分流口,与看门狗同一两级梯子(横幅按钮 / env-check 用):
+/// 1. `docker restart mihomo` 重建 lima 转发,轮询恢复;
+/// 2. 仍不通(hostagent 僵死,端口事件没人听)→ 拉备援 SSH 隧道直转分流口 + 控制口。
+///
 /// 不破命门 #1:不碰登录态;只修宿主→分流口这条转发链。
 pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
     let docker = match st.docker.as_ref() {
@@ -41,7 +45,40 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    Json(json!({"ok": true, "reachable": reachable}))
+    let mut method = "restart";
+    if !reachable {
+        // 二级:restart 没救回 → 备援隧道(同看门狗;详见 health.rs 模块注释)。
+        let ports = crate::health::tunnel_ports(&st.cfg);
+        if let Err(e) = crate::vm::spawn_port_tunnel(crate::vm::PROFILE, &ports).await {
+            // spawn 失败最常见原因是端口已被另一条己方隧道占住(看门狗并发自愈 / 重复点击),
+            // 此时链路其实已通——复测一次再定性,别误报「彻底失败」吓用户重启电脑。
+            if !crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
+                return Json(json!({"ok": false, "reachable": false,
+                    "error": format!("重启与备援隧道均未生效:{e}。建议重启电脑(重建底座 VM)")}));
+            }
+        }
+        method = "tunnel";
+        for _ in 0..10 {
+            if crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
+                reachable = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+    if reachable {
+        // 立即回写快照:横幅/芯片不用再等看门狗下一拍(≤20s)才消失;看门狗下拍会复核。
+        if let Ok(mut snap) = st.health.lock() {
+            snap.gateway_health = crate::health::GatewayHealth::Healthy;
+            snap.proxy_port_reachable = true;
+            snap.healing = false;
+            snap.gave_up = false;
+            if method == "tunnel" {
+                snap.tunnel_fallback = true;
+            }
+        }
+    }
+    Json(json!({"ok": true, "reachable": reachable, "method": method}))
 }
 
 pub async fn proxies(State(st): State<AppState>) -> Json<Value> {

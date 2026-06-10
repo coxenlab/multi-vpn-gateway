@@ -209,6 +209,7 @@ p { margin: 0; text-wrap: pretty; }
 }
 .sys-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .sys-chip.ok .dot { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.sys-chip.bad .dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
 .sys-chip .k { color: var(--muted); font-family: var(--font-mono); }
 
 /* ─── buttons ─────────────────────────────────────────────────────────── */

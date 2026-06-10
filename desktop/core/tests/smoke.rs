@@ -16,7 +16,12 @@ async fn boots_and_serves_system_and_index() {
         mihomo_ctrl_port: Some("9090".into()),
         vpn_net: "vpnmgr_vpnnet".into(),
     };
-    let state = AppState { cfg: Arc::new(cfg), docker: None, mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()) };
+    let state = AppState {
+        cfg: Arc::new(cfg),
+        docker: None,
+        mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
+        health: vpnmgr_core::health::shared(),
+    };
 
     // 命门 #4: bind 127.0.0.1 only
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

@@ -36,6 +36,70 @@ pub fn docker_host(profile: &str) -> String {
     format!("unix://{}", socket_path(profile).display())
 }
 
+/// 纯:lima 实例目录(colima 实例的 lima 名 = `colima-<profile>`)下的 ssh.config。
+pub fn ssh_config_path_in(home: &str, profile: &str) -> PathBuf {
+    PathBuf::from(home)
+        .join(".colima")
+        .join("_lima")
+        .join(format!("colima-{profile}"))
+        .join("ssh.config")
+}
+
+/// ssh.config 路径(读 `$HOME`)。
+pub fn ssh_config_path(profile: &str) -> PathBuf {
+    ssh_config_path_in(&std::env::var("HOME").unwrap_or_default(), profile)
+}
+
+/// 纯:备援隧道的 ssh 参数。与 colima 自身 docker.sock 隧道同款:独立连接(ControlMaster=no,
+/// 不依赖 hostagent 的主连接)、`ExitOnForwardFailure` 让绑定失败反映在退出码、`-f` 守护化
+/// (父进程在全部转发建立后才退出 0)。ServerAlive*:VM 停/断后隧道自杀,不留死进程占口。
+pub fn tunnel_args(ssh_config: &str, profile: &str, ports: &[u16]) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "-F", ssh_config,
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ConnectTimeout=10", // 半死 hostagent 可能 accept 后不发 banner,不设则 ssh 永挂
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=3",
+        "-fN",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    for p in ports {
+        a.push("-L".into());
+        a.push(format!("127.0.0.1:{p}:127.0.0.1:{p}")); // 命门 #4:宿主侧只绑 127.0.0.1
+    }
+    a.push(format!("lima-colima-{profile}"));
+    a
+}
+
+/// 备援端口隧道:hostagent 僵死(`docker restart` 重建不了 lima 转发)时,直接经 VM 的 sshd
+/// 把宿主 `127.0.0.1:<port>` 转回 VM 内同端口(mihomo 的 docker 端口映射绑在 VM 的 127.0.0.1)。
+/// `-f` 守护化,本函数等到转发建立(exit 0)或失败(非 0,如端口被占/ssh 不可达)即返回。
+pub async fn spawn_port_tunnel(profile: &str, ports: &[u16]) -> Result<()> {
+    if ports.is_empty() {
+        return Err(anyhow!("无可转发端口(分流口/控制口未配置)"));
+    }
+    let cfg = ssh_config_path(profile);
+    if !cfg.exists() {
+        return Err(anyhow!("ssh.config 不存在:{}(VM 未初始化?)", cfg.display()));
+    }
+    // 外层 30s 兜底超时:调用方在看门狗单循环里裸 await,这里挂死=整个看门狗冻结。
+    // kill_on_drop:超时丢弃 future 时把 ssh 父进程一并杀掉,不留半截进程。
+    let mut cmd = Command::new("ssh");
+    cmd.args(tunnel_args(&cfg.display().to_string(), profile, ports)).kill_on_drop(true);
+    let st = tokio::time::timeout(Duration::from_secs(30), cmd.status())
+        .await
+        .map_err(|_| anyhow!("备援隧道建立超时(30s,VM ssh 无响应)"))?
+        .map_err(|e| anyhow!("ssh 启动失败: {e}"))?;
+    if !st.success() {
+        return Err(anyhow!("备援隧道建立失败(exit {:?};端口被占或 VM ssh 不可达)", st.code()));
+    }
+    Ok(())
+}
+
 /// colima 是否在 PATH 上(后续版本将 sidecar 内置)。
 pub async fn colima_present() -> bool {
     Command::new("colima")
@@ -126,6 +190,29 @@ mod tests {
             socket_path_in("/Users/x", "vpnmgr"),
             PathBuf::from("/Users/x/.colima/vpnmgr/docker.sock")
         );
+    }
+
+    #[test]
+    fn ssh_config_path_layout() {
+        assert_eq!(
+            ssh_config_path_in("/Users/x", "vpnmgr"),
+            PathBuf::from("/Users/x/.colima/_lima/colima-vpnmgr/ssh.config")
+        );
+    }
+
+    #[test]
+    fn tunnel_args_shape() {
+        let a = tunnel_args("/tmp/ssh.config", "vpnmgr", &[37473, 48020]);
+        assert_eq!(a[0], "-F");
+        assert_eq!(a[1], "/tmp/ssh.config");
+        assert!(a.contains(&"ControlMaster=no".to_string()), "独立连接,不依赖 hostagent 主连接");
+        assert!(a.contains(&"ExitOnForwardFailure=yes".to_string()), "绑定失败须反映在退出码");
+        assert!(a.contains(&"ConnectTimeout=10".to_string()), "半死 sshd 不能挂死调用方");
+        assert!(a.contains(&"-fN".to_string()));
+        // 命门 #4:宿主侧只绑 127.0.0.1
+        assert!(a.contains(&"127.0.0.1:37473:127.0.0.1:37473".to_string()));
+        assert!(a.contains(&"127.0.0.1:48020:127.0.0.1:48020".to_string()));
+        assert_eq!(a.last().unwrap(), "lima-colima-vpnmgr");
     }
 
     #[test]
