@@ -4,7 +4,7 @@ FROM debian:bookworm-slim
 RUN apt-get -o Acquire::Retries=3 update \
  && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
       openconnect vpnc-scripts openfortivpn openvpn \
-      wireguard-tools wireguard-go \
+      wireguard-tools wireguard-go openresolv \
       ppp dante-server \
       iproute2 iptables iputils-ping ca-certificates dnsutils curl gettext-base \
  && rm -rf /var/lib/apt/lists/*
