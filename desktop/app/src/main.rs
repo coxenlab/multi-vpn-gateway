@@ -33,7 +33,21 @@ async fn boot(handle: &tauri::AppHandle) -> anyhow::Result<()> {
     }
 
     vm::ensure_running(vm::PROFILE).await?;
-    vm::wait_docker_ready(vm::PROFILE, 180).await?; // 设 DOCKER_HOST 指向专属 profile
+    // 设 DOCKER_HOST 指向专属 profile。VM 报 Running 但 docker.sock 死 = 传输层坏死
+    // (睡醒/重启后 hostagent 转发不复活;实测 2026-07-02:枯等只会超时死屏,auto-memory
+    // `watchdog-transport-dead-misdiagnosed-vmdown`)→ 自动走已验证的干净恢复:停 VM → 冷起。
+    if let Err(e) = vm::wait_docker_ready(vm::PROFILE, 40).await {
+        eprintln!("dockerd 未就绪({e}),疑似传输层坏死,自动重启 VM 恢复…");
+        if let Some(w) = handle.get_webview_window("main") {
+            let _ = w.eval(
+                "var p=document.querySelector('.hint');\
+                 if(p)p.textContent='底座异常,正在自动修复(重启 VM,约 1 分钟)…';",
+            );
+        }
+        vm::stop(vm::PROFILE).await?;
+        vm::ensure_running(vm::PROFILE).await?;
+        vm::wait_docker_ready(vm::PROFILE, 180).await?;
+    }
 
     // 打包后:静态 6 屏 UI 随 bundle 落在 .app 的 Contents/Resources/static;经 env 指过去
     // (须在 Config::load 之前,Config 读 STATIC_DIR)。开发态(cargo run)该路径不存在 → 不设,

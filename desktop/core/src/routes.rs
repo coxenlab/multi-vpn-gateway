@@ -33,28 +33,34 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
         Some(d) => d,
         None => return Json(json!({"ok": false, "reachable": false, "error": "docker 不可用(VM 连接中断,请重开 app)"})),
     };
-    if let Err(e) = crate::docker::restart(docker, crate::infra::MIHOMO_CONTAINER).await {
-        return Json(json!({"ok": false, "reachable": false, "error": e.to_string()}));
-    }
-    // 等分流口恢复(lima 重建转发 ~秒级),最多 ~15s。
+    // 一级 restart 需要 docker.sock;传输层死(盲区 #3)时它必失败——失败不再直接放弃,
+    // 落到二级隧道(那正是隧道该救的场景)。
+    let restart_err = crate::docker::restart(docker, crate::infra::MIHOMO_CONTAINER).await.err();
     let mut reachable = false;
-    for _ in 0..30 {
-        if crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
-            reachable = true;
-            break;
+    match &restart_err {
+        None => {
+            // 等分流口恢复(lima 重建转发 ~秒级),最多 ~15s。
+            for _ in 0..30 {
+                if crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
+                    reachable = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        Some(e) => eprintln!("[heal] restart 失败(将尝试备援隧道):{e}"),
     }
     let mut method = "restart";
     if !reachable {
-        // 二级:restart 没救回 → 备援隧道(同看门狗;详见 health.rs 模块注释)。
+        // 二级:restart 没救回/不可用 → 备援隧道(同看门狗;详见 health.rs 模块注释)。
         let ports = crate::health::tunnel_ports(&st.cfg);
         if let Err(e) = crate::vm::spawn_port_tunnel(crate::vm::PROFILE, &ports).await {
             // spawn 失败最常见原因是端口已被另一条己方隧道占住(看门狗并发自愈 / 重复点击),
             // 此时链路其实已通——复测一次再定性,别误报「彻底失败」吓用户重启电脑。
             if !crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
+                let pre = restart_err.map(|e| format!("重启失败:{e};")).unwrap_or_default();
                 return Json(json!({"ok": false, "reachable": false,
-                    "error": format!("重启与备援隧道均未生效:{e}。建议重启电脑(重建底座 VM)")}));
+                    "error": format!("{pre}备援隧道未生效:{e}。建议重开 app(将自动修复底座)")}));
             }
         }
         method = "tunnel";

@@ -340,6 +340,8 @@
       let ok = false, label;
       if (gh === "forward_dead") label = "mihomo 分流链路中断";
       else if (gh === "container_down") label = "mihomo 未运行";
+      else if (gh === "transport_dead") label = "底座传输中断,修复中";
+      else if (gh === "transport_degraded") { ok = true; label = "分流可用(底座降级)"; }
       else if (gh === "vm_down") label = "底座(VM)连接断开";
       else { ok = running; label = running ? "mihomo 运行中" : "mihomo 未运行"; }
       chip.classList.toggle("ok", ok);
@@ -387,6 +389,16 @@
         healing = true;
         banner("warn", SVG.spin, "分流链路中断,正在自动修复…",
           "容器正常,但宿主分流口暂不可达(通常睡醒/网络抖动所致)。约 1 分钟内自动恢复,稍候。");
+      } else if (gh === "transport_dead") {
+        // 传输层(mux)坏死:VM/容器都正常,看门狗正在直上备援隧道(盲区 #3)。
+        healing = true;
+        banner("warn", SVG.spin, "底座传输中断,正在切换备援隧道…",
+          "VM 与容器正常,但宿主到 VM 的连接通道断了(通常睡醒/网络切换所致)。正在自动改走备援隧道恢复分流,稍候。");
+      } else if (gh === "transport_degraded") {
+        // 降级稳态:分流口活着(备援隧道),容器管理不可用。重开 app 由 boot 自愈重建底座。
+        healing = false;
+        banner("warn", SVG.check, "分流已由备援隧道接管(降级运行)",
+          "现有通道可正常使用;容器管理(新建/启停通道、登录窗)暂不可用。重新打开 app 将自动修复底座。");
       }
     }
 

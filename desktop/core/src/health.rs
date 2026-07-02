@@ -15,6 +15,14 @@
 //!    拉备援 SSH 隧道直转分流口 + 控制口(与 colima 自身 docker.sock 隧道同款,不依赖 hostagent)。
 //!
 //! 两级都失败才放弃。带防抖 + 冷却,避免反复重启断连。状态吐给 /api/system 供前端横幅。
+//!
+//! 盲区 #3(实测 2026-07-02,auto-memory `watchdog-transport-dead-misdiagnosed-vmdown`):
+//! docker.sock 转发与分流口转发共享同一 SSH 主连接(mux)故障域——mux 死透时 docker ping
+//! 也挂,只看它会把「VM 活着、仅传输层断」误诊成 vm_down,短路整个梯子;而此时备援隧道
+//! (独立连接)明明能当场救活分流口。故 docker 不可达时先做鉴别诊断([`crate::vm::ssh_reachable`],
+//! 与隧道同款独立 SSH):可达 = 传输层故障(`TransportDead`,直上二级隧道;一级 restart 需要
+//! docker.sock,此态下不可用),不可达才是真 `VmDown`。隧道救活分流口后 docker 仍不可达,
+//! 落 `TransportDegraded` 降级稳态(分流可用、容器管理不可用),重开 app 由 boot 自愈收尾。
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -33,7 +41,13 @@ pub enum GatewayHealth {
     ForwardDead,
     /// mihomo 容器没在跑(不自动重启——交给 ensure/手动,避免盖住更深的问题)。
     ContainerDown,
-    /// docker/VM 整体不可达(不在本模块自愈范围,弹横幅引导重开 app)。
+    /// docker 不可达但 VM 的 sshd 可达且分流口也不通 = 传输层(mux/转发)坏死。
+    /// 可自愈:直上二级备援隧道(一级 restart 需要 docker.sock,此态下不可用)。
+    TransportDead,
+    /// docker 不可达但分流口可达(通常 = 备援隧道已接管)= 降级稳态:
+    /// 分流可用、容器管理不可用。不折腾,横幅引导重开 app(boot 自愈重建底座)。
+    TransportDegraded,
+    /// docker 与 VM sshd 都不可达(真·VM 死,不在本模块自愈范围,弹横幅引导重开 app)。
     VmDown,
 }
 
@@ -131,13 +145,16 @@ impl Watchdog {
                         return Action::None; // 冷却中
                     }
                 }
-                if self.tunneled {
-                    self.gave_up = true; // 二级也没救回来 → 放弃自动、亮横幅
-                    return Action::None;
-                }
                 self.heal_times_ms.retain(|&t| now_ms.saturating_sub(t) < FLAP_WINDOW_MS);
                 if self.heal_times_ms.len() >= FLAP_GIVEUP_COUNT {
-                    // 一级连续无效 = hostagent 多半僵死 → 升级备援隧道(只试一次)。
+                    // 一级连续无效 = hostagent 多半僵死 → 升级备援隧道(只试一次;
+                    // 若传输层阶段已消耗过隧道额度,则到此放弃)。tunneled 的判定放在
+                    // restart 次数用尽之后:TransportDead→ForwardDead 转换(docker 恢复)
+                    // 时一级 restart 可用且对症,不能因为隧道试过就直接缴械。
+                    if self.tunneled {
+                        self.gave_up = true;
+                        return Action::None;
+                    }
                     self.tunneled = true;
                     self.last_heal_ms = Some(now_ms);
                     return Action::Tunnel;
@@ -145,6 +162,40 @@ impl Watchdog {
                 self.heal_times_ms.push(now_ms);
                 self.last_heal_ms = Some(now_ms);
                 Action::Restart
+            }
+            GatewayHealth::TransportDead => {
+                // 一级 restart 需要 docker.sock(此态下正是死的那条),直上二级隧道。
+                self.fail_streak += 1;
+                if self.gave_up {
+                    return Action::None;
+                }
+                if self.fail_streak < FAIL_STREAK_BEFORE_HEAL {
+                    return Action::None; // 防抖:再观察一拍
+                }
+                if self.tunneled {
+                    // 隧道已试过:给它一个冷却窗稳定;过窗口仍不通 → 放弃自动、亮横幅。
+                    if let Some(t) = self.last_heal_ms {
+                        if now_ms.saturating_sub(t) < HEAL_COOLDOWN_MS {
+                            return Action::None;
+                        }
+                    }
+                    self.gave_up = true;
+                    return Action::None;
+                }
+                // 首次隧道不受冷却限制(冷却是给 restart 防连击的;隧道不断连接、
+                // 与刚做过的 Restart 是不同手段,共享 last_heal_ms 不该白压它 90s)。
+                self.tunneled = true;
+                self.last_heal_ms = Some(now_ms);
+                Action::Tunnel
+            }
+            GatewayHealth::TransportDegraded => {
+                // 降级稳态:分流口活着(通常靠备援隧道)= 梯子目的已达,清 gave_up
+                // (否则 gave_up 只有 Healthy 能清、mux 死时永远到不了 → 永久错误红横幅)。
+                // 防重试由 tunneled 独自承担:口再死(隧道自杀)走 TransportDead 的
+                // tunneled→放弃路径,不会无限拉隧道。
+                self.fail_streak = 0;
+                self.gave_up = false;
+                Action::None
             }
             // VM/容器层面的问题不在本模块自愈范围。
             GatewayHealth::ContainerDown | GatewayHealth::VmDown => Action::None,
@@ -155,9 +206,9 @@ impl Watchdog {
         self.gave_up
     }
 
-    /// healing = 正在尝试自愈(forward_dead 且未放弃)。
+    /// healing = 正在尝试自愈(forward_dead / transport_dead 且未放弃)。
     pub fn healing(&self, health: GatewayHealth) -> bool {
-        health == GatewayHealth::ForwardDead && !self.gave_up
+        matches!(health, GatewayHealth::ForwardDead | GatewayHealth::TransportDead) && !self.gave_up
     }
 }
 
@@ -194,13 +245,28 @@ pub fn tunnel_ports(cfg: &crate::config::Config) -> Vec<u16> {
 
 /// 综合判网关健康。
 pub async fn check(state: &AppState) -> GatewayHealth {
-    let docker = match state.docker.as_ref() {
-        Some(d) => d,
-        None => return GatewayHealth::VmDown,
+    // ping 包 5s 超时:半死 sock(accept 后不回话)下 bollard 兜底超时是 120s,
+    // 裸 await 会把 20s 一拍的看门狗拖到分钟级、快照陈旧(与 ssh 探针/隧道同等硬化)。
+    let docker_ok = match state.docker.as_ref() {
+        Some(d) => matches!(
+            tokio::time::timeout(Duration::from_secs(5), docker::ping(d)).await,
+            Ok(Ok(_))
+        ),
+        None => false,
     };
-    if docker::ping(docker).await.is_err() {
-        return GatewayHealth::VmDown;
+    if !docker_ok {
+        // 鉴别诊断(盲区 #3):docker.sock 与被检转发共享 mux 故障域,ping 挂 ≠ VM 死。
+        // 独立 SSH 探针可达 = 仅传输层断(可自愈);再按分流口死活分「待救」vs「降级稳态」。
+        if !crate::vm::ssh_reachable(crate::vm::PROFILE).await {
+            return GatewayHealth::VmDown;
+        }
+        return if proxy_port_reachable(&state.cfg.mihomo_host_port).await {
+            GatewayHealth::TransportDegraded
+        } else {
+            GatewayHealth::TransportDead
+        };
     }
+    let docker = state.docker.as_ref().expect("docker_ok implies Some");
     if !docker::is_running(docker, infra::MIHOMO_CONTAINER).await {
         return GatewayHealth::ContainerDown;
     }
@@ -229,7 +295,8 @@ pub fn spawn(state: AppState) {
             let action = wd.decide(health, now_ms);
             if let Ok(mut snap) = state.health.lock() {
                 snap.gateway_health = health;
-                snap.proxy_port_reachable = health == GatewayHealth::Healthy;
+                snap.proxy_port_reachable =
+                    matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded);
                 snap.healing = wd.healing(health);
                 snap.gave_up = wd.gave_up();
             }
@@ -244,7 +311,7 @@ pub fn spawn(state: AppState) {
                 }
                 Action::Tunnel => {
                     let ports = tunnel_ports(&state.cfg);
-                    eprintln!("[watchdog] restart 未能恢复分流口(hostagent 疑似僵死),拉备援 SSH 隧道 {ports:?}");
+                    eprintln!("[watchdog] restart 无效或不可用(hostagent/传输层疑似僵死),拉备援 SSH 隧道 {ports:?}");
                     match crate::vm::spawn_port_tunnel(crate::vm::PROFILE, &ports).await {
                         Ok(()) => {
                             if let Ok(mut snap) = state.health.lock() {
@@ -343,6 +410,98 @@ mod tests {
         assert_eq!(wd.decide(GatewayHealth::VmDown, 20_000), Action::None);
         assert_eq!(wd.decide(GatewayHealth::ContainerDown, 40_000), Action::None);
         assert!(!wd.gave_up());
+    }
+
+    #[test]
+    fn transport_dead_debounces_then_tunnels_directly() {
+        // 盲区 #3:传输层死时一级 restart 不可用,防抖后直上二级隧道。
+        let mut wd = Watchdog::default();
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 0), Action::None, "防抖第一拍不动");
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 20_000), Action::Tunnel, "确认后直上二级");
+        // 冷却内不重复
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 40_000), Action::None);
+        assert!(!wd.gave_up(), "冷却内不算失败");
+        // 过冷却仍 transport_dead(隧道没救回)→ 放弃
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 200_000), Action::None);
+        assert!(wd.gave_up(), "隧道只试一次,再坏即放弃");
+    }
+
+    #[test]
+    fn transport_degraded_is_stable_and_keeps_ladder_state() {
+        // 隧道救活分流口后 docker 仍不可达 → 降级稳态:不折腾,但梯子状态保留,
+        // 口再死(隧道自杀)时不会无限重试隧道。
+        let mut wd = Watchdog::default();
+        wd.decide(GatewayHealth::TransportDead, 0);
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 20_000), Action::Tunnel);
+        // 隧道生效 → 降级稳态,持续 None 且不放弃
+        assert_eq!(wd.decide(GatewayHealth::TransportDegraded, 40_000), Action::None);
+        assert_eq!(wd.decide(GatewayHealth::TransportDegraded, 400_000), Action::None);
+        assert!(!wd.gave_up());
+        // 隧道死了口又不通 → 已 tunneled,防抖+冷却后放弃(不无限拉隧道)
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 420_000), Action::None, "防抖");
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 440_000), Action::None);
+        assert!(wd.gave_up());
+        // 彻底恢复(boot 自愈/手动)→ 梯子复位
+        wd.decide(GatewayHealth::Healthy, 500_000);
+        assert!(!wd.gave_up());
+    }
+
+    #[test]
+    fn transport_degraded_clears_gave_up() {
+        // 评审确认项#1:gave_up 只有 Healthy 能清、mux 死时永远到不了 Healthy →
+        // 手动修复成功后(下一拍落 Degraded)必须在 Degraded 里清 gave_up,
+        // 否则前端 gave_up 优先渲染,降级稳态挂着「通道都打不开」的永久错误红横幅。
+        let mut wd = Watchdog::default();
+        wd.decide(GatewayHealth::TransportDead, 0);
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 20_000), Action::Tunnel);
+        wd.decide(GatewayHealth::TransportDead, 200_000); // 过冷却仍死 → 放弃
+        assert!(wd.gave_up());
+        // 手动修复把口救活 → 下一拍 Degraded:清 gave_up,横幅回到正确的降级文案
+        assert_eq!(wd.decide(GatewayHealth::TransportDegraded, 220_000), Action::None);
+        assert!(!wd.gave_up());
+    }
+
+    #[test]
+    fn forward_dead_after_transport_tunnel_still_restarts() {
+        // 评审确认项#2:传输层阶段消耗过隧道额度后 docker 恢复(TransportDead→ForwardDead),
+        // 一级 restart 此刻可用且对症,不能因 tunneled 直接缴械。
+        let mut wd = Watchdog::default();
+        wd.decide(GatewayHealth::TransportDead, 0);
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 20_000), Action::Tunnel);
+        // docker 恢复但口仍死 → ForwardDead;冷却内先等
+        assert_eq!(wd.decide(GatewayHealth::ForwardDead, 40_000), Action::None);
+        // 过冷却 → 必须给一级 Restart 机会(而非 gave_up)
+        assert_eq!(wd.decide(GatewayHealth::ForwardDead, 120_000), Action::Restart);
+        assert!(!wd.gave_up());
+    }
+
+    #[test]
+    fn transport_dead_tunnel_not_blocked_by_restart_cooldown() {
+        // 评审确认项#4:刚做过一级 Restart(共享 last_heal_ms)就转 TransportDead 时,
+        // 首次隧道不该被 90s 冷却白压——隧道不断连接,冷却是给 restart 防连击的。
+        let mut wd = Watchdog::default();
+        wd.decide(GatewayHealth::ForwardDead, 0);
+        assert_eq!(wd.decide(GatewayHealth::ForwardDead, 20_000), Action::Restart);
+        // 20s 后 mux 死 → TransportDead:冷却未过,但隧道立即发
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 40_000), Action::Tunnel);
+    }
+
+    #[test]
+    fn transport_states_serialize_snake_case() {
+        // 前端横幅按字符串分支,序列化名是契约的一部分。
+        assert_eq!(serde_json::to_string(&GatewayHealth::TransportDead).unwrap(), "\"transport_dead\"");
+        assert_eq!(
+            serde_json::to_string(&GatewayHealth::TransportDegraded).unwrap(),
+            "\"transport_degraded\""
+        );
+    }
+
+    #[test]
+    fn transport_dead_reports_healing() {
+        let wd = Watchdog::default();
+        assert!(wd.healing(GatewayHealth::TransportDead));
+        assert!(!wd.healing(GatewayHealth::TransportDegraded));
+        assert!(!wd.healing(GatewayHealth::VmDown));
     }
 
     #[tokio::test]

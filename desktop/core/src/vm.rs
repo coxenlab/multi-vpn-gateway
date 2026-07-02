@@ -75,6 +75,40 @@ pub fn tunnel_args(ssh_config: &str, profile: &str, ports: &[u16]) -> Vec<String
     a
 }
 
+/// 纯:独立 SSH 探针的参数(鉴别诊断用,与备援隧道同款连接方式:不依赖 hostagent 主连接)。
+/// `BatchMode` 防交互挂死;远端只跑 `true`,零副作用。
+pub fn probe_args(ssh_config: &str, profile: &str) -> Vec<String> {
+    [
+        "-F", ssh_config,
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=8",
+        &format!("lima-colima-{profile}"),
+        "true",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// 独立 SSH 探针:docker.sock 不可达时鉴别「VM 真死」vs「传输层(mux/转发)死」。
+/// 实测 2026-07-02(auto-memory `watchdog-transport-dead-misdiagnosed-vmdown`):杀 mux 后
+/// docker ping 挂、但此探针可达且备援隧道能当场救活分流口——二者共享 mux 故障域,
+/// 只看 docker ping 会把可自愈的传输层故障误诊成 vm_down。
+pub async fn ssh_reachable(profile: &str) -> bool {
+    let cfg = ssh_config_path(profile);
+    if !cfg.exists() {
+        return false;
+    }
+    let mut cmd = Command::new("ssh");
+    cmd.args(probe_args(&cfg.display().to_string(), profile)).kill_on_drop(true);
+    matches!(
+        tokio::time::timeout(Duration::from_secs(12), cmd.status()).await,
+        Ok(Ok(st)) if st.success()
+    )
+}
+
 /// 备援端口隧道:hostagent 僵死(`docker restart` 重建不了 lima 转发)时,直接经 VM 的 sshd
 /// 把宿主 `127.0.0.1:<port>` 转回 VM 内同端口(mihomo 的 docker 端口映射绑在 VM 的 127.0.0.1)。
 /// `-f` 守护化,本函数等到转发建立(exit 0)或失败(非 0,如端口被占/ssh 不可达)即返回。
@@ -164,19 +198,37 @@ pub async fn ensure_running(profile: &str) -> Result<()> {
     start(profile).await
 }
 
+/// 停 VM。用于传输层坏死时的自动恢复(停→冷起,实测 2026-07-02 该路径 ~15s 满血)。
+pub async fn stop(profile: &str) -> Result<()> {
+    let st = Command::new("colima")
+        .args(["stop", profile])
+        .status()
+        .await
+        .map_err(|e| anyhow!("colima stop {profile}: {e}"))?;
+    if !st.success() {
+        return Err(anyhow!("colima stop {profile} 失败(exit {:?})", st.code()));
+    }
+    Ok(())
+}
+
 /// 设 `DOCKER_HOST` 指向该 profile,等 dockerd 可 ping(colima start 后通常已 ready,补一层重试)。
+/// 墙钟计时 + 单次 connect 包 5s 超时:半死 sock(accept 后不回话)下 bollard 兜底超时
+/// 是 120s,按迭代数计时会把 40s 门拖成小时级,boot 自愈永远打不响。
 pub async fn wait_docker_ready(profile: &str, timeout_secs: u64) -> Result<()> {
     std::env::set_var("DOCKER_HOST", docker_host(profile));
-    let mut waited = 0u64;
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        if socket_path(profile).exists() && crate::docker::connect().await.is_ok() {
-            return Ok(());
+        if socket_path(profile).exists() {
+            if let Ok(Ok(_)) =
+                tokio::time::timeout(Duration::from_secs(5), crate::docker::connect()).await
+            {
+                return Ok(());
+            }
         }
-        if waited >= timeout_secs {
+        if std::time::Instant::now() >= deadline {
             return Err(anyhow!("等 {profile} 的 dockerd 就绪超时({timeout_secs}s)"));
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
-        waited += 1;
     }
 }
 
@@ -213,6 +265,20 @@ mod tests {
         assert!(a.contains(&"127.0.0.1:37473:127.0.0.1:37473".to_string()));
         assert!(a.contains(&"127.0.0.1:48020:127.0.0.1:48020".to_string()));
         assert_eq!(a.last().unwrap(), "lima-colima-vpnmgr");
+    }
+
+    #[test]
+    fn probe_args_shape() {
+        let a = probe_args("/tmp/ssh.config", "vpnmgr");
+        assert_eq!(a[0], "-F");
+        assert!(a.contains(&"ControlMaster=no".to_string()), "独立连接,不依赖 hostagent 主连接");
+        assert!(a.contains(&"BatchMode=yes".to_string()), "禁交互,不能挂死看门狗");
+        assert!(a.contains(&"ConnectTimeout=8".to_string()));
+        // 远端零副作用:只跑 true
+        assert_eq!(a[a.len() - 2], "lima-colima-vpnmgr");
+        assert_eq!(a.last().unwrap(), "true");
+        // 探针不带端口转发
+        assert!(!a.contains(&"-L".to_string()));
     }
 
     #[test]
