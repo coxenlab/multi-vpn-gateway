@@ -71,6 +71,17 @@
 
     const has = (kw) => rawLow.includes(kw);
 
+    // 0) 底座降级/中断优先(gatewayMonitor 轮询维护 window.fb.gatewayHealth):
+    //    docker 通道死时一切容器操作都会失败,按根因提示,别误报成「镜像拉取失败」等表象。
+    const gh = window.fb && window.fb.gatewayHealth;
+    if (gh === "transport_dead" || gh === "transport_degraded" || gh === "vm_down") {
+      return F("底座连接中断,容器操作暂不可用",
+        gh === "vm_down" ? "本地引擎(VM)不可达,通道管理操作都会失败。"
+                         : "宿主到 VM 的连接通道中断,看门狗正在自愈;现有分流不受影响。",
+        gh === "vm_down" ? "重新打开 app 会自动重建底座后再重试。"
+                         : "等顶部横幅消失(约 1 分钟内自动恢复)后重试;若持续,重开 app 会自动修复。", detail);
+    }
+
     // 1) 语义关键词优先(后端原文里的特征串)
     if (has("colima") ||
         (has("docker") && (has("not running") || has("cannot connect") || has("daemon") || has("refused") || has("connection refused")))) {
@@ -271,6 +282,8 @@
   (function gatewayMonitor() {
     if (!window.api || !window.api.system) return;
     let host = null, wasBroken = false, healing = false;
+    // 横幅可关:记住被收起的状态签名,同一状态不再弹;状态一变(新事故/恢复)自动复位。
+    let dismissedKey = null, currentKey = null;
 
     function ensureHost() {
       if (host && document.body.contains(host)) return host;
@@ -295,7 +308,12 @@
              ${msg ? `<p>${esc(msg)}</p>` : ""}
              ${actionsHtml || ""}
            </div>
+           <button class="fb-gw-close" type="button" title="收起(状态变化时会再提醒)"
+             style="border:0;background:none;cursor:pointer;font-size:16px;line-height:1;
+                    color:var(--text-secondary,#6b7280);padding:2px 4px;align-self:flex-start;">×</button>
          </div>`;
+      const c = h.querySelector(".fb-gw-close");
+      if (c) c.addEventListener("click", () => { dismissedKey = currentKey; clear(); });
       return h;
     }
     function healBtn(label) {
@@ -351,13 +369,17 @@
 
     function render(sys) {
       syncChip(sys);
-      if (healInFlight) return; // 修复请求在途:别重绘横幅(保住「修复中…」禁用态)
       const gh = sys && sys.gateway_health;
+      window.fb.gatewayHealth = gh || null; // 供 friendlyError 按根因映射容器操作失败
+      if (healInFlight) return; // 修复请求在途:别重绘横幅(保住「修复中…」禁用态)
+      currentKey = (gh || "healthy") + "|" + (sys && sys.tunnel_fallback ? 1 : 0);
+      if (dismissedKey !== null && dismissedKey !== currentKey) dismissedKey = null; // 状态变化 → 复位收起记忆
+      const dismissed = dismissedKey === currentKey;
       // 后端无此字段(老版本)或健康 → 收横幅;若刚从坏态恢复,提示一声。
       if (!gh || gh === "healthy") {
         if (wasBroken) window.toast("分流链路已恢复");
         wasBroken = false; healing = false;
-        if (sys && sys.tunnel_fallback) {
+        if (sys && sys.tunnel_fallback && !dismissed) {
           // 降级态:分流口已由备援 SSH 隧道接管(底座转发服务僵死)。现有口可用,
           // 但新端口(如新建通道的登录窗)不会再被转发——持续提示,别让用户撞墙。
           banner("warn", SVG.check, "分流口已由备援隧道接管",
@@ -369,6 +391,7 @@
         return;
       }
       wasBroken = true;
+      if (dismissed) { clear(); return; } // 用户已收起当前状态的横幅(芯片仍如实显示)
       if (gh === "vm_down") {
         healing = false;
         banner("danger", SVG.cross, "与本地引擎(VM)连接中断",

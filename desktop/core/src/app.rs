@@ -30,7 +30,12 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
 
     let ui_port = cfg.ui_port;
     let mihomo = Controller::new(cfg.mihomo_ctrl_url.clone(), cfg.mihomo_secret.clone());
-    let state = AppState { cfg: Arc::new(cfg), docker, mihomo, health: crate::health::shared() };
+    let state = AppState {
+        cfg: Arc::new(cfg),
+        docker: Arc::new(std::sync::RwLock::new(docker)),
+        mihomo,
+        health: crate::health::shared(),
+    };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ui_port)); // 命门 #4
     let listener = tokio::net::TcpListener::bind(addr).await?;

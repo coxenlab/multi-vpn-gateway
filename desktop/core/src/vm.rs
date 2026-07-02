@@ -109,6 +109,55 @@ pub async fn ssh_reachable(profile: &str) -> bool {
     )
 }
 
+/// 纯:docker.sock 备援隧道参数(unix streamlocal 转发;`StreamLocalBindUnlink` 覆盖陈死本地 sock)。
+pub fn socket_tunnel_args(ssh_config: &str, profile: &str, local_sock: &str, remote_sock: &str) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "-F", ssh_config,
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+        "-o", "StreamLocalBindUnlink=yes",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ConnectTimeout=10",
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=3",
+        "-fN",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    a.push("-L".into());
+    a.push(format!("{local_sock}:{remote_sock}"));
+    a.push(format!("lima-colima-{profile}"));
+    a
+}
+
+/// docker.sock 备援隧道:传输层坏死时把 VM 内 `/var/run/docker.sock` 经独立 SSH 转到本地
+/// sock 路径(lima 用户在 docker 组、免 sudo,实测 2026-07-02)。成功后 `docker::connect_at`
+/// 重建连接换入 AppState → 下一拍 ping 通,状态从 TransportDead 收敛回 Healthy。
+/// ⚠️ local_sock 须短路径(unix sun_path 上限 104 字节),放 data_dir 下。
+pub async fn spawn_docker_sock_tunnel(profile: &str, local_sock: &std::path::Path) -> Result<()> {
+    let cfg = ssh_config_path(profile);
+    if !cfg.exists() {
+        return Err(anyhow!("ssh.config 不存在:{}(VM 未初始化?)", cfg.display()));
+    }
+    let mut cmd = Command::new("ssh");
+    cmd.args(socket_tunnel_args(
+        &cfg.display().to_string(),
+        profile,
+        &local_sock.display().to_string(),
+        "/var/run/docker.sock",
+    ))
+    .kill_on_drop(true);
+    let st = tokio::time::timeout(Duration::from_secs(30), cmd.status())
+        .await
+        .map_err(|_| anyhow!("docker.sock 隧道建立超时(30s)"))?
+        .map_err(|e| anyhow!("ssh 启动失败: {e}"))?;
+    if !st.success() {
+        return Err(anyhow!("docker.sock 隧道建立失败(exit {:?})", st.code()));
+    }
+    Ok(())
+}
+
 /// 备援端口隧道:hostagent 僵死(`docker restart` 重建不了 lima 转发)时,直接经 VM 的 sshd
 /// 把宿主 `127.0.0.1:<port>` 转回 VM 内同端口(mihomo 的 docker 端口映射绑在 VM 的 127.0.0.1)。
 /// `-f` 守护化,本函数等到转发建立(exit 0)或失败(非 0,如端口被占/ssh 不可达)即返回。
@@ -264,6 +313,16 @@ mod tests {
         // 命门 #4:宿主侧只绑 127.0.0.1
         assert!(a.contains(&"127.0.0.1:37473:127.0.0.1:37473".to_string()));
         assert!(a.contains(&"127.0.0.1:48020:127.0.0.1:48020".to_string()));
+        assert_eq!(a.last().unwrap(), "lima-colima-vpnmgr");
+    }
+
+    #[test]
+    fn socket_tunnel_args_shape() {
+        let a = socket_tunnel_args("/tmp/ssh.config", "vpnmgr", "/tmp/dt.sock", "/var/run/docker.sock");
+        assert!(a.contains(&"StreamLocalBindUnlink=yes".to_string()), "须能覆盖陈死本地 sock");
+        assert!(a.contains(&"ControlMaster=no".to_string()), "独立连接,不依赖 hostagent 主连接");
+        assert!(a.contains(&"/tmp/dt.sock:/var/run/docker.sock".to_string()));
+        assert!(a.contains(&"-fN".to_string()));
         assert_eq!(a.last().unwrap(), "lima-colima-vpnmgr");
     }
 

@@ -29,13 +29,12 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
 ///
 /// 不破命门 #1:不碰登录态;只修宿主→分流口这条转发链。
 pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
-    let docker = match st.docker.as_ref() {
-        Some(d) => d,
-        None => return Json(json!({"ok": false, "reachable": false, "error": "docker 不可用(VM 连接中断,请重开 app)"})),
+    // 一级 restart 需要 docker;句柄缺失(bin 无 VM)或传输层死(盲区 #3)时它会失败——
+    // 失败不再直接放弃,落到二级隧道自愈(那正是隧道该救的场景,顺带救回 docker.sock)。
+    let restart_err = match st.docker() {
+        Some(d) => crate::docker::restart(&d, crate::infra::MIHOMO_CONTAINER).await.err(),
+        None => Some(anyhow::anyhow!("docker 连接不可用")),
     };
-    // 一级 restart 需要 docker.sock;传输层死(盲区 #3)时它必失败——失败不再直接放弃,
-    // 落到二级隧道(那正是隧道该救的场景)。
-    let restart_err = crate::docker::restart(docker, crate::infra::MIHOMO_CONTAINER).await.err();
     let mut reachable = false;
     match &restart_err {
         None => {
@@ -52,16 +51,12 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
     }
     let mut method = "restart";
     if !reachable {
-        // 二级:restart 没救回/不可用 → 备援隧道(同看门狗;详见 health.rs 模块注释)。
-        let ports = crate::health::tunnel_ports(&st.cfg);
-        if let Err(e) = crate::vm::spawn_port_tunnel(crate::vm::PROFILE, &ports).await {
-            // spawn 失败最常见原因是端口已被另一条己方隧道占住(看门狗并发自愈 / 重复点击),
-            // 此时链路其实已通——复测一次再定性,别误报「彻底失败」吓用户重启电脑。
-            if !crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
-                let pre = restart_err.map(|e| format!("重启失败:{e};")).unwrap_or_default();
-                return Json(json!({"ok": false, "reachable": false,
-                    "error": format!("{pre}备援隧道未生效:{e}。建议重开 app(将自动修复底座)")}));
-            }
+        // 二级:restart 没救回/不可用 → 备援隧道(同看门狗;heal_transport 已容忍
+        // 「spawn 失败但旧隧道占口、链路其实已通」,并顺带经隧道 sock 救回 docker)。
+        if let Err(e) = crate::health::heal_transport(&st).await {
+            let pre = restart_err.map(|e| format!("重启失败:{e};")).unwrap_or_default();
+            return Json(json!({"ok": false, "reachable": false,
+                "error": format!("{pre}备援隧道未生效:{e}。建议重开 app(将自动修复底座)")}));
         }
         method = "tunnel";
         for _ in 0..10 {
@@ -101,7 +96,7 @@ pub async fn channels(State(st): State<AppState>) -> Json<Value> {
         let rules = store::list_rules(&db, &c.id).unwrap_or_default();
         rules_map.insert(c.id.clone(), split_rules(rules));
         let up = if c.status != "stopped" {
-            crate::docker::uptime(st.docker.as_ref(), &c.id).await
+            crate::docker::uptime(st.docker().as_ref(), &c.id).await
         } else {
             None
         };

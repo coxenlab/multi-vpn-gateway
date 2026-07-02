@@ -68,7 +68,7 @@ async fn boot(handle: &tauri::AppHandle) -> anyhow::Result<()> {
 
     // 建 vpnmgr_vpnnet bridge + 起 mihomo#1 分流路由(设计 §5 改造C),再并入 DB 里的通道/规则。
     // best-effort:mihomo 起不来不挡管理 UI(env-check/preflight 会如实报状态)。
-    if let Some(d) = state.docker.as_ref() {
+    if let Some(d) = state.docker().as_ref() {
         // 首启把打包内置的 oss-vpn 镜像 docker-load 进 VM(打包后在 Contents/Resources/images;
         // dev 无该目录则跳过)。best-effort:载入失败不挡 UI。
         if let Ok(res) = handle.path().resource_dir() {

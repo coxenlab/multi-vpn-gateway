@@ -18,7 +18,7 @@ async fn boots_and_serves_system_and_index() {
     };
     let state = AppState {
         cfg: Arc::new(cfg),
-        docker: None,
+        docker: Arc::new(std::sync::RwLock::new(None)),
         mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
         health: vpnmgr_core::health::shared(),
     };

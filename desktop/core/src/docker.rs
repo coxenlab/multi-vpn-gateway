@@ -20,8 +20,12 @@ pub fn docker_socket() -> String {
 
 /// 连接 VM 内 Docker Engine(spike 已证)。等价今天 docker.from_env(),只是 socket 路径不同。
 pub async fn connect() -> Result<Docker> {
-    let sock = docker_socket();
-    let docker = Docker::connect_with_socket(&sock, 120, bollard::API_DEFAULT_VERSION)
+    connect_at(&docker_socket()).await
+}
+
+/// 连接指定 unix sock(备援隧道 sock 用;`connect` 的参数化变体,构造后立即 ping 验证)。
+pub async fn connect_at(sock: &str) -> Result<Docker> {
+    let docker = Docker::connect_with_socket(sock, 120, bollard::API_DEFAULT_VERSION)
         .map_err(|e| anyhow!("connect {sock}: {e}"))?;
     docker.ping().await.map_err(|e| anyhow!("ping {sock}: {e}"))?;
     Ok(docker)

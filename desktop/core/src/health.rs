@@ -247,14 +247,26 @@ pub fn tunnel_ports(cfg: &crate::config::Config) -> Vec<u16> {
 pub async fn check(state: &AppState) -> GatewayHealth {
     // ping 包 5s 超时:半死 sock(accept 后不回话)下 bollard 兜底超时是 120s,
     // 裸 await 会把 20s 一拍的看门狗拖到分钟级、快照陈旧(与 ssh 探针/隧道同等硬化)。
-    let docker_ok = match state.docker.as_ref() {
-        Some(d) => matches!(
-            tokio::time::timeout(Duration::from_secs(5), docker::ping(d)).await,
-            Ok(Ok(_))
-        ),
-        None => false,
+    let mut docker = match state.docker() {
+        Some(d)
+            if matches!(
+                tokio::time::timeout(Duration::from_secs(5), docker::ping(&d)).await,
+                Ok(Ok(_))
+            ) =>
+        {
+            Some(d)
+        }
+        _ => None,
     };
-    if !docker_ok {
+    if docker.is_none() {
+        // 先试原生 sock 快速重连:覆盖「hostagent/VM 复活但旧句柄(或隧道 sock)已死」
+        // 与「启动时没连上」两种自动收敛,不必等人重开 app。
+        if let Ok(Ok(d)) = tokio::time::timeout(Duration::from_secs(5), docker::connect()).await {
+            state.set_docker(Some(d.clone()));
+            docker = Some(d);
+        }
+    }
+    let Some(docker) = docker else {
         // 鉴别诊断(盲区 #3):docker.sock 与被检转发共享 mux 故障域,ping 挂 ≠ VM 死。
         // 独立 SSH 探针可达 = 仅传输层断(可自愈);再按分流口死活分「待救」vs「降级稳态」。
         if !crate::vm::ssh_reachable(crate::vm::PROFILE).await {
@@ -265,9 +277,8 @@ pub async fn check(state: &AppState) -> GatewayHealth {
         } else {
             GatewayHealth::TransportDead
         };
-    }
-    let docker = state.docker.as_ref().expect("docker_ok implies Some");
-    if !docker::is_running(docker, infra::MIHOMO_CONTAINER).await {
+    };
+    if !docker::is_running(&docker, infra::MIHOMO_CONTAINER).await {
         return GatewayHealth::ContainerDown;
     }
     if proxy_port_reachable(&state.cfg.mihomo_host_port).await {
@@ -275,6 +286,47 @@ pub async fn check(state: &AppState) -> GatewayHealth {
     } else {
         GatewayHealth::ForwardDead
     }
+}
+
+/// 传输层自愈(看门狗二级 / 手动修复共用):备援隧道转发分流口 + 控制口 + 各通道 noVNC 口,
+/// 再把 docker.sock 也经隧道救回、换上新连接 → 下一拍 ping 通,状态收敛回 Healthy。
+/// 端口隧道 spawn 失败但分流口实际可达(旧隧道占口)时不算失败,继续救 docker。
+pub async fn heal_transport(state: &AppState) -> anyhow::Result<()> {
+    let mut ports = tunnel_ports(&state.cfg);
+    if let Ok(chs) = crate::store::list_channels(&state.cfg.db_path()) {
+        ports.extend(extra_tunnel_ports(&chs));
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    if let Err(e) = crate::vm::spawn_port_tunnel(crate::vm::PROFILE, &ports).await {
+        if !proxy_port_reachable(&state.cfg.mihomo_host_port).await {
+            return Err(e);
+        }
+        eprintln!("[watchdog] 端口隧道未新建(可能旧隧道已占口):{e};继续救 docker.sock");
+    }
+    // docker.sock 同船获救(实测 2026-07-02:lima 用户在 docker 组,免 sudo 直转)。
+    // 失败不算致命——分流口已通,docker 留给下拍原生 sock 重连或重开 app。
+    let sock = state.cfg.data_dir.join("docker-tun.sock");
+    match crate::vm::spawn_docker_sock_tunnel(crate::vm::PROFILE, &sock).await {
+        Ok(()) => match crate::docker::connect_at(&sock.display().to_string()).await {
+            Ok(d) => {
+                state.set_docker(Some(d));
+                eprintln!("[watchdog] docker 已经隧道 sock 重连,容器管理恢复");
+            }
+            Err(e) => eprintln!("[watchdog] 隧道 sock 连接失败: {e}"),
+        },
+        Err(e) => eprintln!("[watchdog] docker.sock 隧道失败: {e}"),
+    }
+    Ok(())
+}
+
+/// 纯:通道 noVNC 宿主口(hostagent 死时 lima 不再转发,登录窗打不开;隧道一并救)。
+pub fn extra_tunnel_ports(chs: &[crate::store::ChannelPublic]) -> Vec<u16> {
+    chs.iter()
+        .filter_map(|c| c.novnc_port)
+        .filter_map(|p| u16::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .collect()
 }
 
 // ── 看门狗循环 ───────────────────────────────────────────────────────────
@@ -302,7 +354,7 @@ pub fn spawn(state: AppState) {
             }
             match action {
                 Action::Restart => {
-                    if let Some(d) = state.docker.as_ref() {
+                    if let Some(d) = state.docker().as_ref() {
                         eprintln!("[watchdog] 分流口不可达,自动 restart {} 重建转发", infra::MIHOMO_CONTAINER);
                         if let Err(e) = docker::restart(d, infra::MIHOMO_CONTAINER).await {
                             eprintln!("[watchdog] restart {} 失败: {e}", infra::MIHOMO_CONTAINER);
@@ -310,9 +362,8 @@ pub fn spawn(state: AppState) {
                     }
                 }
                 Action::Tunnel => {
-                    let ports = tunnel_ports(&state.cfg);
-                    eprintln!("[watchdog] restart 无效或不可用(hostagent/传输层疑似僵死),拉备援 SSH 隧道 {ports:?}");
-                    match crate::vm::spawn_port_tunnel(crate::vm::PROFILE, &ports).await {
+                    eprintln!("[watchdog] restart 无效或不可用(hostagent/传输层疑似僵死),拉备援 SSH 隧道");
+                    match heal_transport(&state).await {
                         Ok(()) => {
                             if let Ok(mut snap) = state.health.lock() {
                                 snap.tunnel_fallback = true;
@@ -484,6 +535,22 @@ mod tests {
         assert_eq!(wd.decide(GatewayHealth::ForwardDead, 20_000), Action::Restart);
         // 20s 后 mux 死 → TransportDead:冷却未过,但隧道立即发
         assert_eq!(wd.decide(GatewayHealth::TransportDead, 40_000), Action::Tunnel);
+    }
+
+    #[test]
+    fn extra_tunnel_ports_filters_invalid() {
+        fn ch(novnc: Option<i64>) -> crate::store::ChannelPublic {
+            crate::store::ChannelPublic {
+                id: "x".into(), name: "n".into(), vpn_type: "wireguard".into(),
+                server: "s".into(), ec_ver: None, login_method: "headless".into(),
+                username: "u".into(), vnc_password: None, mac: None, novnc_port: novnc,
+                probe_url: "".into(), status: "running".into(), container_id: None,
+                latency_ms: None, config: serde_json::json!({}),
+            }
+        }
+        let chs = vec![ch(Some(60283)), ch(None), ch(Some(0)), ch(Some(70000))];
+        // 无口 / 0 号口 / 超 u16 的都过滤;只留合法 noVNC 宿主口
+        assert_eq!(extra_tunnel_ports(&chs), vec![60283]);
     }
 
     #[test]

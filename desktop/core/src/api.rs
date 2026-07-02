@@ -30,7 +30,7 @@ pub async fn logs(
     Path(cid): Path<String>,
     Query(q): Query<LogsQuery>,
 ) -> Json<Value> {
-    let lines = match st.docker.as_ref() {
+    let lines = match st.docker().as_ref() {
         Some(d) => manager::logs(d, &cid, q.tail).await,
         None => vec!["<no logs: docker unavailable>".to_string()],
     };
@@ -62,7 +62,7 @@ pub async fn add_rules(
     for (kind, pat) in &plan.to_add {
         let _ = store::add_rule(&db, &cid, kind, pat);
     }
-    let code = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
+    let code = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
     let rs = store::list_rules(&db, &cid).unwrap_or_default();
     let (domains, ips) = crate::routes::split_rules(rs);
     Json(json!({
@@ -77,7 +77,7 @@ pub async fn add_rules(
 pub async fn del_rule(State(st): State<AppState>, Path((_cid, rid)): Path<(String, i64)>) -> Json<Value> {
     let db = st.cfg.db_path();
     let _ = store::del_rule(&db, rid);
-    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await }))
+    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await }))
 }
 
 pub async fn patch_rule(
@@ -87,7 +87,7 @@ pub async fn patch_rule(
 ) -> Json<Value> {
     let db = st.cfg.db_path();
     let _ = store::set_rule_enabled(&db, rid, b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false));
-    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await }))
+    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await }))
 }
 
 // ── 通道创建/编辑(命门 #5:oss 凭据经 provision→oss_connect 注入) ──────────
@@ -130,14 +130,14 @@ async fn provision(
     ch: &store::ChannelPublic,
     vnc_pwd: &str,
 ) -> anyhow::Result<(String, Option<i64>)> {
-    let docker = st.docker.as_ref().ok_or_else(|| anyhow::anyhow!("docker unavailable"))?;
-    let (id, novnc) = manager::create_channel(docker, &st.cfg, ch, vnc_pwd).await?;
+    let docker = st.docker().ok_or_else(|| anyhow::anyhow!("docker unavailable"))?;
+    let (id, novnc) = manager::create_channel(&docker, &st.cfg, ch, vnc_pwd).await?;
     let spec = registry::get(&ch.vpn_type)?;
     if spec.runtime == "oss" {
         let key = store::master_key(&st.cfg.data_dir)?;
         let config = store::get_config(&st.cfg.db_path(), &key, &ch.id)?;
         let proto = spec.protocol.clone().unwrap_or_default();
-        manager::oss_connect(docker, &ch.id, &proto, &config).await?;
+        manager::oss_connect(&docker, &ch.id, &proto, &config).await?;
     }
     Ok((id, novnc))
 }
@@ -201,7 +201,7 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
     match provision(&st, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
             let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-            let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
+            let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
             channel_json(&db, &cid)
         }
         Err(e) => {
@@ -237,7 +237,7 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
         match provision(&st, &ch2, &vnc).await {
             Ok((container_id, novnc)) => {
                 let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-                let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
+                let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
             }
             Err(e) => {
                 let _ = store::set_status(&db, &cid, "error");
@@ -260,18 +260,18 @@ pub async fn login(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     if ch.login_method == "headless" {
         return Json(json!({ "login_mode": "headless" })).into_response();
     }
-    let docker = match st.docker.as_ref() {
+    let docker = match st.docker() {
         Some(d) => d,
         None => return err500("docker unavailable"),
     };
-    let port = match manager::novnc_port(docker, &cid).await {
+    let port = match manager::novnc_port(&docker, &cid).await {
         Some(p) => p,
         None => return err404("no novnc port"),
     };
     if Some(port) != ch.novnc_port {
         let _ = store::set_novnc_port(&db, &cid, port);
     }
-    manager::ensure_novnc_bridge(docker, &cid).await;
+    manager::ensure_novnc_bridge(&docker, &cid).await;
     Json(json!({ "url": webutil::login_url(port, &ch.vnc_password.unwrap_or_default()) })).into_response()
 }
 
@@ -296,12 +296,12 @@ pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp:
         Ok(None) => return err500("no file field"),
         Err(e) => return err500(&format!("multipart: {e}")),
     };
-    let docker = match st.docker.as_ref() {
+    let docker = match st.docker() {
         Some(d) => d,
         None => return err500("docker unavailable"),
     };
     // 命门 #5:二进制经 put_archive 落数据卷,绝不入 SQLite/回传
-    if let Err(e) = crate::docker::put_file(docker, &format!("vpn-{cid}"), "/root", &filename, blob.as_ref()).await {
+    if let Err(e) = crate::docker::put_file(&docker, &format!("vpn-{cid}"), "/root", &filename, blob.as_ref()).await {
         return err500(&format!("{e}"));
     }
     let _ = store::set_config_field(&db, &key, &cid, "package", &filename, false);
@@ -315,7 +315,7 @@ pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum
         Ok(None) => return err404("not found"),
         Err(e) => return err500(&format!("{e}")),
     };
-    let (ok, ms) = manager::probe(st.docker.as_ref(), &st.cfg, &ch).await; // 命门 #1
+    let (ok, ms) = manager::probe(st.docker().as_ref(), &st.cfg, &ch).await; // 命门 #1
     let new = if ok {
         "logged_in"
     } else if ch.status == "logged_in" {
@@ -343,7 +343,7 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     let runtime = registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
     if runtime == "byo" {
         // byo 客户端装在可写层,扛得住原地重启 → 不重建
-        if let Some(d) = st.docker.as_ref() {
+        if let Some(d) = st.docker().as_ref() {
             let _ = manager::start(d, &cid).await;
         }
         let _ = store::set_status(&db, &cid, "running");
@@ -356,7 +356,7 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     match provision(&st, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
             let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-            let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
+            let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
             Json(json!({ "ok": true })).into_response()
         }
         Err(e) => {
@@ -368,7 +368,7 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
 
 pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> Json<Value> {
     let db = st.cfg.db_path();
-    if let Some(d) = st.docker.as_ref() {
+    if let Some(d) = st.docker().as_ref() {
         let _ = manager::stop(d, &cid).await;
     }
     let _ = store::set_status(&db, &cid, "stopped");
@@ -377,11 +377,11 @@ pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> Json<V
 
 pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> Json<Value> {
     let db = st.cfg.db_path();
-    if let Some(d) = st.docker.as_ref() {
+    if let Some(d) = st.docker().as_ref() {
         let _ = manager::remove(d, &cid).await;
     }
     let _ = store::del_channel(&db, &cid);
-    let _ = manager::rebuild(&st.cfg, st.docker.as_ref(), &db).await;
+    let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
     Json(json!({ "ok": true }))
 }
 
@@ -485,7 +485,7 @@ pub async fn preflight_check(State(st): State<AppState>, Query(q): Query<Preflig
     let mihomo_alive = if q.scope == "full" { Some(st.mihomo.alive().await) } else { None };
     let arch = registry::host_arch();
     let out = preflight::run_checks(
-        st.docker.as_ref(),
+        st.docker().as_ref(),
         q.vpn_type.as_deref(),
         q.version.as_deref(),
         &arch,
@@ -507,7 +507,7 @@ pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&st.cfg.vpn_net)
                 .to_string();
-            match st.docker.as_ref() {
+            match st.docker().as_ref() {
                 Some(d) => match crate::docker::create_bridge_network(d, &name).await {
                     Ok(_) => Json(json!({ "ok": true })).into_response(),
                     Err(e) => err500(&format!("{e}")),
@@ -521,7 +521,7 @@ pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String
             if !preflight::known_repos().contains(&repo) || preflight::is_buildable(&image) {
                 return (StatusCode::BAD_REQUEST, Json(json!({ "error": "image not pullable" }))).into_response();
             }
-            let docker = match st.docker.as_ref() {
+            let docker = match st.docker().as_ref() {
                 Some(d) => d.clone(),
                 None => return err500("docker unavailable"),
             };
@@ -543,7 +543,7 @@ pub async fn preflight_fix_status(Path(task_id): Path<String>) -> axum::response
 pub async fn images_inventory(State(st): State<AppState>) -> Json<Value> {
     let mirrors = enabled_mirror_hosts(&st);
     let arch = registry::host_arch();
-    Json(preflight::image_inventory(st.docker.as_ref(), &arch, &mirrors).await)
+    Json(preflight::image_inventory(st.docker().as_ref(), &arch, &mirrors).await)
 }
 
 pub async fn mirrors_list(State(st): State<AppState>) -> Json<Value> {
