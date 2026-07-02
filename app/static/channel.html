@@ -541,6 +541,7 @@
     }
 
     // ── 登录 tab：真 noVNC iframe（进入 login tab 时拉 url）──
+    let loadVncGen = 0; // 后台自动加载的代数票据:重载/重进作废旧等待
     async function loadVnc() {
       const fbHost = $("#vnc-feedback");
       fbHost.replaceChildren(fb.spinner("正在拉取登录窗口…"));   // 进行中:克制 spinner
@@ -558,26 +559,34 @@
         // EC/aTrust 容器内 noVNC 启动慢:探到在伺服再塞 iframe,否则早加载→连接被拒→永久白屏。
         const spEl = fbHost.querySelector(".fb-spinner span:last-child");
         if (spEl) spEl.textContent = "等待远程桌面就绪…（最多 60s）";
+        const gen = ++loadVncGen; // 重载/重进会递增,作废旧的后台等待,防双挂
+        const mountVnc = (u) => {
+          fbHost.innerHTML = "";
+          let f = $("#vnc-frame");
+          if (!f) {
+            f = document.createElement("iframe");
+            f.id = "vnc-frame"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
+            const portal = $("#portal");
+            if (portal) portal.replaceWith(f);   // 用 iframe 替换仿真 portal 容器
+          }
+          f.src = u;
+        };
         const ready = await window.waitNovncReady(url);
         if (!ready) {
           // 就绪探测超时:别静默塞 iframe(早加载→白屏),给可重载错误条。命门①:此非登录成功信号。
+          // EC 冷启动常超 60s——后台继续等(至多再 5 分钟),就绪即自动加载并清掉本卡,不用手动重载。
           fbHost.innerHTML = "";
           fb.errorBanner(fbHost, {
-            title: "登录界面未就绪", message: "远程桌面(noVNC)在 60s 内没起好,通常是容器内桌面服务还在启动。",
-            hint: "稍等几十秒后点「重载」;若反复未就绪,可在概览重启容器。",
+            title: "登录界面未就绪", message: "远程桌面(noVNC)还在启动(EC 冷启动可能要一两分钟)。",
+            hint: "就绪后会自动加载,无需操作;急的话稍等几十秒点「重载」。",
             onRetry: () => loadVnc(), retryLabel: "重载",
+          });
+          window.waitNovncReady(url, 300).then((ok) => {
+            if (ok && gen === loadVncGen) mountVnc(url);
           });
           return;
         }
-        fbHost.innerHTML = "";
-        let f = $("#vnc-frame");
-        if (!f) {
-          f = document.createElement("iframe");
-          f.id = "vnc-frame"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
-          const portal = $("#portal");
-          if (portal) portal.replaceWith(f);   // 用 iframe 替换仿真 portal 容器
-        }
-        f.src = url;
+        mountVnc(url);
       } catch (e) {
         fbHost.innerHTML = "";
         fb.errorBanner(fbHost, { fromError: e, onRetry: () => loadVnc() });

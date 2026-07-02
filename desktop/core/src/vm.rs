@@ -52,7 +52,8 @@ pub fn ssh_config_path(profile: &str) -> PathBuf {
 
 /// 纯:备援隧道的 ssh 参数。与 colima 自身 docker.sock 隧道同款:独立连接(ControlMaster=no,
 /// 不依赖 hostagent 的主连接)、`ExitOnForwardFailure` 让绑定失败反映在退出码、`-f` 守护化
-/// (父进程在全部转发建立后才退出 0)。ServerAlive*:VM 停/断后隧道自杀,不留死进程占口。
+/// (父进程在全部转发建立后才退出 0)。ServerAlive*:VM 停/断后隧道自杀,不留死进程占口;
+/// 容忍 ~2min(实测 2026-07-02:容器重建时 VM 高负载,30s 容忍会误杀活隧道)。
 pub fn tunnel_args(ssh_config: &str, profile: &str, ports: &[u16]) -> Vec<String> {
     let mut a: Vec<String> = [
         "-F", ssh_config,
@@ -60,8 +61,8 @@ pub fn tunnel_args(ssh_config: &str, profile: &str, ports: &[u16]) -> Vec<String
         "-o", "ControlPath=none",
         "-o", "ExitOnForwardFailure=yes",
         "-o", "ConnectTimeout=10", // 半死 hostagent 可能 accept 后不发 banner,不设则 ssh 永挂
-        "-o", "ServerAliveInterval=10",
-        "-o", "ServerAliveCountMax=3",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=8",
         "-fN",
     ]
     .iter()
@@ -118,8 +119,8 @@ pub fn socket_tunnel_args(ssh_config: &str, profile: &str, local_sock: &str, rem
         "-o", "StreamLocalBindUnlink=yes",
         "-o", "ExitOnForwardFailure=yes",
         "-o", "ConnectTimeout=10",
-        "-o", "ServerAliveInterval=10",
-        "-o", "ServerAliveCountMax=3",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=8",
         "-fN",
     ]
     .iter()

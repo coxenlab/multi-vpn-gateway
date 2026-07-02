@@ -68,7 +68,7 @@ pub struct HealthSnapshot {
     ///    用户手动重启 VM 真恢复后,本进程内提示残留(文案是「可能」级,危害低);app 重启后标志丢失。
     /// 2. 隧道活着时 `proxy_port_reachable` 必通(ssh 本地 listener 先 accept),对「隧道在、
     ///    端到端断」失明;窗口窄:容器死走 ContainerDown(查 docker 不查端口),VM ssh 断后
-    ///    隧道靠 ServerAlive ~30s 自杀、端口释放、探测恢复。
+    ///    隧道靠 ServerAlive ~2min 自杀、端口释放、探测恢复(容忍放宽:高负载下 30s 会误杀活隧道)。
     pub tunnel_fallback: bool,
 }
 
