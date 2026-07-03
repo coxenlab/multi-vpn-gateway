@@ -99,10 +99,16 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
             .await?;
         Ok::<u16, anyhow::Error>(resp.status().as_u16())
     };
-    match inner.await {
+    let status = match inner.await {
         Ok(code) => code.to_string(),
         Err(e) => format!("{e}"),
-    }
+    };
+    // 层3 TUN 入口路由对账(best-effort):**detach** 到后台跑,不把 helper IPC 往返
+    // (2s+8s 超时)串进每个 rebuild 调用点(规则增删改/建删通道/boot)的响应延迟。
+    // 未启用时 tun_sync 立即早退;并发多次 ensure 各带全量 desired,helper 侧串行、末次收敛。
+    let cfg_bg = cfg.clone();
+    tokio::spawn(async move { crate::entry::tun_sync(&cfg_bg).await });
+    status
 }
 
 // ── Task 3: probe(命门 #1)+ 日志折叠 ───────────────────────────────────────

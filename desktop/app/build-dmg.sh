@@ -10,5 +10,6 @@ set -eu
 cd "$(dirname "$0")"
 ./stage-runtime.sh   # 自带运行时二进制(从 Homebrew Cellar 暂存 + 重签 vz entitlement)
 ./stage-images.sh    # 内置镜像 tarball(docker save vpnmgr/oss-vpn | gzip)
+./stage-helper.sh    # 层3 TUN 入口:vpnmgr-helper(构建)+ mihomo darwin 二进制 → runtime/helper
 cargo tauri build --bundles dmg
 echo "✓ dmg: $(ls -1 target/release/bundle/dmg/*.dmg | tail -1)"

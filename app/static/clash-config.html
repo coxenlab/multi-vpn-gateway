@@ -265,6 +265,26 @@
           <div class="tabpanel" data-panel="global" style="padding-top:var(--space-6);">
             <p class="tab-lead">没装 Clash、或想让整机临时走：把系统或 PAC 指向入口，由入口替你分流。命中目标走 VPN、其余 DIRECT。</p>
             <div class="stack-4">
+              <!-- ⑦ TUN 路由级入口(桌面版 host-only;无后端能力时整卡隐藏。任务 #6) -->
+              <article class="card step-card" id="card-tun" data-od-id="m-tunentry" style="display:none;">
+                <div class="card-head">
+                  <div class="method-head" style="flex:1;">
+                    <div><h3>方式⑦ TUN 路由级接管 <span class="pill">独立于 Clash</span></h3><p class="t-xs muted" style="margin-top:2px;">root 助手把绑定的 IP 网段按最长前缀路由进宿主 TUN 引擎：不改系统代理 / WiFi 配置、与 ClashX 的 TUN 共存,终端和不认代理的 app 也生效</p></div>
+                    <span class="tag" id="tun-tag">—</span>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="row-between" style="gap:12px; flex-wrap:wrap;">
+                    <span class="t-sm" id="tun-status">—</span>
+                    <span style="display:flex; gap:8px;">
+                      <button class="btn" id="tun-uninstall" style="display:none;">卸载助手</button>
+                      <button class="btn btn-primary" id="tun-action" style="display:none;">—</button>
+                    </span>
+                  </div>
+                  <p class="t-xs muted" style="margin-top:8px; line-height:1.5;">首次使用需安装 root 助手（弹一次管理员密码,ClashX 同款模型）。当前仅 <b>IP 网段</b>规则走路由级；内网<b>域名</b>请配合方式①或④,域名级拆分 DNS 在下一阶段。</p>
+                </div>
+              </article>
+
               <!-- ④ PAC -->
               <article class="card step-card" data-od-id="m-pac">
                 <div class="card-head">
@@ -350,10 +370,10 @@
                 </div>
               </article>
 
-              <!-- ⑦ TUN（进阶折叠） -->
+              <!-- ⑦ TUN:web 版仍不可行(容器 tun 出不了 host);桌面版已有宿主级实现,见「全局接管」页签 -->
               <details class="adv" data-od-id="m-tun">
-                <summary>方式⑦ TUN / 透明代理（进阶 · 一般不需要）</summary>
-                <p>本工具 mihomo 跑在 Docker 容器里，要做整机 TUN 透明接管需把容器 tun 暴露到 host 网络栈 + 改 host 路由表 + 提权，与“全 Docker、本机零新增依赖、仅绑 127.0.0.1”的设计冲突，收益低、风险高（断网 / 路由环路 / 卸载残留）。想要整机无感接管，请用方式③系统代理或④PAC，二者已覆盖同等场景且零提权。</p>
+                <summary>方式⑦ TUN / 透明代理去哪了？</summary>
+                <p>Web 版（纯 Docker）做不了整机 TUN：mihomo 在容器里,tun 出不了 host 网络栈。<b>桌面版已提供宿主级 TUN 路由接管</b>——见「全局接管」页签的方式⑦（root 助手 + 宿主 TUN 引擎,按绑定 IP 网段加路由,与 ClashX 共存）。Web 版请用方式③系统代理或④PAC。</p>
               </details>
             </div>
           </div>
@@ -530,6 +550,8 @@
       // 7c 宿主接管层「真执行」(仅 Tauri/host 后端有这些端点;feature-detect)
       runClashDetect();
       runSystemProxyGet();
+      tunPollLeft = 12;   // 首载给一轮收敛预算(~30s)
+      runTunGet();
     }
 
     // 检测本机 Clash(9090) + 拉 Verge 导入块。非 host 后端(404)= 不支持,整卡静默隐藏;
@@ -612,6 +634,121 @@
         const f = fb.friendlyError(e);
         toast(f.title, { variant: "danger", action: { label: "重试", onClick: onPacApply } });
       } finally { btn.disabled = false; }
+    }
+
+    // ── 层3:TUN 路由级入口(host-only;404 = 该后端无此能力 → 整卡隐藏)──────
+    let tunRefreshTimer = null, tunPollLeft = 0;   // 自轮询剩余次数,防不收敛时无限打后端
+    async function runTunGet() {
+      const card = $("#card-tun");
+      try {
+        const st = await api.tunGet();
+        if (!st || !st.supported) { card.style.display = "none"; return; }
+        card.style.display = "";
+        renderTun(st);
+        if (!$("#tun-action").dataset.bound) {
+          $("#tun-action").addEventListener("click", onTunAction);
+          $("#tun-uninstall").addEventListener("click", onTunUninstall);
+          $("#tun-action").dataset.bound = "1";
+        }
+      } catch (e) {
+        if (e && e.status === 404) { card.style.display = "none"; return; }
+        const f = fb.friendlyError(e);
+        card.style.display = "";
+        $("#tun-tag").textContent = "读取失败";
+        $("#tun-status").textContent = f.title + "：" + f.message;
+        toast("读取 TUN 入口状态失败", { variant: "danger", action: { label: "重新读取", onClick: runTunGet } });
+      }
+    }
+
+    function renderTun(st) {
+      const tag = $("#tun-tag"), status = $("#tun-status"), btn = $("#tun-action"), un = $("#tun-uninstall");
+      const h = st.helper;
+      const desired = (st.desired_v4 || []).length + (st.desired_v6 || []).length;
+      const shadowed = (h && h.shadowed) || 0;  // 已有系统路由、未接管的网段
+      tag.classList.remove("ok");
+      btn.style.display = ""; un.style.display = "none";
+      if (!st.installed) {
+        tag.textContent = "未安装";
+        status.textContent = st.resources
+          ? `助手未安装。安装后即可把 ${desired} 条 IP 网段规则接管进路由。`
+          : "app 资源里缺 helper/mihomo 二进制（dev 态需 export HELPER_RES_DIR,分发版重打 dmg）。";
+        btn.textContent = "安装助手"; btn.dataset.mode = "install"; btn.disabled = !st.resources;
+        return;
+      }
+      btn.disabled = false;
+      un.style.display = "";
+      if (!h) {
+        tag.textContent = "未应答";
+        status.textContent = "助手已安装但 IPC 未应答（刚装完在启动？systemsettings 后台项被关？）。";
+        btn.textContent = "重新检测"; btn.dataset.mode = "recheck";
+        return;
+      }
+      const stale = h.version !== st.expected_version;
+      if (st.enabled && h.running) {
+        // 收敛判据:亲手接管 + 已有系统路由(shadowed)合起来覆盖 desired 即算稳定
+        const settled = h.alive && (h.applied + shadowed) >= desired;
+        tag.textContent = h.alive ? "运行中" : "启动中"; if (settled) tag.classList.add("ok");
+        const shadowHint = shadowed ? ` · ${shadowed} 条网段已有系统路由未接管` : "";
+        status.textContent = h.alive
+          ? `已接管 ${st.device} · 路由 ${h.applied}/${desired} 条 · 引擎在跑${shadowHint}${stale ? " · 助手 v" + h.version + " 需升级(重装)" : ""}`
+          : "已启用,引擎正在拉起(约 2~6 秒收敛)…";
+        btn.textContent = "停用"; btn.dataset.mode = "disable";
+        // 未收敛时短轮询到位,但只消耗预算(预算在启用/首载时 prime),耗尽即停,避免无限打后端
+        if (!settled && tunPollLeft > 0 && !tunRefreshTimer) {
+          tunPollLeft--;
+          tunRefreshTimer = setTimeout(() => { tunRefreshTimer = null; runTunGet(); }, 2500);
+        } else if (settled) {
+          tunPollLeft = 0;
+        }
+      } else {
+        tag.textContent = "已安装";
+        status.textContent = `助手就绪,入口未启用。${desired} 条 IP 网段规则待接管${stale ? " · 助手 v" + h.version + " 需升级(重装)" : ""}。`;
+        btn.textContent = "启用"; btn.dataset.mode = "enable";
+      }
+    }
+
+    async function onTunAction() {
+      const btn = $("#tun-action");
+      const mode = btn.dataset.mode;
+      const label = btn.textContent;
+      btn.disabled = true;
+      try {
+        if (mode === "install") {
+          btn.replaceChildren(fb.spinner("等待授权…"));
+          toast("留意系统弹出的管理员密码窗口", { variant: "info" });
+          const r = await api.tunInstall();
+          renderTun(r.state);
+          toast("助手已安装", { variant: "success" });
+        } else if (mode === "enable" || mode === "disable") {
+          btn.replaceChildren(fb.spinner(mode === "enable" ? "正在启用…" : "正在停用…"));
+          const r = await api.tunSet(mode === "enable");
+          if (mode === "enable") tunPollLeft = 12;   // 启用后给一轮收敛预算
+          if (r.state && r.state.warning) toast(r.state.warning, { variant: "warning" });
+          renderTun(r.state);
+          toast(mode === "enable" ? "TUN 入口已启用,路由收敛中" : "TUN 入口已停用(路由随 utun 自动清除)", { variant: "success" });
+        } else {
+          await runTunGet();
+          return;
+        }
+      } catch (e) {
+        btn.textContent = label;
+        const f = fb.friendlyError(e);
+        toast(f.title + "：" + f.message, { variant: "danger", action: { label: "重试", onClick: onTunAction } });
+      } finally { btn.disabled = false; }
+    }
+
+    async function onTunUninstall() {
+      if (!confirm("卸载 root 助手？TUN 入口将停用,路由随 utun 自动清除(需管理员密码)。")) return;
+      const un = $("#tun-uninstall");
+      un.disabled = true;
+      try {
+        const r = await api.tunUninstall();
+        renderTun(r.state);
+        toast("助手已卸载", { variant: "success" });
+      } catch (e) {
+        const f = fb.friendlyError(e);
+        toast(f.title + "：" + f.message, { variant: "danger" });
+      } finally { un.disabled = false; }
     }
 
     boot();

@@ -77,6 +77,11 @@
     mergeProfile: () => req("GET", "/api/entry/merge-profile"),
     systemProxyGet: () => req("GET", "/api/entry/system-proxy"),
     systemProxySet: (enable) => req("POST", "/api/entry/system-proxy", { enable }),
+    // 层3 TUN 入口(桌面版 host-only;web 版 404 → 前端 feature-detect 隐藏)
+    tunGet: () => req("GET", "/api/entry/tun"),
+    tunSet: (enable) => req("POST", "/api/entry/tun", { enable }),
+    tunInstall: () => req("POST", "/api/entry/tun/install"),
+    tunUninstall: () => req("POST", "/api/entry/tun/uninstall"),
     mirrors: () => req("GET", "/api/mirrors"),
     addMirror: (host) => req("POST", "/api/mirrors", { host }),
     patchMirror: (id, body) => req("PATCH", `/api/mirrors/${id}`, body),

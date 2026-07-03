@@ -47,6 +47,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/entry/system-proxy",
             get(api::system_proxy_get).post(api::system_proxy_set),
         )
+        // 层3 TUN 入口(root helper + 宿主 mihomo#2;任务 #6)
+        .route("/api/entry/tun", get(api::tun_get).post(api::tun_set))
+        .route("/api/entry/tun/install", axum::routing::post(api::tun_install))
+        .route("/api/entry/tun/uninstall", axum::routing::post(api::tun_uninstall))
         .route("/api/vpn-types/:vtype/versions", get(api::vpn_versions))
         .route("/api/preflight", get(api::preflight_check))
         // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法

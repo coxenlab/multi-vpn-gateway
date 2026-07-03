@@ -59,6 +59,15 @@ async fn boot(handle: &tauri::AppHandle) -> anyhow::Result<()> {
         }
     }
 
+    // 层3 TUN 入口:helper + mihomo#2 二进制随 bundle 落 Contents/Resources/runtime/helper,
+    // 经 env 指给 core(entry.rs 安装脚本取源)。dev 无 bundle → 不设,可手动 export HELPER_RES_DIR。
+    if let Ok(res) = handle.path().resource_dir() {
+        let helper_dir = res.join("runtime").join("helper");
+        if helper_dir.join("vpnmgr-helper").exists() {
+            std::env::set_var("HELPER_RES_DIR", &helper_dir);
+        }
+    }
+
     // mihomo#1 端口/密钥首启生成并持久化,经 env 注入 Config(对照 gen_env.py;须在 Config::load 之前)。
     let data_dir = Config::load().data_dir; // data_dir 不依赖 MIHOMO_* env
     let _ = infra::ensure_params(&data_dir);

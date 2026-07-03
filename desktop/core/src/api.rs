@@ -444,6 +444,38 @@ pub async fn system_proxy_set(State(st): State<AppState>, Json(b): Json<Value>) 
     }
 }
 
+// ── 层3:TUN 入口(root helper + 宿主 mihomo#2;任务 #6) ─────────────────────
+
+/// TUN 入口综合状态(读-only;前端 feature-detect:web 版无此路由 → 404 → 隐藏卡片)。
+pub async fn tun_get(State(st): State<AppState>) -> Json<Value> {
+    Json(entry::tun_status(&st.cfg).await)
+}
+
+/// 启用/停用 TUN 入口。body `{enable: bool}`。前端按钮显式触发。
+pub async fn tun_set(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
+    match entry::tun_apply(&st.cfg, enable).await {
+        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
+        Err(e) => err500(&format!("{e}")),
+    }
+}
+
+/// 安装/升级 helper(触发一次管理员密码弹窗)。
+pub async fn tun_install(State(st): State<AppState>) -> axum::response::Response {
+    match entry::tun_install(&st.cfg).await {
+        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
+        Err(e) => err500(&format!("{e}")),
+    }
+}
+
+/// 卸载 helper(管理员密码弹窗)。
+pub async fn tun_uninstall(State(st): State<AppState>) -> axum::response::Response {
+    match entry::tun_uninstall(&st.cfg).await {
+        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
+        Err(e) => err500(&format!("{e}")),
+    }
+}
+
 // ── Phase 6:versions / preflight / images / mirrors ──────────────────────────
 
 #[derive(Deserialize)]
