@@ -223,6 +223,10 @@ pub async fn start(profile: &str) -> Result<()> {
             "--vm-type",
             "vz",
             "--vz-rosetta",
+            // gRPC 转发器(vz vsock 通道),ssh 退出数据面:载重 ssh 转发每隔几分钟必死,
+            // 且 ssh -L 只转 TCP(vpn-router 的 udp:true 靠它才真生效)。
+            "--port-forwarder",
+            "grpc",
             "--activate=false",
             "--cpu",
             "4",
