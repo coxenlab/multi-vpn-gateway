@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>容器管理 · VPN 管理网关</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+  <style>
+    /* 屏内独有:容器状态灯 + 角色说明,全部由 var(--*) 派生 */
+    .cdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 7px; flex: none; vertical-align: 1px; }
+    .cdot.ok { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+    .cdot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+    .cdot.bad { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+    .role-sub { color: var(--muted); font-size: var(--text-xs); margin-top: 2px; }
+    .st-sub { font-size: var(--text-xs); margin-top: 2px; color: var(--muted); }
+    .st-sub.bad { color: var(--danger); }
+    .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    tr.crash td { background: var(--danger-soft); }
+    tr.orphan-row td { background: var(--warn-soft); }
+    .stat-tile.alert .stat-num { color: var(--danger); }
+    .stat-tile.mind .stat-num { color: color-mix(in oklab, var(--warn), black 25%); }
+  </style>
+</head>
+<body data-page="containers">
+  <div class="app">
+    <!-- ════ 侧栏（所有屏一致） ════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+        </span>
+        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
+      </div>
+      <nav class="sidebar-nav">
+        <span class="nav-label">管理</span>
+        <a class="nav-item" data-nav="channels" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          通道总览 <span class="count" id="nav-count">—</span>
+        </a>
+        <a class="nav-item" data-nav="routing" href="routing-table.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/></svg>
+          分流总表
+        </a>
+        <a class="nav-item" data-nav="monitor" href="monitor.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          流量监控
+        </a>
+        <a class="nav-item" data-nav="entry" href="clash-config.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
+          入口接入
+        </a>
+        <a class="nav-item" data-nav="env-check" href="env-check.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          环境诊断
+        </a>
+        <a class="nav-item" data-nav="containers" href="containers.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
+          容器管理
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span>
+          <span>mihomo 运行中</span>
+          <span class="k spacer" id="foot-port">:7899</span>
+        </div>
+        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
+      </div>
+    </aside>
+
+    <!-- ════ 主区 ════ -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1>容器管理</h1>
+        <span class="spacer"></span>
+        <span class="sys-chip hide-mobile"><span class="dot"></span>每 8 秒自动刷新</span>
+      </header>
+
+      <div class="content stack-6">
+        <!-- 依赖关系说明 -->
+        <div class="banner info" data-od-id="containers-note">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+          <div>
+            <div class="bt">本系统依赖哪些容器</div>
+            <p>两类：<strong>分流核心</strong> <span class="mono">mihomo</span>（一个，所有分流经它，即你 Clash 里的 <span class="mono">vpn-router</span>）+ <strong>每条通道一个</strong>独立容器 <span class="mono">vpn-*</span>（VPN 客户端 + SOCKS5 出口）。这里可直接做简单管理：通道容器<strong>不支持原地重启</strong>（EC / aTrust / 无头客户端扛不住，「启动」= 原样重建，卷 / MAC / 规则都保留）；分流核心用「修复」（自动重启转发，救不回再上备援隧道）；通道删除后残留的无主容器可一键清理。</p>
+          </div>
+        </div>
+
+        <!-- 概览统计 -->
+        <div class="grid-4" id="stats" data-od-id="containers-stats">
+          <div class="stat-tile">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/></svg>依赖容器</div>
+            <div class="stat-num" id="s-total">—</div>
+            <div class="stat-foot">分流核心 + 每通道一个</div>
+          </div>
+          <div class="stat-tile ok">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>运行中</div>
+            <div class="stat-num" id="s-running">—</div>
+            <div class="stat-foot">docker 状态 running</div>
+          </div>
+          <div class="stat-tile" id="tile-bad">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>异常</div>
+            <div class="stat-num" id="s-bad">—</div>
+            <div class="stat-foot">死循环 / 非零退出</div>
+          </div>
+          <div class="stat-tile" id="tile-orphan">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>孤儿残留</div>
+            <div class="stat-num" id="s-orphan">—</div>
+            <div class="stat-foot">通道已删的残留，可清理</div>
+          </div>
+        </div>
+
+        <!-- 容器总表 -->
+        <div class="card" data-od-id="containers-table">
+          <div class="card-head">
+            <h3>容器清单</h3>
+            <span class="t-sm muted" id="t-sum">—</span>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>容器</th>
+                  <th>角色 · 所属</th>
+                  <th>状态</th>
+                  <th class="hide-sm">镜像</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="card-body" id="table-fallback" style="display:none;"></div>
+        </div>
+
+        <!-- 日志查看（点某行「日志」后出现） -->
+        <div class="card" id="logs-card" style="display:none;" data-od-id="containers-logs">
+          <div class="card-body">
+            <div class="code-head">
+              <span id="logs-title">docker logs</span>
+              <button class="btn btn-sm btn-ghost" id="logs-refresh" style="color:var(--on-ink);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/></svg>
+                刷新
+              </button>
+            </div>
+            <div class="code" id="logs-body" style="max-height:50vh; overflow:auto;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
+  <script>
+    let data = null; // {docker_available, containers}
+    let sys = {};
+    let loaded = false;
+    let logsName = null; // 当前日志面板对应的容器
+    let busy = false;    // 有操作在途时暂停轮询重绘,免得按钮被刷掉
+
+    const fmtAge = (s) => (s < 60 ? `${s} 秒` : s < 3600 ? `${Math.floor(s / 60)} 分钟` : s < 86400 ? `${Math.floor(s / 3600)} 小时` : `${Math.floor(s / 86400)} 天`);
+
+    async function fetchAll() {
+      [data, sys] = await Promise.all([api.containers(), api.system()]);
+      paint();
+      loaded = true;
+    }
+    async function load(isPoll) {
+      if (isPoll && busy) return;
+      if (!loaded && !isPoll) {
+        const fbk = $("#table-fallback");
+        fbk.style.display = "";
+        fbk.innerHTML = "";
+        fbk.appendChild(fb.skeleton(4));
+      }
+      try {
+        await fetchAll();
+        $("#table-fallback").style.display = "none";
+      } catch (e) {
+        if (isPoll) return; // 轮询失败静默,下一拍再试
+        const fbk = $("#table-fallback");
+        fbk.style.display = "";
+        fbk.innerHTML = "";
+        if (e.status === 404) {
+          // web 版 / 旧版后端无此接口:解释而非报错
+          fbk.innerHTML = `<div class="banner info"><svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg><div><div class="bt">此屏需要桌面版</div><p>容器管理接口由桌面版提供（web 版 / 旧版后端无 <span class="mono">/api/containers</span>）。web 版请直接用 <span class="mono">docker</span> 命令管理。</p></div></div>`;
+        } else {
+          fb.errorBanner(fbk, { fromError: e, onRetry: () => load(false), retryLabel: "重新加载" });
+        }
+      }
+    }
+
+    /* 状态灯:running=ok(死循环 bad)、restarting/starting=warn、其余 bad、missing 灰 */
+    function stateDot(x) {
+      if (x.crash_loop) return "bad";
+      if (x.state === "running") return "ok";
+      if (x.state === "restarting" || x.state === "created") return "warn";
+      if (x.state === "missing") return "";
+      return "bad";
+    }
+    const STATE_ZH = { running: "运行中", exited: "已停止", restarting: "重启中", created: "已创建", paused: "已暂停", missing: "不存在", dead: "已死亡" };
+
+    function roleCell(x) {
+      if (x.role === "infra")
+        return `<div>分流核心 · <span class="mono">vpn-router</span></div><div class="role-sub">所有分流经它 · 分流口 :${sys.mihomo_port || "—"}</div>`;
+      if (x.role === "channel") {
+        const k = kindMeta(x.vpn_type);
+        return `<div>通道 · <a class="grp-name" href="channel.html?id=${x.channel_id}">${x.channel_name}</a></div><div class="role-sub">${k.label} · SOCKS5 出口(仅 docker 内网)</div>`;
+      }
+      return `<div>孤儿残留</div><div class="role-sub">通道已删 / 探活容器泄漏,可安全清理</div>`;
+    }
+
+    function statusCell(x) {
+      const bits = [];
+      let main = STATE_ZH[x.state] || x.state;
+      if (x.state === "running" && x.uptime_secs != null) main += ` · ${fmtAge(x.uptime_secs)}`;
+      if (x.exit_code != null && x.exit_code !== 0) bits.push(`<div class="st-sub bad">退出码 ${x.exit_code}</div>`);
+      if (x.crash_loop) bits.push(`<div class="st-sub bad">死循环:已重启 ${x.restart_count} 次${x.uptime_secs != null ? ` · 本次存活 ${fmtAge(x.uptime_secs)}` : ""}</div>`);
+      else if (x.restart_count > 0) bits.push(`<div class="st-sub">累计重启 ${x.restart_count} 次</div>`);
+      return `<div><span class="cdot ${stateDot(x)}"></span>${main}</div>${bits.join("")}`;
+    }
+
+    function actionsCell(x) {
+      const b = [];
+      const logBtn = `<button class="btn btn-sm btn-ghost" data-act="logs" data-name="${x.name}">日志</button>`;
+      if (x.role === "infra") {
+        b.push(`<button class="btn btn-sm" data-act="heal">修复</button>`);
+        if (x.state !== "missing") b.push(logBtn);
+      } else if (x.role === "channel") {
+        const stopped = x.channel_status === "stopped" || x.channel_status === "error" || x.state === "missing" || x.state === "exited";
+        if (stopped) b.push(`<button class="btn btn-sm" data-act="start" data-cid="${x.channel_id}" data-cname="${x.channel_name}">启动</button>`);
+        else b.push(`<button class="btn btn-sm btn-ghost" data-act="stop" data-cid="${x.channel_id}" data-cname="${x.channel_name}">停止</button>`);
+        if (x.state !== "missing") b.push(logBtn);
+      } else {
+        b.push(`<button class="btn btn-sm btn-danger" data-act="clean" data-name="${x.name}">清理</button>`);
+        if (x.state !== "missing") b.push(logBtn);
+      }
+      return `<div class="row-actions">${b.join("")}</div>`;
+    }
+
+    function paint() {
+      const cs = (data && data.containers) || [];
+      const deps = cs.filter((x) => x.role !== "orphan");
+      const running = cs.filter((x) => x.state === "running").length;
+      const bad = cs.filter((x) => x.crash_loop || (x.exit_code != null && x.exit_code !== 0)).length;
+      const orphans = cs.filter((x) => x.role === "orphan").length;
+      $("#s-total").textContent = deps.length;
+      $("#s-running").innerHTML = `${running}<span class="unit">/ ${cs.length}</span>`;
+      $("#s-bad").textContent = bad;
+      $("#s-orphan").textContent = orphans;
+      $("#tile-bad").classList.toggle("alert", bad > 0);
+      $("#tile-orphan").classList.toggle("mind", orphans > 0);
+      $("#t-sum").innerHTML = `分流核心 1 · 通道 <span class="num">${cs.filter((x) => x.role === "channel").length}</span> · 孤儿 <span class="num">${orphans}</span>`;
+      $("#nav-count").textContent = cs.filter((x) => x.role === "channel").length;
+      $("#foot-port").textContent = ":" + (sys.mihomo_port || "—");
+
+      $("#tbody").innerHTML = cs.map((x) => {
+        const cls = x.crash_loop ? "crash" : x.role === "orphan" ? "orphan-row" : "";
+        const missNote = x.state === "missing" && x.role === "channel" && x.channel_status !== "stopped"
+          ? `<div class="st-sub bad">容器缺失 · 点「启动」原样重建</div>` : "";
+        return `<tr class="${cls}">
+          <td class="mono">${x.name}</td>
+          <td>${roleCell(x)}</td>
+          <td>${statusCell(x)}${missNote}</td>
+          <td class="hide-sm mono t-xs">${x.image || "—"}</td>
+          <td>${actionsCell(x)}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="muted">暂无容器</td></tr>`;
+
+      if (data && !data.docker_available)
+        $("#table-fallback").style.display = "none"; // 表内 missing 状态已说明,不再叠加错误条
+    }
+
+    /* ── 操作(全部走既有安全通道:通道启停 = 状态机 + 重建;mihomo = heal 两级梯子) ── */
+    async function run(btn, fn, doing, done) {
+      busy = true;
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = doing;
+      try {
+        await fn();
+        if (done) toast(done, { variant: "success" });
+        await load(false);
+      } catch (e) {
+        toast(fb.friendlyError(e).title || "操作失败", { variant: "danger" });
+        btn.disabled = false;
+        btn.textContent = old;
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function showLogs(name) {
+      logsName = name;
+      $("#logs-card").style.display = "";
+      $("#logs-title").textContent = `docker logs · ${name}`;
+      const body = $("#logs-body");
+      body.replaceChildren(fb.spinner("正在拉取日志…"));
+      try {
+        const { lines } = await api.containerLogs(name, 300);
+        body.textContent = lines.length ? lines.join("\n") : "(空)";
+        body.scrollTop = body.scrollHeight;
+        $("#logs-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (e) {
+        body.innerHTML = "";
+        fb.errorBanner(body, { fromError: e, onRetry: () => showLogs(name) });
+      }
+    }
+    $("#logs-refresh").addEventListener("click", () => { if (logsName) showLogs(logsName); });
+
+    $("#tbody").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const { act, name, cid, cname } = btn.dataset;
+      if (act === "logs") return showLogs(name);
+      if (act === "heal") return run(btn, () => api.healProxy(), "修复中…", "分流核心已修复");
+      if (act === "start") return run(btn, () => api.start(cid), "重建中…", `「${cname}」已启动(重建),请重新登录`);
+      if (act === "stop") return run(btn, () => api.stop(cid), "停止中…", `「${cname}」已停止`);
+      if (act === "clean") {
+        if (!confirm(`删除孤儿容器 ${name}?它不属于任何在册通道,删除不影响现有通道。`)) return;
+        return run(btn, () => api.containerRemove(name), "清理中…", "已清理");
+      }
+    });
+
+    load();
+    setInterval(() => load(true), 8000);
+  </script>
+</body>
+</html>

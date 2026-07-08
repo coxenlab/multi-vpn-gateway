@@ -61,6 +61,10 @@
     status: (id) => req("GET", `/api/channels/${id}/status`),
     // 通道诊断(桌面版 host-only;web 版 404 → 前端 feature-detect 降级)
     diag: () => req("GET", "/api/diag"),
+    // 容器管理(桌面版 host-only;web 版 404 → 前端 feature-detect 降级)
+    containers: () => req("GET", "/api/containers"),
+    containerLogs: (name, tail = 200) => req("GET", `/api/containers/${name}/logs?tail=${tail}`),
+    containerRemove: (name) => req("DELETE", `/api/containers/${name}`),
     addRules: (id, patterns, kind) =>
       req("POST", `/api/channels/${id}/rules`, kind ? { patterns, kind } : { patterns }),
     delRule: (id, rid) => req("DELETE", `/api/channels/${id}/rules/${rid}`),

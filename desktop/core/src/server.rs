@@ -53,6 +53,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/entry/tun/uninstall", axum::routing::post(api::tun_uninstall))
         // 通道诊断(桌面版 host-only;驱动分流总表穿透图,web 版前端 feature-detect)
         .route("/api/diag", get(crate::diag::diag))
+        // 容器管理(桌面版 host-only;删除仅限孤儿,通道启停走 /api/channels/:cid/start|stop)
+        .route("/api/containers", get(crate::containers::list))
+        .route("/api/containers/:name", axum::routing::delete(crate::containers::remove))
+        .route("/api/containers/:name/logs", get(crate::containers::logs))
         .route("/api/vpn-types/:vtype/versions", get(api::vpn_versions))
         .route("/api/preflight", get(api::preflight_check))
         // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法

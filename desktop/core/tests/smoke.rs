@@ -36,4 +36,14 @@ async fn boots_and_serves_system_and_index() {
     assert_eq!(sys["bound_ip"], "127.0.0.1");
     let html = c.get(format!("{base}/")).send().await.unwrap().text().await.unwrap();
     assert!(html.contains("<html"));
+
+    // 容器管理:docker 不可用时仍盘点依赖(mihomo state=missing),删除守卫拒绝非孤儿
+    let cts: serde_json::Value = c.get(format!("{base}/api/containers")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(cts["docker_available"], false);
+    assert_eq!(cts["containers"][0]["name"], "mihomo");
+    assert_eq!(cts["containers"][0]["state"], "missing");
+    let r = c.delete(format!("{base}/api/containers/mihomo")).send().await.unwrap();
+    assert_eq!(r.status(), 409);
+    let r = c.delete(format!("{base}/api/containers/nginx")).send().await.unwrap();
+    assert_eq!(r.status(), 404);
 }
