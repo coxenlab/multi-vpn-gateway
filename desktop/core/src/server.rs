@@ -51,6 +51,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/entry/tun", get(api::tun_get).post(api::tun_set))
         .route("/api/entry/tun/install", axum::routing::post(api::tun_install))
         .route("/api/entry/tun/uninstall", axum::routing::post(api::tun_uninstall))
+        // 通道诊断(桌面版 host-only;驱动分流总表穿透图,web 版前端 feature-detect)
+        .route("/api/diag", get(crate::diag::diag))
         .route("/api/vpn-types/:vtype/versions", get(api::vpn_versions))
         .route("/api/preflight", get(api::preflight_check))
         // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法

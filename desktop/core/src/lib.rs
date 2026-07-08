@@ -13,6 +13,7 @@ pub mod adapters;
 pub mod webutil;
 pub mod entry;
 pub mod api;
+pub mod diag;
 pub mod dockerhub;
 pub mod preflight;
 pub mod health;

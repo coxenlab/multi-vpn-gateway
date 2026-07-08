@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>分流总表 · VPN 管理网关</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+  <style>
+    /* 屏内独有:通道分组行 + 问题行标记,全部由 var(--*) 派生 */
+    .table tr.grp td { background: var(--surface-2); padding-top: 13px; padding-bottom: 13px; }
+    .table tr.grp:hover td { background: var(--surface-2); }
+    .grp-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .grp-name { font-weight: 600; }
+    .grp-name:hover { color: var(--accent); }
+    .grp-meta { color: var(--muted); font-size: var(--text-xs); font-family: var(--font-mono); }
+    .table td.pat { padding-left: 28px; }
+    tr.hit-conflict td { background: var(--danger-soft); }
+    tr.hit-dead td { background: var(--warn-soft); }
+    .note-conflict { color: var(--danger); font-size: var(--text-xs); }
+    .note-dead { color: color-mix(in oklab, var(--warn), black 30%); font-size: var(--text-xs); }
+    tr.off td { color: var(--muted); }
+    .stat-tile.alert .stat-num { color: var(--danger); }
+    .stat-tile.mind .stat-num { color: color-mix(in oklab, var(--warn), black 25%); }
+    /* 穿透图:节点链 = flex 行,每跳一个节点 + 状态灯 */
+    .pipe { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 2px 0; }
+    .pipe-node { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px; background: var(--surface); flex: none; }
+    .pipe-node .pn { font-size: var(--text-sm); font-weight: 500; line-height: 1.3; white-space: nowrap; }
+    .pipe-node .ps { font-size: var(--text-xs); color: var(--muted); font-family: var(--font-mono); white-space: nowrap; }
+    .pdot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+    .pdot.ok { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+    .pdot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+    .pdot.bad { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+    .pipe-arrow { color: var(--muted); flex: none; font-family: var(--font-mono); font-size: var(--text-sm); }
+    .pipe-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); }
+    .pipe-row:first-child { border-top: none; }
+    .pipe-ch { width: 150px; flex: none; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+    .pipe-row.dim .pipe-node { opacity: 0.55; }
+    .entry-pipe { padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    @media (max-width: 900px) { .pipe-row { flex-direction: column; align-items: flex-start; gap: 8px; } .pipe-ch { width: auto; flex-direction: row; align-items: center; gap: 10px; } }
+  </style>
+</head>
+<body data-page="routing">
+  <div class="app">
+    <!-- ════ 侧栏（所有屏一致） ════ -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
+        </span>
+        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
+      </div>
+      <nav class="sidebar-nav">
+        <span class="nav-label">管理</span>
+        <a class="nav-item" data-nav="channels" href="index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          通道总览 <span class="count" id="nav-count">—</span>
+        </a>
+        <a class="nav-item" data-nav="routing" href="routing-table.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/></svg>
+          分流总表
+        </a>
+        <a class="nav-item" data-nav="monitor" href="monitor.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          流量监控
+        </a>
+        <a class="nav-item" data-nav="entry" href="clash-config.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
+          入口接入
+        </a>
+        <a class="nav-item" data-nav="env-check" href="env-check.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          环境诊断
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span>
+          <span>mihomo 运行中</span>
+          <span class="k spacer" id="foot-port">:7899</span>
+        </div>
+        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
+      </div>
+    </aside>
+
+    <!-- ════ 主区 ════ -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1>分流总表</h1>
+        <span class="spacer"></span>
+        <span class="sys-chip hide-mobile"><span class="dot"></span>每 8 秒自动刷新</span>
+      </header>
+
+      <div class="content stack-6">
+        <!-- 占线原理说明 -->
+        <div class="banner info" data-od-id="routing-note">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+          <div>
+            <div class="bt">多通道之间不会互相占线</div>
+            <p>每条通道是独立容器、独立 SOCKS5 出口，网络栈互不共享。唯一会互抢的是<strong>规则交叠</strong>：mihomo 规则自上而下、首条命中，两条通道绑了相互覆盖的域名 / 网段时，排后的那条永远轮空。另外<strong>已停止通道的启用规则仍留在分流表里</strong>，命中后不会回落直连（表现为「页面打不开」）。这两类问题下表自动标出。</p>
+          </div>
+        </div>
+
+        <!-- 概览统计 -->
+        <div class="grid-4" id="stats" data-od-id="routing-stats">
+          <div class="stat-tile ok">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>在线通道</div>
+            <div class="stat-num" id="s-online">—</div>
+            <div class="stat-foot">SOCKS5 探活通过 / 通道总数</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>启用规则</div>
+            <div class="stat-num" id="s-rules">—</div>
+            <div class="stat-foot">域名 + IP，自上而下首条命中</div>
+          </div>
+          <div class="stat-tile" id="tile-conflict">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7.5 12h9M12 7.5v9"/><circle cx="12" cy="12" r="9"/></svg>规则交叠</div>
+            <div class="stat-num" id="s-conflict">—</div>
+            <div class="stat-foot">跨通道相互覆盖，先到先得</div>
+          </div>
+          <div class="stat-tile" id="tile-dead">
+            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>失效规则</div>
+            <div class="stat-num" id="s-dead">—</div>
+            <div class="stat-foot">通道已停止，命中不回落直连</div>
+          </div>
+        </div>
+
+        <!-- 问题清单（仅有问题时出现） -->
+        <div id="issues"></div>
+
+        <!-- 网络穿透图：入口 → mihomo → 容器 SOCKS → 隧道 → 客户内网，每跳按实时状态亮灯 -->
+        <div class="card" data-od-id="pipe-map">
+          <div class="card-head">
+            <h3>网络穿透图</h3>
+            <span class="t-sm muted">入口 → mihomo 分流 → 容器 SOCKS → VPN 隧道 → 客户内网</span>
+          </div>
+          <div class="card-body">
+            <div class="pipe entry-pipe" id="entry-pipe">
+              <div class="pipe-node"><span class="pdot"></span><div><div class="pn">检测中…</div><div class="ps">正在读取入口接管状态</div></div></div>
+            </div>
+            <div id="pipe-rows"></div>
+          </div>
+        </div>
+
+        <!-- 通道 × 规则 总表 -->
+        <div class="card" data-od-id="master-table">
+          <div class="card-head">
+            <h3>通道 × 规则</h3>
+            <span class="t-sm muted">共 <span class="num" id="t-ch">—</span> 条通道 · <span class="num" id="t-rules">—</span> 条规则</span>
+          </div>
+          <div style="overflow-x:auto;">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>规则</th>
+                  <th>类型</th>
+                  <th class="hide-sm">状态</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="card-body" id="table-fallback" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/feedback.js"></script>
+  <script>
+    let chs = [];
+    let sys = {};
+    let loaded = false;
+
+    const enabledRules = (c) => [...(c.domains || []), ...(c.ips || [])].filter((r) => r.enabled);
+    const allRules = (c) => [...(c.domains || []), ...(c.ips || [])];
+    const isDeadCh = (c) => c.status === "stopped" || c.status === "error";
+
+    /* IPv4 CIDR → [lo, hi] 数值区间;非 v4 返回 null(v6 只比对全等) */
+    function cidr4(p) {
+      const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(p);
+      if (!m) return null;
+      const oct = m.slice(1, 5).map(Number);
+      const bits = +m[5];
+      if (oct.some((o) => o > 255) || bits > 32) return null;
+      const ip = (oct[0] * 16777216 + oct[1] * 65536 + oct[2] * 256 + oct[3]) >>> 0;
+      const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+      const lo = (ip & mask) >>> 0;
+      return [lo, lo + 2 ** (32 - bits) - 1];
+    }
+    /* DOMAIN-SUFFIX 语义:相等或互为后缀即相互覆盖 */
+    function domainOverlap(a, b) {
+      a = a.toLowerCase(); b = b.toLowerCase();
+      return a === b || a.endsWith("." + b) || b.endsWith("." + a);
+    }
+
+    /* 跨通道找启用规则的交叠对 → [{a:{ch,r}, b:{ch,r}, why}] */
+    function findConflicts() {
+      const ents = [];
+      chs.forEach((c) => enabledRules(c).forEach((r) => ents.push({ ch: c, r })));
+      const out = [];
+      for (let i = 0; i < ents.length; i++) {
+        for (let j = i + 1; j < ents.length; j++) {
+          const a = ents[i], b = ents[j];
+          if (a.ch.id === b.ch.id) continue;
+          if (a.r.kind === "ip" && b.r.kind === "ip") {
+            const ra = cidr4(a.r.pattern), rb = cidr4(b.r.pattern);
+            if (ra && rb ? ra[0] <= rb[1] && rb[0] <= ra[1] : a.r.pattern === b.r.pattern)
+              out.push({ a, b, why: "IP 网段交叠" });
+          } else if (a.r.kind !== "ip" && b.r.kind !== "ip") {
+            if (domainOverlap(a.r.pattern, b.r.pattern))
+              out.push({ a, b, why: "域名后缀相互覆盖" });
+          }
+        }
+      }
+      return out;
+    }
+
+    async function fetchAll() {
+      [chs, sys] = await Promise.all([api.channels(), api.system()]);
+      paint();
+      loaded = true;
+    }
+    async function load(isPoll) {
+      if (!loaded && !isPoll) {
+        const fbk = $("#table-fallback");
+        fbk.style.display = "";
+        fbk.innerHTML = "";
+        fbk.appendChild(fb.skeleton(5));
+      }
+      try {
+        await fetchAll();
+        $("#table-fallback").style.display = "none";
+      } catch (e) {
+        if (isPoll) {
+          toast("刷新状态失败,将自动重试", { variant: "danger", action: { label: "立即重试", onClick: () => load(false) } });
+          return;
+        }
+        const fbk = $("#table-fallback");
+        fbk.style.display = "";
+        fbk.innerHTML = "";
+        fb.errorBanner(fbk, { fromError: e, onRetry: () => load(false), retryLabel: "重新加载" });
+      }
+    }
+
+    const STATUS_RANK = { logged_in: 0, starting: 1, running: 1, created: 1, down: 2, error: 2, stopped: 3 };
+
+    /* ── 穿透图 ──
+     * 入口三接口是桌面版 host-only(web 版 / 旧版 404 → allSettled 降级为「接口不可用」),
+     * 且 tun 状态要过 helper socket(慢),故与主轮询分离:启动拉一次 + 每 30s 刷新。 */
+    let entry = null;   // null=检测中;{clash,sysproxy,tun} 各项 null=该接口不可用
+    const node = (dot, pn, ps, notes) => {
+      const extra = (notes || []).map((n) => `<div class="ps ${n.cls}">${n.text}</div>`).join("");
+      return `<div class="pipe-node"><span class="pdot ${dot}"></span><div><div class="pn">${pn}</div>${ps ? `<div class="ps">${ps}</div>` : ""}${extra}</div></div>`;
+    };
+    const ARROW = `<span class="pipe-arrow">→</span>`;
+    const fmtAge = (s) => (s < 60 ? `${s} 秒` : s < 3600 ? `${Math.floor(s / 60)} 分钟` : `${Math.floor(s / 3600)} 小时`);
+
+    /* ── 通道诊断(容器死循环 / wg 握手 / EC 踢线)──
+     * 桌面版 host-only 接口,每通道走容器内探针(有 exec 开销)→ 与主轮询分离,20s 一拍;
+     * web 版 / 旧版 404 → diagMap=null,穿透图退回基础状态灯。 */
+    let diagMap = null;
+    async function loadDiag() {
+      try {
+        const d = await api.diag();
+        diagMap = {};
+        (d.channels || []).forEach((x) => { diagMap[x.id] = x; });
+      } catch (_) { diagMap = null; }
+      if (loaded) paint();
+    }
+
+    async function loadEntry() {
+      const [cd, sp, tn] = await Promise.allSettled([api.clashDetect(), api.systemProxyGet(), api.tunGet()]);
+      const val = (x) => (x.status === "fulfilled" && x.value && typeof x.value === "object" ? x.value : null);
+      entry = { clash: val(cd), sysproxy: val(sp), tun: val(tn) };
+      paintEntry();
+    }
+
+    function paintEntry() {
+      const clash = entry && entry.clash, sp = entry && entry.sysproxy, tun = entry && entry.tun;
+      const bits = [];
+      if (clash) bits.push(clash.running ? `Clash ${clash.version || ""} 运行中` : "Clash 未运行");
+      if (sp) bits.push(sp.enabled ? (sp.is_ours ? "系统代理 → 本工具" : "系统代理 → 其他") : "系统代理 关");
+      if (tun) bits.push(tun.enabled ? "层3 TUN 开" : tun.installed ? "层3 TUN 关" : "层3 TUN 未安装");
+      const active = !!(clash && clash.running) || !!(sp && sp.enabled && sp.is_ours) || !!(tun && tun.enabled);
+      const entryDot = entry === null ? "" : active ? "ok" : "warn";
+      const entryPs = entry === null ? "检测中…" : bits.length ? bits.join(" · ") : "接口不可用(旧版 / web 版)";
+      const mihomoOk = sys.mihomo_status === "running";
+      const online = chs.filter((c) => c.status === "logged_in").length;
+      $("#entry-pipe").innerHTML = [
+        node("", "本机应用流量", "浏览器 / 终端 / 任意程序"),
+        ARROW,
+        node(entryDot, "入口接管", entryPs),
+        ARROW,
+        node(mihomoOk ? "ok" : "bad", "vpn-router · mihomo", `127.0.0.1:${sys.mihomo_port || "—"} · ${mihomoOk ? "运行中" : sys.mihomo_status || "未知"}`),
+        ARROW,
+        node(online ? "ok" : "warn", "按规则分流", `${chs.length} 条通道 · ${online} 在线 · 未命中 → DIRECT`),
+      ].join("");
+    }
+
+    function paintPipes(sorted) {
+      $("#pipe-rows").innerHTML = sorted.map((c) => {
+        const d = diagMap && diagMap[c.id];
+        const doms = (c.domains || []).filter((r) => r.enabled).length;
+        const ips = (c.ips || []).filter((r) => r.enabled).length;
+        const en = doms + ips;
+        const up = c.status === "logged_in";
+        const running = c.status === "running" || c.status === "starting" || c.status === "created";
+        const k = kindMeta(c.vpn_type);
+        const server = (c.server || (c.config && c.config.server) || "").replace(/^https?:\/\//, "") || "配置内指定";
+        const probeHost = (c.probe_url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+        const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "未探活";
+
+        // 容器节点:死循环盖过一切
+        let contDot = up ? "ok" : running ? "warn" : "bad";
+        const contNotes = [];
+        if (d && d.crash_loop) {
+          contDot = "bad";
+          contNotes.push({ cls: "note-conflict", text: `死循环:已重启 ${d.restart_count} 次${d.uptime_secs != null ? ` · 本次存活 ${fmtAge(d.uptime_secs)}` : ""}` });
+        }
+
+        // 隧道节点:诊断信号(踢线 / 客户端死 / 接口未起 / wg 握手)
+        let tunDot = up ? "ok" : running ? "warn" : "bad";
+        let tunPs = up ? `已连通 · ${server}` : running ? `待登录 · ${server}` : "容器已停止";
+        const tunNotes = [];
+        if (d) {
+          if (d.tunnel_up === true && d.tunnel_iface) tunPs += ` · ${d.tunnel_iface}`;
+          if (d.ec_kick_age != null && d.ec_kick_age < 7200)
+            tunNotes.push({ cls: "note-conflict", text: `服务端踢线 · ${fmtAge(d.ec_kick_age)}前` });
+          if (d.ec_client_alive === false) {
+            tunDot = "bad";
+            tunNotes.push({ cls: "note-conflict", text: "EC 客户端进程未运行" });
+          }
+          if (d.tunnel_up === false && c.status !== "stopped") {
+            tunDot = "bad";
+            tunNotes.push({ cls: "note-conflict", text: "隧道接口未起" });
+          }
+          if (d.wg_handshake_age != null) {
+            if (d.wg_handshake_age <= 180) tunPs += ` · 握手 ${fmtAge(d.wg_handshake_age)}前`;
+            else {
+              if (tunDot === "ok") tunDot = "warn";
+              tunNotes.push({ cls: "note-dead", text: `握手中断:已 ${fmtAge(d.wg_handshake_age)} 无响应` });
+            }
+          } else if (d.tunnel_up === true && c.vpn_type === "wireguard") {
+            tunNotes.push({ cls: "note-dead", text: "从未握手(对端无响应)" });
+          }
+        }
+
+        return `<div class="pipe-row${up ? "" : " dim"}">
+          <div class="pipe-ch"><a class="grp-name" href="channel.html?id=${c.id}">${c.name}</a>${badgeHTML(c.status)}</div>
+          <div class="pipe">
+            ${node(en ? "ok" : "", "分流规则", en ? `${doms} 域名 + ${ips} IP 命中走此通道` : "未绑定 · 不参与分流")}
+            ${ARROW}
+            ${node(contDot, "容器 SOCKS 出口", `${c.socks_endpoint} · 仅 docker 内网`, contNotes)}
+            ${ARROW}
+            ${node(tunDot, `${k.label} 隧道`, tunPs, tunNotes)}
+            ${ARROW}
+            ${node(up ? "ok" : "", "客户内网", `${probeHost || "—"} · ${up ? lat : "不可达"}`)}
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    function paint() {
+      const conflicts = findConflicts();
+      // rid → 冲突说明;deadRids = 停止通道的启用规则
+      const confNote = new Map();
+      const addNote = (r, txt) => confNote.set(r.id, [...(confNote.get(r.id) || []), txt]);
+      conflicts.forEach(({ a, b, why }) => {
+        addNote(a.r, `与「${b.ch.name}」的 ${b.r.pattern} ${why}`);
+        addNote(b.r, `与「${a.ch.name}」的 ${a.r.pattern} ${why}`);
+      });
+      const deadRules = [];
+      chs.filter(isDeadCh).forEach((c) => enabledRules(c).forEach((r) => deadRules.push({ ch: c, r })));
+      const deadRids = new Set(deadRules.map((d) => d.r.id));
+
+      // 统计
+      const online = chs.filter((c) => c.status === "logged_in").length;
+      const totalRules = chs.reduce((n, c) => n + allRules(c).length, 0);
+      const enabledN = chs.reduce((n, c) => n + enabledRules(c).length, 0);
+      $("#s-online").innerHTML = `${online}<span class="unit">/ ${chs.length}</span>`;
+      $("#s-rules").innerHTML = `${enabledN}<span class="unit">/ ${totalRules}</span>`;
+      $("#s-conflict").textContent = conflicts.length;
+      $("#s-dead").textContent = deadRules.length;
+      $("#tile-conflict").classList.toggle("alert", conflicts.length > 0);
+      $("#tile-dead").classList.toggle("mind", deadRules.length > 0);
+      $("#t-ch").textContent = chs.length;
+      $("#t-rules").textContent = totalRules;
+      $("#nav-count").textContent = chs.length;
+      $("#foot-port").textContent = ":" + sys.mihomo_port;
+
+      // 问题清单
+      const warnBanner = (html) =>
+        `<div class="banner warn"><svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><p style="color:inherit; margin:0;">${html}</p></div>`;
+      const issues = [];
+      conflicts.forEach(({ a, b, why }) =>
+        issues.push(warnBanner(`${why}:「${a.ch.name}」<span class="mono">${a.r.pattern}</span> ↔ 「${b.ch.name}」<span class="mono">${b.r.pattern}</span> —— 命中时走规则表里排前的那条(先绑定者),另一条轮空。`)));
+      if (deadRules.length)
+        issues.push(warnBanner(`${deadRules.map((d) => `「${d.ch.name}」<span class="mono">${d.r.pattern}</span>`).join("、")} 所属通道已停止,但规则仍启用——命中后进死出口、<strong>不会</strong>回落直连。启动通道,或在详情页停用/删除这些规则。`));
+      // 诊断层问题(diag 接口可用时):死循环 / 服务端踢线
+      if (diagMap) chs.forEach((c) => {
+        const d = diagMap[c.id];
+        if (!d) return;
+        if (d.crash_loop)
+          issues.push(warnBanner(`「${c.name}」容器在死循环:已重启 <strong>${d.restart_count}</strong> 次${d.uptime_secs != null ? `、本次仅存活 ${fmtAge(d.uptime_secs)}` : ""}——多为隧道起不来(查通道日志);期间不影响其它通道,但持续空转,建议先停止。`));
+        if (d.ec_kick_age != null && d.ec_kick_age < 7200)
+          issues.push(warnBanner(`「${c.name}」${fmtAge(d.ec_kick_age)}前被 VPN <strong>服务端主动登出</strong>——常见于同一账号在别处登录互踢;这是服务端行为,与本机其它通道无关。`));
+      });
+      $("#issues").innerHTML = issues.join("");
+
+      // 总表:通道分组行 + 规则行
+      const sorted = [...chs].sort((x, y) => (STATUS_RANK[x.status] ?? 9) - (STATUS_RANK[y.status] ?? 9));
+      const rows = [];
+      sorted.forEach((c) => {
+        const k = kindMeta(c.vpn_type);
+        const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "—";
+        const en = enabledRules(c).length, tot = allRules(c).length;
+        rows.push(`<tr class="grp"><td colspan="4"><div class="grp-line">
+          <a class="grp-name" href="channel.html?id=${c.id}">${c.name}</a>
+          <span class="grp-meta">${k.label} · ${c.socks_endpoint} · ${lat}${c.uptime ? " · " + c.uptime : ""}</span>
+          ${badgeHTML(c.status)}
+          <span class="grp-meta spacer" style="text-align:right;">${en} / ${tot} 条启用</span>
+        </div></td></tr>`);
+        const rules = allRules(c);
+        if (!rules.length) {
+          rows.push(`<tr class="off"><td class="pat" colspan="4">未绑定规则 · 不参与分流</td></tr>`);
+          return;
+        }
+        rules.forEach((r) => {
+          const notes = [];
+          let cls = r.enabled ? "" : "off";
+          if (r.enabled && confNote.has(r.id)) {
+            cls = "hit-conflict";
+            notes.push(...confNote.get(r.id).map((t) => `<span class="note-conflict">${t}</span>`));
+          } else if (r.enabled && deadRids.has(r.id)) {
+            cls = "hit-dead";
+            notes.push(`<span class="note-dead">通道已停止,命中不回落直连</span>`);
+          }
+          rows.push(`<tr class="${cls}">
+            <td class="pat mono">${r.pattern}</td>
+            <td>${r.kind === "ip" ? "IP 网段" : "域名后缀"}</td>
+            <td class="hide-sm">${r.enabled ? "启用" : `<span class="muted">停用</span>`}</td>
+            <td>${notes.join("<br>") || `<span class="muted">—</span>`}</td>
+          </tr>`);
+        });
+      });
+      $("#tbody").innerHTML = rows.join("");
+      paintPipes(sorted);
+      paintEntry();
+    }
+
+    load();
+    loadEntry();
+    loadDiag();
+    setInterval(() => load(true), 8000);
+    setInterval(loadEntry, 30000);
+    setInterval(loadDiag, 20000);
+  </script>
+</body>
+</html>
