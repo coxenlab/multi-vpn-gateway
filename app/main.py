@@ -302,6 +302,80 @@ def delete(cid):
     return {"ok": True}
 
 
+@app.get("/api/config/export")
+def config_export():
+    """导出全部通道配置(容器选择 + 分流规则 + oss 注入配置),供换机/重装恢复。
+    ⚠️ 命门 #5 的有意例外:headless 通道的 secret 字段(密码 / .ovpn / wg conf)
+    解密随导出——无头重连必需(用户明确要求),别「修」回剥密。
+    交互登录(gui/byo)的密码不导出,导入后重新登录。"""
+    channels = []
+    for c in store.list_channels():
+        cfg = store.get_config(c["id"])
+        if c.get("login_method") != "headless":
+            cfg.pop("password", None)   # 交互登录密码不随导出
+        if c.get("login_method") == "byo":
+            cfg.pop("package", None)    # 安装器二进制在数据卷里带不走,文件名引用一并不导
+        channels.append({
+            "name": c["name"], "vpn_type": c["vpn_type"], "server": c["server"],
+            "ec_ver": c["ec_ver"], "login_method": c["login_method"],
+            "username": c["username"], "probe_url": c["probe_url"], "config": cfg,
+            "rules": [{"kind": r["kind"], "pattern": r["pattern"], "enabled": r["enabled"]}
+                      for r in store.list_rules(c["id"])],
+        })
+    return {"kind": "vpnmgr-export", "version": 1,
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "channels": channels}
+
+
+@app.post("/api/config/import")
+async def config_import(req: Request):
+    """导入导出文件:只落库(status=stopped,新 id/MAC/VNC 密码),不起容器——
+    同步起 N 个容器要几分钟且缺镜像会整批失败;「启动」本就是重建原语,导入后按需逐个启动。
+    同名通道跳过(重复导入幂等),未知类型跳过;规则不重新 classify,原样恢复。"""
+    b = await req.json()
+    if b.get("kind") != "vpnmgr-export" or not isinstance(b.get("channels"), list):
+        return JSONResponse({"error": "不是有效的配置导出文件"}, status_code=400)
+    existing = {c["name"] for c in store.list_channels()}
+    imported, skipped = [], []
+    for entry in b["channels"]:
+        if not isinstance(entry, dict):    # 手编文件混入非对象条目:跳过而非 500
+            skipped.append({"name": "", "reason": "条目格式错误"})
+            continue
+        name = (entry.get("name") or "").strip()
+        vtype = entry.get("vpn_type") or ""
+        try:
+            spec = registry.get(vtype)
+        except KeyError:
+            skipped.append({"name": name, "reason": f"未知类型 {vtype}"})
+            continue
+        if name in existing:
+            skipped.append({"name": name, "reason": "同名通道已存在"})
+            continue
+        cid = uuid.uuid4().hex[:8]
+        cfg = entry.get("config") or {}
+        ch = {
+            "id": cid, "name": name or cid, "vpn_type": vtype,
+            "server": entry.get("server") or cfg.get("server", ""),
+            "ec_ver": entry.get("ec_ver") or "",
+            "login_method": entry.get("login_method") or "interactive",
+            "username": entry.get("username") or cfg.get("username", ""),
+            "password": "",                    # 交互登录密码不在导出文件里
+            "vnc_password": secrets.token_hex(4),
+            "mac": "02:" + ":".join(f"{random.randint(0, 255):02x}" for _ in range(5)),
+            "probe_url": entry.get("probe_url", ""), "status": "stopped",
+        }
+        secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
+        store.add_channel(ch, config=cfg, secret_keys=secret_keys)
+        for r in entry.get("rules") or []:
+            if isinstance(r, dict) and r.get("pattern") and r.get("kind") in ("domain", "ip"):
+                rid = store.add_rule(cid, r["kind"], r["pattern"])
+                if not r.get("enabled", 1):
+                    store.set_rule_enabled(rid, False)
+        existing.add(ch["name"])
+        imported.append(ch["name"])
+    return {"ok": True, "reload_status": manager.rebuild(),
+            "imported": imported, "skipped": skipped}
+
+
 @app.get("/api/preflight")
 def preflight_check(vpn_type: str = None, version: str = None, scope: str = "preflight"):
     mirrors = [m["host"] for m in store.list_mirrors() if m["enabled"]]

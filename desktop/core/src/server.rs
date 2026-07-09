@@ -65,6 +65,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/mirrors", get(api::mirrors_list).post(api::mirrors_add))
         .route("/api/mirrors/:mid", axum::routing::patch(api::mirrors_patch).delete(api::mirrors_del))
         .route("/api/mirrors/test", axum::routing::post(api::mirrors_test))
+        // 配置导出 / 导入(整站通道 + 规则的备份/迁移)
+        .route("/api/config/export", get(api::config_export))
+        .route("/api/config/import", axum::routing::post(api::config_import))
         .fallback_service(static_svc)
         .with_state(state)
 }
@@ -300,6 +303,204 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
         assert_eq!(v["overall"], "fail");
+    }
+
+    // ── 配置导出 / 导入 ──────────────────────────────────────────────────────
+
+    /// 用真实 master_key + add_channel 落一条通道(config 里 password 走 secret 加密)。
+    fn seed_channel(
+        db: &std::path::Path,
+        key: &str,
+        id: &str,
+        name: &str,
+        vtype: &str,
+        login_method: &str,
+        password: &str,
+    ) {
+        let mut cfg = serde_json::Map::new();
+        cfg.insert("server".into(), serde_json::json!("vpn.x.com"));
+        cfg.insert("password".into(), serde_json::json!(password));
+        let nc = crate::store::NewChannel {
+            id: id.into(),
+            name: name.into(),
+            vpn_type: vtype.into(),
+            server: "vpn.x.com".into(),
+            ec_ver: "7.6.3".into(),
+            login_method: login_method.into(),
+            username: "alice".into(),
+            password: password.into(),
+            vnc_password: "vnc00000".into(),
+            mac: "02:11:22:33:44:55".into(),
+            probe_url: "https://intra/".into(),
+            status: "stopped".into(),
+        };
+        crate::store::add_channel(db, key, &nc, &cfg, &["password".to_string()]).unwrap();
+    }
+
+    #[tokio::test]
+    async fn config_export_keeps_headless_secret_drops_interactive_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let key = crate::store::master_key(dir.path()).unwrap();
+        // interactive(密码不导出)+ headless(密码随导出,命门 #5 例外)
+        seed_channel(&db, &key, "ia", "Interactive", "easyconnect", "interactive", "secret-a");
+        seed_channel(&db, &key, "hb", "Headless", "anyconnect", "headless", "secret-b");
+        crate::store::add_rule(&db, "ia", "domain", "a.com").unwrap();
+        let rid = crate::store::add_rule(&db, "ia", "ip", "10.0.0.0/8").unwrap();
+        crate::store::set_rule_enabled(&db, rid, false).unwrap();
+
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app
+            .oneshot(Request::builder().uri("/api/config/export").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["kind"], "vpnmgr-export");
+        assert_eq!(v["version"], 1);
+        let chans = v["channels"].as_array().unwrap();
+        let ia = chans.iter().find(|c| c["name"] == "Interactive").unwrap();
+        let hb = chans.iter().find(|c| c["name"] == "Headless").unwrap();
+        // interactive:密码剥掉,server 仍在
+        assert!(ia["config"].get("password").is_none());
+        assert_eq!(ia["config"]["server"], "vpn.x.com");
+        // headless:密码是解密后的明文
+        assert_eq!(hb["config"]["password"], "secret-b");
+        // 规则带 enabled
+        let ia_rules = ia["rules"].as_array().unwrap();
+        assert!(ia_rules.iter().any(|r| r["pattern"] == "a.com" && r["enabled"] == 1));
+        assert!(ia_rules.iter().any(|r| r["pattern"] == "10.0.0.0/8" && r["enabled"] == 0));
+    }
+
+    #[tokio::test]
+    async fn config_import_roundtrip_reencrypts_and_restores_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let key = crate::store::master_key(dir.path()).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml")); // rebuild 写配置到 tempfile
+
+        let doc = serde_json::json!({
+            "kind": "vpnmgr-export",
+            "version": 1,
+            "channels": [{
+                "name": "Imported", "vpn_type": "anyconnect", "server": "vpn.i.com",
+                "login_method": "headless", "username": "carol", "probe_url": "https://i/",
+                "config": {"server": "vpn.i.com", "username": "carol", "password": "plain-pw"},
+                "rules": [
+                    {"kind": "domain", "pattern": "i.com", "enabled": 1},
+                    {"kind": "ip", "pattern": "10.1.0.0/16", "enabled": 0}
+                ]
+            }]
+        });
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/config/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(doc.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(v["imported"].as_array().unwrap().iter().any(|n| n == "Imported"));
+
+        // DB:新通道 status=stopped、新 id
+        let chans = crate::store::list_channels(&db).unwrap();
+        let ch = chans.iter().find(|c| c.name == "Imported").unwrap();
+        assert_eq!(ch.status, "stopped");
+        assert!(!ch.id.is_empty());
+
+        // 规则 pattern/enabled 原样恢复
+        let rules = crate::store::list_rules(&db, &ch.id).unwrap();
+        assert!(rules.iter().any(|r| r.pattern == "i.com" && r.enabled == 1));
+        assert!(rules.iter().any(|r| r.pattern == "10.1.0.0/16" && r.enabled == 0));
+
+        // secret 已重新加密:密文 != 明文,_secret 含 password,get_config 解回明文
+        let raw = crate::store::get_config_raw(&db, &ch.id).unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_ne!(obj["_fields"]["password"], "plain-pw");
+        assert!(obj["_secret"].as_array().unwrap().iter().any(|k| k == "password"));
+        let cfg = crate::store::get_config(&db, &key, &ch.id).unwrap();
+        assert_eq!(cfg["password"], "plain-pw");
+
+        // 公开 config 不含 password
+        let resp = build_router(state_with_db(dir.path()))
+            .oneshot(Request::builder().uri("/api/channels").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let cv: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        let pub_ch = cv.as_array().unwrap().iter().find(|c| c["name"] == "Imported").unwrap();
+        assert!(pub_ch["config"].get("password").is_none());
+    }
+
+    #[tokio::test]
+    async fn config_import_skips_duplicate_and_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let key = crate::store::master_key(dir.path()).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        seed_channel(&db, &key, "ex", "Existing", "easyconnect", "interactive", "pw");
+
+        let doc = serde_json::json!({
+            "kind": "vpnmgr-export",
+            "version": 1,
+            "channels": [
+                {"name": "Existing", "vpn_type": "easyconnect", "login_method": "interactive", "config": {}, "rules": []},
+                {"name": "Weird", "vpn_type": "nosuchtype", "login_method": "interactive", "config": {}, "rules": []}
+            ]
+        });
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/config/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(doc.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert!(v["imported"].as_array().unwrap().is_empty());
+        let skipped = v["skipped"].as_array().unwrap();
+        let dup = skipped.iter().find(|s| s["name"] == "Existing").unwrap();
+        assert!(dup["reason"].as_str().unwrap().contains("同名"));
+        let unk = skipped.iter().find(|s| s["name"] == "Weird").unwrap();
+        assert!(unk["reason"].as_str().unwrap().contains("未知类型"));
+    }
+
+    #[tokio::test]
+    async fn config_import_bad_doc_400() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/config/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"kind":"nope","channels":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

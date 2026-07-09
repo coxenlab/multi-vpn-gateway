@@ -623,3 +623,160 @@ pub async fn mirrors_test(Json(b): Json<Value>) -> Json<Value> {
     let ms = if ok { Some(t0.elapsed().as_millis() as i64) } else { None };
     Json(json!({ "reachable": ok, "latency_ms": ms }))
 }
+
+// ── 配置导出 / 导入(整站通道 + 规则的备份/迁移) ──────────────────────────────
+
+/// GET /api/config/export:把全部通道(公开字段 + 解密后的 config + 规则)导出为一份 JSON 文档。
+/// ⚠️ 命门 #5 的**有意例外**:headless 通道的 config 含 CLI 注入凭据(密码/私钥),随导出一并带出
+/// ——否则导入到新机器后无法重连(用户明确要求)。交互登录密码不导出(导入后重新登录)。
+/// 后人勿把此处「修回」去剥 headless 的密码:那会让 headless 通道导入后失联。
+pub async fn config_export(State(st): State<AppState>) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let key = match store::master_key(&st.cfg.data_dir) {
+        Ok(k) => k,
+        Err(e) => return err500(&format!("master_key: {e}")),
+    };
+    let channels = match store::list_channels(&db) {
+        Ok(c) => c,
+        Err(e) => return err500(&format!("list_channels: {e}")),
+    };
+    let mut out = Vec::new();
+    for ch in &channels {
+        // 命门 #5 例外:get_config 返回 secret 解密后的完整 map(含密码/私钥)。
+        let mut config = match store::get_config(&db, &key, &ch.id) {
+            Ok(m) => m,
+            Err(e) => return err500(&format!("get_config {}: {e}", ch.id)),
+        };
+        // 交互登录密码不导出(导入后重新登录);byo 安装器文件名引用带不走(二进制在数据卷里)。
+        if ch.login_method != "headless" {
+            config.remove("password");
+        }
+        if ch.login_method == "byo" {
+            config.remove("package");
+        }
+        let rules: Vec<Value> = store::list_rules(&db, &ch.id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| json!({ "kind": r.kind, "pattern": r.pattern, "enabled": r.enabled }))
+            .collect();
+        out.push(json!({
+            "name": ch.name,
+            "vpn_type": ch.vpn_type,
+            "server": ch.server,
+            "ec_ver": ch.ec_ver.clone().unwrap_or_default(),
+            "login_method": ch.login_method,
+            "username": ch.username,
+            "probe_url": ch.probe_url,
+            "config": Value::Object(config),
+            "rules": rules,
+        }));
+    }
+    Json(json!({
+        "kind": "vpnmgr-export",
+        "version": 1,
+        "exported_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        "channels": out,
+    }))
+    .into_response()
+}
+
+/// POST /api/config/import:吃一份 config_export 文档,逐条重建通道(新 id/mac/vnc)+ 规则。
+/// **不起容器、不 provision、不 oss_connect**(有意):同步起 N 个容器要几分钟,缺镜像会整批失败;
+/// 「启动」按钮本就是重建原语,导入后用户按需逐个启动。故所有导入的通道落 status="stopped"。
+pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let key = match store::master_key(&st.cfg.data_dir) {
+        Ok(k) => k,
+        Err(e) => return err500(&format!("master_key: {e}")),
+    };
+    let entries = match (
+        b.get("kind").and_then(|v| v.as_str()),
+        b.get("channels").and_then(|v| v.as_array()),
+    ) {
+        (Some("vpnmgr-export"), Some(arr)) => arr.clone(),
+        _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "不是有效的配置导出文件" }))).into_response(),
+    };
+    // 现有通道名(含本次已导入的),用于同名跳过。
+    let mut names: std::collections::HashSet<String> = store::list_channels(&db)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    let mut imported: Vec<String> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    for entry in &entries {
+        let name = js(entry, "name").trim().to_string();
+        let vtype = js(entry, "vpn_type");
+        if registry::get(&vtype).is_err() {
+            skipped.push(json!({ "name": name, "reason": format!("未知类型 {vtype}") }));
+            continue;
+        }
+        if names.contains(&name) {
+            skipped.push(json!({ "name": name, "reason": "同名通道已存在" }));
+            continue;
+        }
+        let cfg_in: serde_json::Map<String, Value> =
+            entry.get("config").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+        let server = {
+            let s = js(entry, "server");
+            if s.is_empty() { cfg_in.get("server").and_then(|v| v.as_str()).unwrap_or("").into() } else { s }
+        };
+        let username = {
+            let u = js(entry, "username");
+            if u.is_empty() { cfg_in.get("username").and_then(|v| v.as_str()).unwrap_or("").into() } else { u }
+        };
+        let login_method = {
+            let l = js(entry, "login_method");
+            if l.is_empty() { "interactive".into() } else { l }
+        };
+        let cid = rand_hex(4);
+        let nc = NewChannel {
+            id: cid.clone(),
+            name: name.clone(),
+            vpn_type: vtype.clone(),
+            server,
+            ec_ver: js(entry, "ec_ver"),
+            login_method,
+            username,
+            password: String::new(), // 交互密码不在文件里,导入后重新登录
+            vnc_password: rand_hex(4),
+            mac: rand_mac(),
+            probe_url: js(entry, "probe_url"),
+            status: "stopped".into(),
+        };
+        let sk = secret_keys_of(&vtype);
+        if let Err(e) = store::add_channel(&db, &key, &nc, &cfg_in, &sk) {
+            return err500(&format!("add_channel: {e}"));
+        }
+        // 规则原样恢复(不重新 classify);enabled 为 0/false 的补一次 set_rule_enabled。
+        if let Some(rules) = entry.get("rules").and_then(|v| v.as_array()) {
+            for r in rules {
+                let pattern = js(r, "pattern");
+                let kind = js(r, "kind");
+                if pattern.is_empty() || !(kind == "domain" || kind == "ip") {
+                    continue;
+                }
+                if let Ok(rid) = store::add_rule(&db, &cid, &kind, &pattern) {
+                    let enabled = match r.get("enabled") {
+                        Some(Value::Bool(x)) => *x,
+                        Some(Value::Number(n)) => n.as_i64().unwrap_or(1) != 0,
+                        _ => true,
+                    };
+                    if !enabled {
+                        let _ = store::set_rule_enabled(&db, rid, false);
+                    }
+                }
+            }
+        }
+        names.insert(name.clone());
+        imported.push(name);
+    }
+    let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+    Json(json!({
+        "ok": true,
+        "reload_status": reload,
+        "imported": imported,
+        "skipped": skipped,
+    }))
+    .into_response()
+}

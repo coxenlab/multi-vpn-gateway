@@ -362,3 +362,65 @@ def test_images_inventory_route(client, monkeypatch):
     assert by["metacubex/mihomo:latest"]["role"] == "infra"
     assert by["vpnmgr/oss-vpn:latest"]["kind"] == "build"
     assert len(by["vpnmgr/oss-vpn:latest"]["used_by"]) == 8
+
+
+def test_config_export_strips_interactive_password_keeps_headless(client):
+    _create(client, name="交互", password="pw1")
+    client.post("/api/channels", json={
+        "name": "无头", "vpn_type": "openfortivpn", "login_method": "headless",
+        "probe_url": "http://p",
+        "config": {"server": "gw:443", "username": "u", "password": "s3cret"}})
+    doc = client.get("/api/config/export").json()
+    assert doc["kind"] == "vpnmgr-export" and doc["version"] == 1
+    by = {c["name"]: c for c in doc["channels"]}
+    assert "password" not in by["交互"]["config"]          # 交互登录密码不导出
+    assert by["无头"]["config"]["password"] == "s3cret"    # 无头凭据解密随导出(重连必需)
+    assert by["无头"]["config"]["server"] == "gw:443"
+
+
+def test_config_import_roundtrip(client, monkeypatch):
+    import manager
+    monkeypatch.setattr(manager, "remove", lambda cid: None)
+    cid = _create(client, name="甲")["id"]
+    client.post(f"/api/channels/{cid}/rules", json={"patterns": ["a.com", "10.0.0.0/8"]})
+    rid = client.get("/api/channels").json()[0]["domains"][0]["id"]
+    client.patch(f"/api/channels/{cid}/rules/{rid}", json={"enabled": False})
+    doc = client.get("/api/config/export").json()
+    client.delete(f"/api/channels/{cid}")
+    r = client.post("/api/config/import", json=doc).json()
+    assert r["imported"] == ["甲"] and r["skipped"] == []
+    ch = client.get("/api/channels").json()[0]
+    assert ch["status"] == "stopped"                       # 只落库不起容器
+    assert ch["id"] != cid                                 # 新 id
+    assert [(d["pattern"], d["enabled"]) for d in ch["domains"]] == [("a.com", 0)]
+    assert [(i["pattern"], i["enabled"]) for i in ch["ips"]] == [("10.0.0.0/8", 1)]
+
+
+def test_config_import_reencrypts_headless_secrets(client):
+    import store
+    client.post("/api/channels", json={
+        "name": "无头", "vpn_type": "openfortivpn", "login_method": "headless",
+        "config": {"server": "gw:443", "username": "u", "password": "s3cret"}})
+    doc = client.get("/api/config/export").json()
+    doc["channels"][0]["name"] = "无头2"                   # 避开同名跳过
+    r = client.post("/api/config/import", json=doc).json()
+    assert r["imported"] == ["无头2"]
+    new = [c for c in client.get("/api/channels").json() if c["name"] == "无头2"][0]
+    assert "password" not in new["config"]                 # 公开 API 仍剥密(命门 #5)
+    raw = store.get_config_raw(new["id"])
+    assert "s3cret" not in raw and "password" in raw       # 落库是密文且已登记 _secret
+    assert store.get_config(new["id"])["password"] == "s3cret"
+
+
+def test_config_import_skips_duplicate_and_unknown(client):
+    _create(client, name="甲")
+    doc = client.get("/api/config/export").json()
+    doc["channels"].append(dict(doc["channels"][0], name="乙", vpn_type="nope"))
+    r = client.post("/api/config/import", json=doc).json()
+    assert r["imported"] == []
+    reasons = {s["name"]: s["reason"] for s in r["skipped"]}
+    assert "同名" in reasons["甲"] and "未知类型" in reasons["乙"]
+
+
+def test_config_import_rejects_bad_doc(client):
+    assert client.post("/api/config/import", json={"kind": "nope"}).status_code == 400

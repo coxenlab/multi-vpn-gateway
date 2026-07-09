@@ -10,6 +10,7 @@
 - 内部开发文档(架构 / 命门 / 贡献说明)集中到 `docs/development.md`。
 
 ### Added
+- 配置导出导入:总览屏顶栏「导出 / 导入配置」;`GET /api/config/export` + `POST /api/config/import`(通道 + 分流规则 + 无头通道注入配置;交互登录密码不导出、导入后重新登录;导入只落库为「已停止」,按需逐个启动;Python 后端与 Rust core 双端等价)。
 - 后端分流规则支持 `kind`(domain / ip)+ `enabled`,新增 IP-CIDR、rule-provider 与遥测。
 - 前端 5 屏接入真实 API,移除 mock `data.js`。
 - Docker 栈冒烟脚本 `tests/smoke.sh`。

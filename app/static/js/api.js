@@ -47,6 +47,8 @@
     preflightFix: (action, params) => req("POST", `/api/preflight/fix/${action}`, params || {}),
     preflightFixStatus: (taskId) => req("GET", `/api/preflight/fix/${taskId}`),
     images: () => req("GET", "/api/images"),
+    exportConfig: () => req("GET", "/api/config/export"),
+    importConfig: (doc) => req("POST", "/api/config/import", doc),
     create: (data) => req("POST", "/api/channels", data),
     update: (id, data) => req("PATCH", `/api/channels/${id}`, data),
     login: (id) => req("GET", `/api/channels/${id}/login`),

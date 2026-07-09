@@ -65,6 +65,9 @@
         <h1>通道总览</h1>
         <span class="spacer"></span>
         <span class="sys-chip ok hide-mobile" id="chip-clash"><span class="dot"></span>Clash 已接入</span>
+        <button class="btn btn-secondary hide-mobile" id="btn-export">导出配置</button>
+        <button class="btn btn-secondary hide-mobile" id="btn-import">导入配置</button>
+        <input type="file" id="import-file" accept="application/json,.json" hidden />
         <a class="btn btn-primary" href="new-channel.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
           新建通道
@@ -322,6 +325,44 @@
       }
     }
     $("#del-confirm").addEventListener("click", runDel);
+
+    // 配置导出 / 导入:通道 + 规则 + 无头通道注入配置。交互登录密码不在文件里,导入后重新登录;
+    // 导入只落库为「已停止」,不起容器(缺镜像会整批失败),按需逐个「启动」。
+    $("#btn-export").addEventListener("click", async () => {
+      const btn = $("#btn-export"), txt = btn.textContent;
+      btn.disabled = true; btn.replaceChildren(fb.spinner("导出中…"));
+      try {
+        const doc = await api.exportConfig();
+        const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `vpnmgr-config-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast(`已导出 ${doc.channels.length} 条通道 · 文件含无头通道凭据,请妥善保管`, { variant: "success" });
+      } catch (e) {
+        toast("导出出错:" + fb.friendlyError(e).title, { variant: "danger" });
+      } finally { btn.disabled = false; btn.textContent = txt; }
+    });
+    $("#btn-import").addEventListener("click", () => $("#import-file").click());
+    $("#import-file").addEventListener("change", async (ev) => {
+      const file = ev.target.files[0];
+      ev.target.value = "";                       // 复位,允许再次选同一文件
+      if (!file) return;
+      let doc;
+      try { doc = JSON.parse(await file.text()); }
+      catch { toast("文件不是有效的 JSON", { variant: "danger" }); return; }
+      try {
+        const r = await api.importConfig(doc);
+        await load();
+        const parts = [`导入 ${r.imported.length} 条(已停止,按需逐个启动)`];
+        if (r.skipped.length)
+          parts.push(`跳过 ${r.skipped.length} 条:` + r.skipped.map(s => `${s.name}(${s.reason})`).join("、"));
+        toast(parts.join(" · "), { variant: r.imported.length ? "success" : "info" });
+      } catch (e) {
+        toast("导入出错:" + fb.friendlyError(e).title, { variant: "danger" });
+      }
+    });
 
     load();
     setInterval(() => load(true), 8000);
