@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Result};
 use bollard::container::{CreateContainerOptions, LogsOptions, RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions, UploadToContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{CreateImageOptions, ImportImageOptions, RemoveImageOptions, TagImageOptions};
+use bollard::models::CreateImageInfo;
 use bollard::network::{CreateNetworkOptions, InspectNetworkOptions};
 use bollard::Docker;
 use chrono::{DateTime, Utc};
@@ -62,13 +65,81 @@ pub fn fmt_uptime(secs: i64) -> String {
     }
 }
 
-pub async fn ensure_image(docker: &Docker, image: &str) -> Result<()> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImagePullProgress {
+    pub detail: String,
+    pub percent: Option<u8>,
+}
+
+#[derive(Default)]
+struct PullProgress {
+    layers: HashMap<String, (i64, i64)>,
+}
+
+impl PullProgress {
+    fn observe(&mut self, info: &CreateImageInfo) -> ImagePullProgress {
+        if let (Some(id), Some(progress)) = (&info.id, &info.progress_detail) {
+            if let (Some(current), Some(total)) = (progress.current, progress.total) {
+                if total > 0 {
+                    self.layers.insert(id.clone(), (current.clamp(0, total), total));
+                }
+            } else if info.status.as_deref().is_some_and(|s| s.contains("complete") || s.contains("Already exists")) {
+                if let Some((current, total)) = self.layers.get_mut(id) {
+                    *current = *total;
+                }
+            }
+        }
+        let (current, total) = self.layers.values().fold((0_i128, 0_i128), |acc, item| {
+            (acc.0 + i128::from(item.0), acc.1 + i128::from(item.1))
+        });
+        let percent = (total > 0).then(|| ((current * 100 / total).clamp(0, 100)) as u8);
+
+        let mut detail = info.status.clone().unwrap_or_else(|| "正在拉取镜像".to_string());
+        if let Some(id) = info.id.as_deref().filter(|s| !s.is_empty()) {
+            detail.push_str(&format!(" · {id}"));
+        }
+        if let Some(percent) = percent {
+            detail.push_str(&format!(" · {percent}%"));
+        } else if let Some(raw) = info.progress.as_deref().filter(|s| !s.is_empty()) {
+            detail.push_str(&format!(" · {raw}"));
+        }
+        ImagePullProgress { detail, percent }
+    }
+}
+
+fn image_stream_error(info: &CreateImageInfo) -> Option<String> {
+    info.error
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            info.error_detail
+                .as_ref()
+                .and_then(|e| e.message.as_deref())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        })
+}
+
+pub async fn ensure_image_with_progress<F>(docker: &Docker, image: &str, mut on_progress: F) -> Result<()>
+where
+    F: FnMut(ImagePullProgress) + Send,
+{
     let opts = CreateImageOptions { from_image: image, ..Default::default() };
     let mut stream = docker.create_image(Some(opts), None, None);
+    let mut progress = PullProgress::default();
     while let Some(item) = stream.next().await {
-        item.map_err(|e| anyhow!("pull {image}: {e}"))?;
+        let info = item.map_err(|e| anyhow!("pull {image}: {e}"))?;
+        if let Some(error) = image_stream_error(&info) {
+            return Err(anyhow!("pull {image}: {error}"));
+        }
+        on_progress(progress.observe(&info));
     }
     Ok(())
+}
+
+pub async fn ensure_image(docker: &Docker, image: &str) -> Result<()> {
+    ensure_image_with_progress(docker, image, |_| {}).await
 }
 
 /// docker-load 一个本地镜像 tarball(= `docker load`,POST /images/load)。打包内置镜像首启落进 VM 用。
@@ -325,28 +396,70 @@ pub enum PullOutcome {
     ArchMismatch(String), // 拉到非目标 arch,已弃用(删除),携带实际 arch
 }
 
-/// 从 mirror 拉取 repo:tag(指定 platform)→ 校验 arch → retag 回原名 → 删 mirror 标。
-/// 对照 _pull_worker 单镜像源那一轮:成功 Tagged、arch 不匹配 ArchMismatch、真失败 Err。
-pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, host_arch: &str) -> Result<PullOutcome> {
+/// 从 mirror 拉取 repo:tag(指定 platform)→ 校验 arch → retag 回原名 → 删 mirror 标,并上报 layer 进度。
+pub async fn pull_retag_with_progress<F>(
+    docker: &Docker,
+    mirror: &str,
+    repo: &str,
+    tag: &str,
+    host_arch: &str,
+    mut on_progress: F,
+) -> Result<PullOutcome>
+where
+    F: FnMut(ImagePullProgress) + Send,
+{
     let src = format!("{mirror}/{repo}");
     let platform = format!("linux/{host_arch}");
     let opts = CreateImageOptions { from_image: src.clone(), tag: tag.to_string(), platform, ..Default::default() };
     let mut stream = docker.create_image(Some(opts), None, None);
+    let mut progress = PullProgress::default();
     while let Some(item) = stream.next().await {
-        item.map_err(|e| anyhow!("pull {src}:{tag}: {e}"))?;
+        let info = item.map_err(|e| anyhow!("pull {src}:{tag}: {e}"))?;
+        if let Some(error) = image_stream_error(&info) {
+            return Err(anyhow!("pull {src}:{tag}: {error}"));
+        }
+        on_progress(progress.observe(&info));
     }
     let full_src = format!("{src}:{tag}");
-    let arch = image_arch(docker, &full_src).await.unwrap_or_default();
-    if !arch.is_empty() && arch != host_arch {
-        let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+    let arch = match docker.inspect_image(&full_src).await {
+        Ok(info) => match info.architecture.filter(|arch| !arch.is_empty()) {
+            Some(arch) => arch,
+            None => {
+                let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+                return Err(anyhow!("inspect {full_src}: architecture 缺失"));
+            }
+        },
+        Err(e) => {
+            let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+            return Err(anyhow!("inspect {full_src}: {e}"));
+        }
+    };
+    if arch != host_arch {
+        docker
+            .remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None)
+            .await
+            .map_err(|e| anyhow!("{full_src} 架构为 {arch}(非 {host_arch}),且清理临时 tag 失败: {e}"))?;
         return Ok(PullOutcome::ArchMismatch(arch));
     }
     docker
         .tag_image(&full_src, Some(TagImageOptions { repo: repo.to_string(), tag: tag.to_string() }))
         .await
         .map_err(|e| anyhow!("tag {repo}:{tag}: {e}"))?;
-    let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
-    Ok(PullOutcome::Tagged(if arch.is_empty() { host_arch.to_string() } else { arch }))
+    if let Err(e) = docker
+        .remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None)
+        .await
+    {
+        on_progress(ImagePullProgress {
+            detail: format!("镜像已就绪，但清理临时 tag {full_src} 失败: {e}"),
+            percent: Some(100),
+        });
+    }
+    Ok(PullOutcome::Tagged(arch))
+}
+
+/// 无回调兼容入口。
+pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, host_arch: &str) -> Result<PullOutcome> {
+    pull_retag_with_progress(docker, mirror, repo, tag, host_arch, |_| {}).await
 }
 
 /// 在指定网络上跑一次性容器并捕获 stdout(host-VM probe 用:宿主够不着 VM 内网 172.x,
@@ -452,6 +565,38 @@ mod tests {
         assert_eq!(fmt_uptime(90), "1分钟");
         assert_eq!(fmt_uptime(3661), "1小时1分");
         assert_eq!(fmt_uptime(90061), "1天1小时");
+    }
+
+    #[test]
+    fn pull_progress_aggregates_layer_bytes() {
+        let mut progress = PullProgress::default();
+        let first = progress.observe(&CreateImageInfo {
+            id: Some("layer-a".into()),
+            status: Some("Downloading".into()),
+            progress_detail: Some(bollard::models::ProgressDetail { current: Some(50), total: Some(100) }),
+            ..Default::default()
+        });
+        assert_eq!(first.percent, Some(50));
+        let second = progress.observe(&CreateImageInfo {
+            id: Some("layer-b".into()),
+            status: Some("Downloading".into()),
+            progress_detail: Some(bollard::models::ProgressDetail { current: Some(25), total: Some(100) }),
+            ..Default::default()
+        });
+        assert_eq!(second.percent, Some(37));
+        assert!(second.detail.contains("37%"));
+    }
+
+    #[test]
+    fn daemon_error_in_successful_stream_item_is_not_ignored() {
+        let info = CreateImageInfo {
+            error_detail: Some(bollard::models::ErrorDetail {
+                code: Some(500),
+                message: Some("registry unavailable".into()),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(image_stream_error(&info).as_deref(), Some("registry unavailable"));
     }
 
     #[tokio::test]

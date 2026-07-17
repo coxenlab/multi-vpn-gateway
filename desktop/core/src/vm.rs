@@ -6,10 +6,13 @@
 //! 命门隔离:`--activate=false` 不改用户 active docker context;专属 profile 与 `default` 互不干扰。
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 /// app 专属 profile 名(独立 VM,与用户 `default` 隔离)。
 pub const PROFILE: &str = "vpnmgr";
@@ -209,39 +212,187 @@ pub async fn status(profile: &str) -> VmStatus {
     }
 }
 
-/// 起专属 VM:vz + rosetta(EC amd64 经 Rosetta;aTrust 容器仍须原生 arm64 镜像)。
-/// `--activate=false`:不改用户 active docker context(不干扰其 `default`/`docker` CLI)。
-/// 阻塞至 VM + dockerd 就绪(colima start 自身等 dockerd);**首次**会下载 guest 镜像(分钟级)。幂等。
-pub async fn start(profile: &str) -> Result<()> {
+fn start_args(profile: &str, enable_rosetta: bool) -> Vec<String> {
+    let mut args = vec!["start".to_string(), profile.to_string(), "--vm-type".to_string(), "vz".to_string()];
+    if enable_rosetta {
+        args.push("--vz-rosetta".to_string());
+    }
+    args.extend([
+        // gRPC 转发器(vz vsock 通道),ssh 退出数据面:载重 ssh 转发每隔几分钟必死,
+        // 且 ssh -L 只转 TCP(vpn-router 的 udp:true 靠它才真生效)。
+        "--port-forwarder", "grpc", "--activate=false", "--cpu", "4", "--memory", "6", "--disk", "60",
+    ].into_iter().map(String::from));
+    args
+}
+
+/// 把 colima/lima 用 `\r` 刷新的进度和普通 `\n` 日志统一切成非空行。
+fn split_progress_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for &byte in chunk {
+        if byte == b'\r' || byte == b'\n' {
+            if !pending.is_empty() {
+                let line = String::from_utf8_lossy(pending).trim().to_string();
+                pending.clear();
+                if !line.is_empty() {
+                    lines.push(line);
+                }
+            }
+        } else {
+            pending.push(byte);
+        }
+    }
+    lines
+}
+
+async fn read_progress<R>(mut reader: R, tx: mpsc::UnboundedSender<String>)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut chunk = [0_u8; 4096];
+    let mut pending = Vec::new();
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => {
+                for line in split_progress_chunk(&mut pending, &chunk[..n]) {
+                    let _ = tx.send(line);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if !pending.is_empty() {
+        let line = String::from_utf8_lossy(&pending).trim().to_string();
+        if !line.is_empty() {
+            let _ = tx.send(line);
+        }
+    }
+}
+
+/// 起专属 VM 并逐行上报 stdout/stderr。非 TTY 下 colima 的输出格式不稳定,故保留原文。
+/// `enable_rosetta=false` 用于 Apple Silicon 用户明确跳过 Rosetta 时,避免 `--vz-rosetta` 硬失败。
+pub async fn start_with_progress<F>(profile: &str, enable_rosetta: bool, mut on_progress: F) -> Result<()>
+where
+    F: FnMut(String) + Send,
+{
     if !colima_present().await {
         return Err(anyhow!("未找到 colima(请先安装;后续版本会随 app 内置打包)"));
     }
-    let st = Command::new("colima")
-        .args([
-            "start",
-            profile,
-            "--vm-type",
-            "vz",
-            "--vz-rosetta",
-            // gRPC 转发器(vz vsock 通道),ssh 退出数据面:载重 ssh 转发每隔几分钟必死,
-            // 且 ssh -L 只转 TCP(vpn-router 的 udp:true 靠它才真生效)。
-            "--port-forwarder",
-            "grpc",
-            "--activate=false",
-            "--cpu",
-            "4",
-            "--memory",
-            "6",
-            "--disk",
-            "60",
-        ])
-        .status()
-        .await
+    let mut child = Command::new("colima")
+        .args(start_args(profile, enable_rosetta))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|e| anyhow!("colima start {profile}: {e}"))?;
+    let stdout = child.stdout.take().ok_or_else(|| anyhow!("无法捕获 colima stdout"))?;
+    let stderr = child.stderr.take().ok_or_else(|| anyhow!("无法捕获 colima stderr"))?;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let stdout_task = tokio::spawn(read_progress(stdout, tx.clone()));
+    let stderr_task = tokio::spawn(read_progress(stderr, tx.clone()));
+    drop(tx);
+
+    let mut wait = Box::pin(child.wait());
+    let mut streams_open = true;
+    let st = loop {
+        tokio::select! {
+            result = &mut wait => {
+                break result.map_err(|e| anyhow!("colima start {profile}: {e}"))?;
+            }
+            line = rx.recv(), if streams_open => {
+                match line {
+                    Some(line) => on_progress(line),
+                    None => streams_open = false,
+                }
+            }
+        }
+    };
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    while let Ok(line) = rx.try_recv() {
+        on_progress(line);
+    }
     if !st.success() {
         return Err(anyhow!("colima start {profile} 失败(exit {:?})", st.code()));
     }
     Ok(())
+}
+
+/// 保留原调用语义:默认启用 Rosetta。
+pub async fn start(profile: &str) -> Result<()> {
+    start_with_progress(profile, true, |_| {}).await
+}
+
+/// 当前构建是否运行在需要 Rosetta 的 Apple Silicon 架构上。
+pub fn host_needs_rosetta() -> bool {
+    cfg!(target_os = "macos") && matches!(std::env::consts::ARCH, "aarch64" | "arm64")
+}
+
+/// 运行 x86_64 真进程探测 Rosetta,不依赖易变的文件路径。
+pub async fn rosetta_available() -> bool {
+    if !host_needs_rosetta() {
+        return true;
+    }
+    Command::new("/usr/bin/arch")
+        .args(["-x86_64", "/usr/bin/true"])
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 原生确认框:解释用途后由用户选择安装或跳过。点「跳过」会以 AppleScript -128 返回。
+pub async fn prompt_rosetta_install() -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"display dialog "运行 x86 版 VPN 客户端需要 Rosetta 2。现在安装会由 macOS 请求管理员授权。" with title "需要 Rosetta 2" buttons {"跳过", "安装"} default button "安装" cancel button "跳过" with icon note"#;
+        let out = Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .await
+            .map_err(|e| anyhow!("启动 Rosetta 确认框失败: {e}"))?;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).contains("安装"));
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if stderr.contains("-128") || stderr.contains("User canceled") {
+            return Ok(false);
+        }
+        Err(anyhow!("Rosetta 确认框失败: {}", stderr.trim()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(false)
+    }
+}
+
+/// 用与 TUN helper 相同的 osascript 管理员授权模式安装 Rosetta。
+/// 返回 false 表示用户在系统授权框取消。
+pub async fn install_rosetta() -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"do shell script "/usr/sbin/softwareupdate --install-rosetta --agree-to-license" with administrator privileges"#;
+        let out = Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .await
+            .map_err(|e| anyhow!("启动 Rosetta 安装失败: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("-128") || stderr.contains("User canceled") {
+                return Ok(false);
+            }
+            return Err(anyhow!("Rosetta 安装失败: {}", stderr.trim()));
+        }
+        if !rosetta_available().await {
+            return Err(anyhow!("Rosetta 安装命令已结束,但 x86_64 运行探测仍失败"));
+        }
+        Ok(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(true)
+    }
 }
 
 /// 确保 VM 在跑(已 Running 则跳过 start)。
@@ -351,6 +502,26 @@ mod tests {
         let h = docker_host("vpnmgr");
         assert!(h.starts_with("unix://"));
         assert!(h.ends_with("/.colima/vpnmgr/docker.sock"));
+    }
+
+    #[test]
+    fn progress_chunks_split_cr_lf_and_preserve_partial_utf8() {
+        let mut pending = Vec::new();
+        let first = split_progress_chunk(&mut pending, "下载镜".as_bytes());
+        assert!(first.is_empty());
+        let second = split_progress_chunk(&mut pending, "像 43%\rprovision\n\rready".as_bytes());
+        assert_eq!(second, vec!["下载镜像 43%", "provision"]);
+        assert_eq!(String::from_utf8(pending).unwrap(), "ready");
+    }
+
+    #[test]
+    fn start_args_omit_rosetta_after_user_skips() {
+        let with = start_args("vpnmgr", true);
+        let without = start_args("vpnmgr", false);
+        assert!(with.contains(&"--vz-rosetta".to_string()));
+        assert!(!without.contains(&"--vz-rosetta".to_string()));
+        assert!(without.windows(2).any(|w| w == ["--vm-type", "vz"]));
+        assert!(without.contains(&"--activate=false".to_string()));
     }
 
     #[tokio::test]

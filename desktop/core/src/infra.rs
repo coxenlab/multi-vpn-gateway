@@ -205,7 +205,7 @@ fn mihomo_container_config(cfg: &Config, host_port: &str, ctrl_port: &str) -> Co
 /// 启动后由调用方紧随 `manager::rebuild` 把 DB 里的通道/规则并入(命门 #2/#3)。
 /// 首启把打包内置的镜像 tarball docker-load 进 VM。当前只 `vpnmgr/oss-vpn`(自建、registry 拉不到,
 /// 只能 load;byo-desktop 1.15GB 暂不内置 → 用户首次用 byo 时再按需取)。`images_dir` = 打包后的
-/// `Contents/Resources/images`;幂等(镜像已在则跳过)。best-effort,缺文件/dev 未打包则静默跳过。
+/// `Contents/Resources/images`;幂等(镜像已在则跳过)。缺文件/dev 未打包时静默跳过,载入错误交调用方处理。
 pub async fn ensure_bundled_images(docker: &Docker, images_dir: &Path) -> Result<()> {
     let oss = images_dir.join("oss-vpn.tar.gz");
     if oss.exists() && docker::load_image_if_absent(docker, "vpnmgr/oss-vpn:latest", &oss).await? {
@@ -214,12 +214,72 @@ pub async fn ensure_bundled_images(docker: &Docker, images_dir: &Path) -> Result
     Ok(())
 }
 
+/// 确保 mihomo 镜像存在:先直连,失败后按数据库 priority 遍历国内镜像源并 retag 回原名。
+pub async fn ensure_mihomo_image_with_progress<F>(docker: &Docker, cfg: &Config, mut on_progress: F) -> Result<()>
+where
+    F: FnMut(String) + Send,
+{
+    if docker::image_present(docker, MIHOMO_IMAGE).await == Some(true) {
+        on_progress("mihomo 镜像已存在".to_string());
+        return Ok(());
+    }
+
+    on_progress(format!("从 Docker Hub 拉取 {MIHOMO_IMAGE}…"));
+    let mut errors = Vec::new();
+    match docker::ensure_image_with_progress(docker, MIHOMO_IMAGE, |p| {
+        on_progress(format!("Docker Hub · {}", p.detail));
+    }).await {
+        Ok(()) => return Ok(()),
+        Err(e) => {
+            let message = format!("Docker Hub 失败: {e}");
+            on_progress(message.clone());
+            errors.push(message);
+        }
+    }
+
+    let (repo, tag) = MIHOMO_IMAGE.split_once(':').unwrap_or((MIHOMO_IMAGE, "latest"));
+    let host_arch = crate::registry::host_arch();
+    let mut mirrors: Vec<String> = crate::store::list_mirrors(&cfg.db_path())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.enabled != 0)
+        .map(|m| m.host)
+        .collect();
+    if mirrors.is_empty() {
+        mirrors = crate::preflight::DEFAULT_MIRRORS.iter().map(|s| s.to_string()).collect();
+    }
+
+    for mirror in mirrors {
+        on_progress(format!("探测镜像源 {mirror}…"));
+        if !crate::preflight::mirror_reachable(&mirror).await {
+            let message = format!("{mirror} 不可达,跳过");
+            on_progress(message.clone());
+            errors.push(message);
+            continue;
+        }
+        on_progress(format!("从 {mirror} 拉取 {MIHOMO_IMAGE}(linux/{host_arch})…"));
+        match docker::pull_retag_with_progress(docker, &mirror, repo, tag, &host_arch, |p| {
+            on_progress(format!("{mirror} · {}", p.detail));
+        }).await {
+            Ok(docker::PullOutcome::Tagged(_)) => return Ok(()),
+            Ok(docker::PullOutcome::ArchMismatch(arch)) => {
+                let message = format!("{mirror} 拉到 {arch}(非 {host_arch}),弃用");
+                on_progress(message.clone());
+                errors.push(message);
+            }
+            Err(e) => {
+                let message = format!("{mirror} 失败: {e}");
+                on_progress(message.clone());
+                errors.push(message);
+            }
+        }
+    }
+    Err(anyhow!("拉取 {MIHOMO_IMAGE} 失败:{}", errors.join("; ")))
+}
+
 pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
     docker::create_bridge_network(docker, &cfg.vpn_net).await?;
-
-    if docker::image_present(docker, MIHOMO_IMAGE).await != Some(true) {
-        docker::ensure_image(docker, MIHOMO_IMAGE).await?;
-    }
+    ensure_mihomo_image_with_progress(docker, cfg, |_| {}).await?;
 
     if container_running(docker, MIHOMO_CONTAINER).await {
         return Ok(()); // 已在跑,别打扰(保活既有连接;rebuild 仍会刷新规则)

@@ -1,0 +1,6 @@
+{
+  "identifier": "main-capability",
+  "description": "Allow the local loading page to use the standard Tauri IPC bridge.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -5,6 +5,11 @@
 //! `default`)→ 连 VM 内 Docker、进程内起 axum → 把主窗导航到 `http://127.0.0.1:UI/` 的真实 6 屏 UI。
 //! 命门 #4:axum 与 webview 全程只碰 127.0.0.1。关窗 = 隐藏到托盘(后台 core/VM 续跑),退出走托盘菜单。
 
+use std::collections::VecDeque;
+use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -12,112 +17,482 @@ use tauri::{
 };
 use vpnmgr_core::{app, config::Config, infra, manager, vm};
 
-/// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 把主窗从 loading 页导航到真 UI。
-async fn boot(handle: &tauri::AppHandle) -> anyhow::Result<()> {
-    // PATH 接管:让 vm.rs 的 Command::new("colima") 在任何启动场景都找得到二进制。
-    // ① 自带 sidecar(真零安装):打包后 colima/limactl/lima + share 落在 Contents/Resources/runtime,
-    //    前置 runtime/bin 进 PATH 最高优先 → colima 据此找自带 limactl、limactl 经 ../share/lima 找 guestagent。
-    // ② 回落 Homebrew:dev(无 bundle)或用户自有 colima;Finder 双击的 minimal PATH(launchd 仅 4 目录、
-    //    不含 /opt/homebrew/bin)也靠这层兜住。
-    {
-        let mut prefix = String::new();
-        if let Ok(res) = handle.path().resource_dir() {
-            let rt_bin = res.join("runtime").join("bin");
-            if rt_bin.join("colima").exists() {
-                prefix.push_str(&format!("{}:", rt_bin.display()));
+#[derive(Clone, Copy)]
+enum BootStep {
+    Runtime,
+    Vm,
+    Docker,
+    Bundled,
+    Mihomo,
+    Service,
+}
+
+impl BootStep {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Runtime => "runtime",
+            Self::Vm => "vm",
+            Self::Docker => "docker",
+            Self::Bundled => "bundled",
+            Self::Mihomo => "mihomo",
+            Self::Service => "service",
+        }
+    }
+
+    fn has_settings_help(self) -> bool {
+        matches!(self, Self::Vm | Self::Docker | Self::Mihomo | Self::Service)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BootStatus {
+    Active,
+    Done,
+    Warning,
+}
+
+impl BootStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Done => "done",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+fn js_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000c}' => out.push_str("\\f"),
+            c if c <= '\u{001f}' || matches!(c, '\u{2028}' | '\u{2029}') => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
             }
+            c => out.push(c),
         }
-        prefix.push_str("/opt/homebrew/bin:/usr/local/bin");
-        let path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{prefix}:{path}"));
+    }
+    out.push('"');
+    out
+}
+
+fn js_array(values: &[String]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|v| js_quote(v))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+#[derive(Clone)]
+struct BootReporter {
+    handle: tauri::AppHandle,
+}
+
+impl BootReporter {
+    fn new(handle: &tauri::AppHandle) -> Self {
+        Self {
+            handle: handle.clone(),
+        }
     }
 
-    vm::ensure_running(vm::PROFILE).await?;
-    // 设 DOCKER_HOST 指向专属 profile。VM 报 Running 但 docker.sock 死 = 传输层坏死
-    // (睡醒/重启后 hostagent 转发不复活;实测 2026-07-02:枯等只会超时死屏,auto-memory
-    // `watchdog-transport-dead-misdiagnosed-vmdown`)→ 自动走已验证的干净恢复:停 VM → 冷起。
-    if let Err(e) = vm::wait_docker_ready(vm::PROFILE, 40).await {
-        eprintln!("dockerd 未就绪({e}),疑似传输层坏死,自动重启 VM 恢复…");
-        if let Some(w) = handle.get_webview_window("main") {
-            let _ = w.eval(
-                "var p=document.querySelector('.hint');\
-                 if(p)p.textContent='底座异常,正在自动修复(重启 VM,约 1 分钟)…';",
+    fn eval(&self, js: &str) {
+        if let Some(window) = self.handle.get_webview_window("main") {
+            // setup 后 webview 可能早于页面脚本完成加载；短暂排队可避免毫秒级失败信息被静默丢掉。
+            let guarded = format!(
+                "(()=>{{let n=0;const apply=()=>{{if(window.boot){{{js}}}else if(n++<100){{setTimeout(apply,50);}}}};apply();}})();"
             );
+            let _ = window.eval(&guarded);
         }
-        vm::stop(vm::PROFILE).await?;
-        vm::ensure_running(vm::PROFILE).await?;
-        vm::wait_docker_ready(vm::PROFILE, 180).await?;
     }
 
-    // 打包后:静态 6 屏 UI 随 bundle 落在 .app 的 Contents/Resources/static;经 env 指过去
-    // (须在 Config::load 之前,Config 读 STATIC_DIR)。开发态(cargo run)该路径不存在 → 不设,
-    // Config 回落编译期 baked 的 ../../app/static,dev/bundle 同一份代码两态自洽。
-    if let Ok(res) = handle.path().resource_dir() {
-        let static_dir = res.join("static");
+    fn reset(&self) {
+        self.eval("window.boot&&window.boot.reset();");
+    }
+
+    fn update(&self, step: BootStep, status: BootStatus, detail: &str) {
+        self.eval(&format!(
+            "window.boot&&window.boot.update({},{},{});",
+            js_quote(step.id()),
+            js_quote(status.as_str()),
+            js_quote(detail),
+        ));
+    }
+
+    fn fail(&self, failure: &BootFailure) {
+        let actions = if failure.step.has_settings_help() {
+            vec!["settings".to_string()]
+        } else {
+            Vec::new()
+        };
+        self.eval(&format!(
+            "window.boot&&window.boot.fail({},{},{},{});",
+            js_quote(failure.step.id()),
+            js_quote(&failure.message),
+            js_array(&failure.log_tail),
+            js_array(&actions),
+        ));
+    }
+}
+
+#[derive(Default)]
+struct StepLog {
+    lines: VecDeque<String>,
+}
+
+impl StepLog {
+    fn push(&mut self, line: impl Into<String>) {
+        let line = line.into();
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        if self.lines.len() == 200 {
+            self.lines.pop_front();
+        }
+        self.lines.push_back(line.to_string());
+    }
+
+    fn tail(&self) -> Vec<String> {
+        self.lines.iter().cloned().collect()
+    }
+}
+
+struct BootFailure {
+    step: BootStep,
+    message: String,
+    log_tail: Vec<String>,
+}
+
+impl BootFailure {
+    fn new(step: BootStep, error: impl std::fmt::Display, log: &StepLog) -> Self {
+        Self {
+            step,
+            message: error.to_string(),
+            log_tail: log.tail(),
+        }
+    }
+}
+
+fn forward_progress(
+    reporter: &BootReporter,
+    step: BootStep,
+    log: &mut StepLog,
+    last_ui: &mut Option<Instant>,
+    detail: String,
+) {
+    log.push(detail.clone());
+    if last_ui
+        .map(|last| last.elapsed() >= Duration::from_millis(500))
+        .unwrap_or(true)
+    {
+        reporter.update(step, BootStatus::Active, &detail);
+        *last_ui = Some(Instant::now());
+    }
+}
+
+fn prepare_runtime(handle: &tauri::AppHandle) -> anyhow::Result<()> {
+    let mut prefixes = Vec::new();
+    if let Ok(resources) = handle.path().resource_dir() {
+        let runtime_bin = resources.join("runtime").join("bin");
+        if runtime_bin.join("colima").exists() {
+            prefixes.push(runtime_bin.to_string_lossy().to_string());
+        }
+    }
+    prefixes.extend([
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ]);
+    let current = std::env::var("PATH").unwrap_or_default();
+    for part in current.split(':').filter(|part| !part.is_empty()) {
+        if !prefixes.iter().any(|prefix| prefix == part) {
+            prefixes.push(part.to_string());
+        }
+    }
+    std::env::set_var("PATH", prefixes.join(":"));
+
+    if let Ok(resources) = handle.path().resource_dir() {
+        let static_dir = resources.join("static");
         if static_dir.join("index.html").exists() {
             std::env::set_var("STATIC_DIR", &static_dir);
         }
-    }
-
-    // 层3 TUN 入口:helper + mihomo#2 二进制随 bundle 落 Contents/Resources/runtime/helper,
-    // 经 env 指给 core(entry.rs 安装脚本取源)。dev 无 bundle → 不设,可手动 export HELPER_RES_DIR。
-    if let Ok(res) = handle.path().resource_dir() {
-        let helper_dir = res.join("runtime").join("helper");
+        let helper_dir = resources.join("runtime").join("helper");
         if helper_dir.join("vpnmgr-helper").exists() {
             std::env::set_var("HELPER_RES_DIR", &helper_dir);
         }
     }
 
-    // mihomo#1 端口/密钥首启生成并持久化,经 env 注入 Config(对照 gen_env.py;须在 Config::load 之前)。
-    let data_dir = Config::load().data_dir; // data_dir 不依赖 MIHOMO_* env
-    let _ = infra::ensure_params(&data_dir);
+    let data_dir = Config::load().data_dir;
+    infra::ensure_params(&data_dir)?;
+    Ok(())
+}
 
-    let cfg = Config::load(); // DOCKER_HOST + MIHOMO_* 已就位 → bootstrap 连专属 VM
-    let (listener, state) = app::bootstrap(cfg).await?;
+/// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 导航真 UI。
+async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
+    let reporter = BootReporter::new(handle);
 
-    // 建 vpnmgr_vpnnet bridge + 起 mihomo#1 分流路由(设计 §5 改造C),再并入 DB 里的通道/规则。
-    // best-effort:mihomo 起不来不挡管理 UI(env-check/preflight 会如实报状态)。
-    if let Some(d) = state.docker().as_ref() {
-        // 首启把打包内置的 oss-vpn 镜像 docker-load 进 VM(打包后在 Contents/Resources/images;
-        // dev 无该目录则跳过)。best-effort:载入失败不挡 UI。
-        if let Ok(res) = handle.path().resource_dir() {
-            let imgs = res.join("images");
-            if imgs.exists() {
-                if let Err(e) = infra::ensure_bundled_images(d, &imgs).await {
-                    eprintln!("内置镜像载入失败: {e}");
-                }
-            }
-        }
-        if let Err(e) = infra::ensure_mihomo(d, &state.cfg).await {
-            eprintln!("mihomo#1 未就绪: {e}");
+    let mut runtime_log = StepLog::default();
+    reporter.update(
+        BootStep::Runtime,
+        BootStatus::Active,
+        "检查随应用提供的运行组件…",
+    );
+    prepare_runtime(handle).map_err(|e| BootFailure::new(BootStep::Runtime, e, &runtime_log))?;
+    runtime_log.push("运行组件与基础参数已就绪");
+    reporter.update(BootStep::Runtime, BootStatus::Done, "运行组件已就绪");
+
+    let mut vm_log = StepLog::default();
+    reporter.update(BootStep::Vm, BootStatus::Active, "检查虚拟机状态…");
+    let mut rosetta_enabled = vm::rosetta_available().await;
+    let mut rosetta_skipped = false;
+    if vm::host_needs_rosetta() && !rosetta_enabled {
+        reporter.update(
+            BootStep::Vm,
+            BootStatus::Active,
+            "缺少 Rosetta 2，等待你的选择…",
+        );
+        let accepted = vm::prompt_rosetta_install()
+            .await
+            .map_err(|e| BootFailure::new(BootStep::Vm, e, &vm_log))?;
+        if accepted {
+            reporter.update(
+                BootStep::Vm,
+                BootStatus::Active,
+                "正在安装 Rosetta 2，请在系统窗口中授权…",
+            );
+            rosetta_enabled = vm::install_rosetta()
+                .await
+                .map_err(|e| BootFailure::new(BootStep::Vm, e, &vm_log))?;
+            rosetta_skipped = !rosetta_enabled;
         } else {
-            let _ = manager::rebuild(&state.cfg, Some(d), &state.cfg.db_path()).await;
+            rosetta_skipped = true;
+        }
+        if rosetta_skipped {
+            vm_log.push("用户已跳过 Rosetta 2；启动 VM 时不传 --vz-rosetta");
         }
     }
 
-    let port = listener.local_addr()?.port();
+    if vm::status(vm::PROFILE).await == vm::VmStatus::Running {
+        vm_log.push("虚拟机已在运行");
+    } else {
+        reporter.update(
+            BootStep::Vm,
+            BootStatus::Active,
+            "首次初始化会下载 Linux 虚拟机镜像…",
+        );
+        let mut last_ui = None;
+        vm::start_with_progress(vm::PROFILE, rosetta_enabled, |detail| {
+            forward_progress(&reporter, BootStep::Vm, &mut vm_log, &mut last_ui, detail);
+        })
+        .await
+        .map_err(|e| BootFailure::new(BootStep::Vm, e, &vm_log))?;
+    }
+    if rosetta_skipped {
+        reporter.update(
+            BootStep::Vm,
+            BootStatus::Warning,
+            "虚拟机已就绪；已跳过 Rosetta 2，x86 镜像暂不可用",
+        );
+    } else {
+        reporter.update(BootStep::Vm, BootStatus::Done, "虚拟机已就绪");
+    }
+
+    let mut docker_log = StepLog::default();
+    reporter.update(BootStep::Docker, BootStatus::Active, "等待容器引擎响应…");
+    if let Err(first_error) = vm::wait_docker_ready(vm::PROFILE, 40).await {
+        docker_log.push(format!("首次等待失败: {first_error}"));
+        reporter.update(
+            BootStep::Docker,
+            BootStatus::Active,
+            "底座连接异常，正在自动重启虚拟机修复…",
+        );
+        vm::stop(vm::PROFILE)
+            .await
+            .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
+        let mut last_ui = None;
+        vm::start_with_progress(vm::PROFILE, rosetta_enabled, |detail| {
+            forward_progress(
+                &reporter,
+                BootStep::Docker,
+                &mut docker_log,
+                &mut last_ui,
+                detail,
+            );
+        })
+        .await
+        .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
+        vm::wait_docker_ready(vm::PROFILE, 180)
+            .await
+            .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
+    }
+
+    let cfg = Config::load();
+    let (listener, state) = app::bootstrap(cfg)
+        .await
+        .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
+    let docker = state
+        .docker()
+        .ok_or_else(|| BootFailure::new(BootStep::Docker, "容器引擎连接未建立", &docker_log))?;
+    reporter.update(BootStep::Docker, BootStatus::Done, "容器引擎已就绪");
+
+    let mut bundled_log = StepLog::default();
+    reporter.update(BootStep::Bundled, BootStatus::Active, "检查内置 VPN 镜像…");
+    // 坏 tarball 重试修不好,标黄放行:oss 镜像只在建 oss 通道/探活时才用得上,
+    // 缺了可去 Docker 诊断屏拉取/构建,不能把管理 UI 挡在 loading 页外。
+    let mut bundled_warning = None;
+    if let Ok(resources) = handle.path().resource_dir() {
+        let images = resources.join("images");
+        if images.exists() {
+            bundled_log.push(format!("载入目录 {}", images.display()));
+            if let Err(e) = infra::ensure_bundled_images(&docker, &images).await {
+                bundled_log.push(format!("载入失败: {e}"));
+                bundled_warning = Some(format!("内置镜像载入失败,可稍后在 Docker 诊断屏拉取: {e}"));
+            }
+        } else {
+            bundled_log.push("开发模式未提供 bundled images，跳过");
+        }
+    }
+    match &bundled_warning {
+        Some(msg) => reporter.update(BootStep::Bundled, BootStatus::Warning, msg),
+        None => reporter.update(BootStep::Bundled, BootStatus::Done, "内置 VPN 镜像已就绪"),
+    }
+
+    let mut image_log = StepLog::default();
+    let mut image_last_ui = None;
+    reporter.update(BootStep::Mihomo, BootStatus::Active, "检查分流内核镜像…");
+    infra::ensure_mihomo_image_with_progress(&docker, &state.cfg, |detail| {
+        forward_progress(
+            &reporter,
+            BootStep::Mihomo,
+            &mut image_log,
+            &mut image_last_ui,
+            detail,
+        );
+    })
+    .await
+    .map_err(|e| BootFailure::new(BootStep::Mihomo, e, &image_log))?;
+    reporter.update(BootStep::Mihomo, BootStatus::Done, "分流内核已就绪");
+
+    let mut service_log = StepLog::default();
+    reporter.update(
+        BootStep::Service,
+        BootStatus::Active,
+        "启动分流服务并载入规则…",
+    );
+    infra::ensure_mihomo(&docker, &state.cfg)
+        .await
+        .map_err(|e| BootFailure::new(BootStep::Service, e, &service_log))?;
+    let rebuild_status = manager::rebuild(&state.cfg, Some(&docker), &state.cfg.db_path()).await;
+    service_log.push(format!("规则载入结果: {rebuild_status}"));
+    // rebuild 失败多为配置/数据问题(如 config parse error),重试修不好;删坏通道、
+    // 看门狗横幅修复都在 UI 里,标黄放行而非把用户锁在 loading 页(原 best-effort 语义)。
+    let rules_ok = rebuild_status
+        .parse::<u16>()
+        .ok()
+        .is_some_and(|status| (200..300).contains(&status));
+
+    let port = listener
+        .local_addr()
+        .map_err(|e| BootFailure::new(BootStep::Service, e, &service_log))?
+        .port();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = app::serve(listener, state).await {
             eprintln!("axum serve exited: {e}");
         }
     });
-    let url: tauri::Url = format!("http://127.0.0.1:{port}/").parse()?;
-    if let Some(win) = handle.get_webview_window("main") {
-        win.navigate(url)?; // 同窗:loading 页 → 真 UI(命门 #4:127.0.0.1)
+    if rules_ok {
+        reporter.update(
+            BootStep::Service,
+            BootStatus::Done,
+            "服务已启动，正在打开管理界面…",
+        );
+    } else {
+        reporter.update(
+            BootStep::Service,
+            BootStatus::Warning,
+            &format!("服务已启动,但规则载入未完成({rebuild_status}),可在管理界面修复"),
+        );
+    }
+    let url: tauri::Url = format!("http://127.0.0.1:{port}/")
+        .parse()
+        .map_err(|e| BootFailure::new(BootStep::Service, e, &service_log))?;
+    if let Some(window) = handle.get_webview_window("main") {
+        window
+            .navigate(url)
+            .map_err(|e| BootFailure::new(BootStep::Service, e, &service_log))?;
     }
     Ok(())
 }
 
+#[derive(Clone, Default)]
+struct BootState {
+    running: Arc<Mutex<bool>>,
+}
+
+fn start_boot(handle: tauri::AppHandle, running: Arc<Mutex<bool>>) -> Result<(), String> {
+    {
+        let mut guard = running.lock().map_err(|_| "启动状态锁已损坏".to_string())?;
+        if *guard {
+            return Err("启动流程正在运行".to_string());
+        }
+        *guard = true;
+    }
+
+    let reporter = BootReporter::new(&handle);
+    reporter.reset();
+    tauri::async_runtime::spawn(async move {
+        if let Err(failure) = boot(&handle).await {
+            eprintln!("启动失败: {}", failure.message);
+            BootReporter::new(&handle).fail(&failure);
+        }
+        if let Ok(mut guard) = running.lock() {
+            *guard = false;
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn boot_retry(app: tauri::AppHandle, state: tauri::State<'_, BootState>) -> Result<(), String> {
+    start_boot(app, state.running.clone())
+}
+
+#[tauri::command]
+fn boot_open_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.settings.PrivacySecurity")
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("打开系统设置失败: {e}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("此操作仅适用于 macOS".to_string())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
+        .manage(BootState::default())
+        .invoke_handler(tauri::generate_handler![boot_retry, boot_open_settings])
         .setup(|app| {
-            // 1) 先建主窗,加载内置 loading 页(立即可见,不被 VM 冷启动阻塞)。
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("VPN 管理网关")
                 .inner_size(1240.0, 820.0)
                 .build()?;
 
-            // 2) 系统托盘:显示窗口 / 退出。
             let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -127,9 +502,9 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
                     }
                     "quit" => app.exit(0),
@@ -137,26 +512,12 @@ fn main() {
                 })
                 .build(app)?;
 
-            // 3) 后台起自带 VM + axum,就绪后导航主窗到真 UI;失败则在 loading 页显错。
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = boot(&handle).await {
-                    eprintln!("启动失败: {e}");
-                    if let Some(w) = handle.get_webview_window("main") {
-                        let msg = format!("启动失败:{e}");
-                        let js = format!(
-                            "var h=document.querySelector('h1');if(h)h.textContent='启动未完成';\
-                             var s=document.querySelector('.spinner');if(s)s.style.display='none';\
-                             var p=document.querySelector('.hint');if(p){{p.style.color='#dc2626';p.textContent={msg:?};}}"
-                        );
-                        let _ = w.eval(&js);
-                    }
-                }
-            });
-
+            let running = app.state::<BootState>().running.clone();
+            if let Err(e) = start_boot(app.handle().clone(), running) {
+                eprintln!("无法启动引导流程: {e}");
+            }
             Ok(())
         })
-        // 关窗 = 隐藏到托盘,不退进程;退出走托盘菜单「退出」。
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -165,4 +526,30 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn js_quote_escapes_untrusted_progress_text() {
+        assert_eq!(js_quote("a\"\\\n\u{2028}"), "\"a\\\"\\\\\\n\\u2028\"");
+        assert_eq!(
+            js_array(&["一".into(), "b\nc".into()]),
+            "[\"一\",\"b\\nc\"]"
+        );
+    }
+
+    #[test]
+    fn step_log_is_a_200_line_ring() {
+        let mut log = StepLog::default();
+        for i in 0..205 {
+            log.push(format!("line-{i}"));
+        }
+        let tail = log.tail();
+        assert_eq!(tail.len(), 200);
+        assert_eq!(tail.first().map(String::as_str), Some("line-5"));
+        assert_eq!(tail.last().map(String::as_str), Some("line-204"));
+    }
 }

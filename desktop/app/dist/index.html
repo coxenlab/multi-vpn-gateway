@@ -3,49 +3,443 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VPN 管理网关</title>
+    <title>正在启动 · VPN 管理网关</title>
     <style>
       :root {
-        --cobalt: #2f6feb;
-        --ink: #1e293b;
-        --muted: #64748b;
-        --bg: #f8fafc;
-        --line: #e2e8f0;
+        color-scheme: light;
+        --canvas: #f2f5f7;
+        --surface: #ffffff;
+        --ink: #17212b;
+        --muted: #687682;
+        --line: #dce3e8;
+        --accent: #2563d9;
+        --success: #167c57;
+        --warning: #a96708;
+        --danger: #bd3441;
       }
       * { box-sizing: border-box; }
-      html, body { height: 100%; margin: 0; }
+      html, body { min-height: 100%; margin: 0; }
       body {
-        font-family: -apple-system, "Inter", "PingFang SC", sans-serif;
-        background: var(--bg);
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 36px 24px;
+        background:
+          linear-gradient(rgba(23, 33, 43, 0.025) 1px, transparent 1px),
+          var(--canvas);
+        background-size: 100% 32px;
         color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .boot-card {
+        width: min(680px, 100%);
+        overflow: hidden;
+        border: 1px solid #d7dfe5;
+        border-radius: 18px;
+        background: var(--surface);
+        box-shadow: 0 22px 70px rgba(32, 48, 61, 0.11), 0 2px 8px rgba(32, 48, 61, 0.05);
+      }
+      .masthead {
+        display: grid;
+        grid-template-columns: 42px 1fr;
+        gap: 16px;
+        padding: 29px 32px 25px;
+        border-bottom: 1px solid var(--line);
+      }
+      .route-mark {
+        position: relative;
+        width: 42px;
+        height: 42px;
+        border-radius: 12px;
+        background: var(--ink);
+      }
+      .route-mark::before,
+      .route-mark::after {
+        position: absolute;
+        left: 10px;
+        width: 22px;
+        height: 8px;
+        border: 2px solid #fff;
+        border-left: 0;
+        border-bottom: 0;
+        border-radius: 0 8px 0 0;
+        content: "";
+      }
+      .route-mark::before { top: 10px; }
+      .route-mark::after { top: 22px; transform: scaleX(-1); }
+      .eyebrow {
+        margin: 0 0 5px;
+        color: var(--accent);
+        font-family: "SFMono-Regular", Menlo, monospace;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-family: ui-rounded, "SF Pro Rounded", -apple-system, "PingFang SC", sans-serif;
+        font-size: 21px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+      #live-status {
+        min-height: 20px;
+        margin: 7px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .process-head {
         display: flex;
         align-items: center;
-        justify-content: center;
+        justify-content: space-between;
+        padding: 18px 32px 10px;
+        color: var(--muted);
+        font-family: "SFMono-Regular", Menlo, monospace;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
-      .card { text-align: center; max-width: 420px; padding: 0 32px; }
-      .spinner {
-        width: 36px;
-        height: 36px;
-        margin: 0 auto 28px;
-        border: 3px solid var(--line);
-        border-top-color: var(--cobalt);
+      .local-only {
+        color: #798792;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .steps {
+        margin: 0;
+        padding: 2px 32px 15px;
+        list-style: none;
+      }
+      .step {
+        position: relative;
+        display: grid;
+        grid-template-columns: 30px 1fr;
+        gap: 14px;
+        min-height: 62px;
+      }
+      .step:not(:last-child)::after {
+        position: absolute;
+        top: 29px;
+        bottom: -1px;
+        left: 14px;
+        width: 1px;
+        background: var(--line);
+        content: "";
+      }
+      .step[data-status="done"]:not(:last-child)::after { background: rgba(22, 124, 87, 0.38); }
+      .marker {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        border: 1px solid #cbd5dc;
         border-radius: 50%;
-        animation: spin 0.9s linear infinite;
+        background: var(--surface);
+        color: #8a98a4;
+        font-family: "SFMono-Regular", Menlo, monospace;
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .step[data-status="active"] .marker {
+        border-color: rgba(37, 99, 217, 0.25);
+        background: #edf3ff;
+      }
+      .step[data-status="active"] .marker::before {
+        width: 12px;
+        height: 12px;
+        border: 2px solid rgba(37, 99, 217, 0.22);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        content: "";
+      }
+      .step[data-status="done"] .marker {
+        border-color: rgba(22, 124, 87, 0.28);
+        background: #eaf7f1;
+        color: var(--success);
+      }
+      .step[data-status="warning"] .marker {
+        border-color: rgba(169, 103, 8, 0.3);
+        background: #fff7e7;
+        color: var(--warning);
+      }
+      .step[data-status="failed"] .marker {
+        border-color: rgba(189, 52, 65, 0.32);
+        background: #fff0f1;
+        color: var(--danger);
+      }
+      .step-body { min-width: 0; padding: 4px 0 18px; }
+      .step-title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 610;
+        line-height: 1.5;
+      }
+      .step-detail {
+        min-height: 18px;
+        margin: 2px 0 0;
+        overflow: hidden;
+        color: #87939d;
+        font-family: "SFMono-Regular", Menlo, "PingFang SC", monospace;
+        font-size: 10.5px;
+        line-height: 1.65;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .step[data-status="active"] .step-title { color: var(--accent); }
+      .step[data-status="active"] .step-detail { color: #596b7a; }
+      .step[data-status="warning"] .step-title { color: var(--warning); }
+      .step[data-status="failed"] .step-title { color: var(--danger); }
+      .error-panel {
+        margin-top: 12px;
+        padding: 14px;
+        border: 1px solid #f0c6ca;
+        border-radius: 10px;
+        background: #fff7f7;
+      }
+      .error-panel[hidden], .log-wrap[hidden], .action[hidden] { display: none; }
+      .error-title {
+        margin: 0 0 5px;
+        color: var(--danger);
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .error-message {
+        margin: 0;
+        color: #6f3037;
+        font-size: 11.5px;
+        line-height: 1.55;
+        overflow-wrap: anywhere;
+      }
+      .log-wrap { margin-top: 10px; }
+      .log-label {
+        display: block;
+        margin-bottom: 5px;
+        color: #916b70;
+        font-family: "SFMono-Regular", Menlo, monospace;
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .log-tail {
+        max-height: 128px;
+        margin: 0;
+        overflow: auto;
+        padding: 9px 10px;
+        border-radius: 7px;
+        background: #2a2528;
+        color: #eadfe1;
+        font-family: "SFMono-Regular", Menlo, monospace;
+        font-size: 9.5px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      .action {
+        min-height: 32px;
+        padding: 0 13px;
+        border: 1px solid #d6dee4;
+        border-radius: 8px;
+        background: #fff;
+        color: #34434f;
+        font: 600 11px/1 -apple-system, "PingFang SC", sans-serif;
+        cursor: pointer;
+      }
+      .action.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+      .action:hover { filter: brightness(0.97); }
+      .action:focus-visible { outline: 3px solid rgba(37, 99, 217, 0.22); outline-offset: 2px; }
+      .action:disabled { cursor: wait; opacity: 0.55; }
+      .action-message { align-self: center; color: var(--danger); font-size: 10.5px; }
+      .footnote {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 15px 32px 17px;
+        border-top: 1px solid var(--line);
+        color: #7d8a95;
+        font-family: "SFMono-Regular", Menlo, monospace;
+        font-size: 9.5px;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
-      h1 { font-size: 17px; font-weight: 600; margin: 0 0 10px; letter-spacing: 0.2px; }
-      p { font-size: 13px; line-height: 1.6; color: var(--muted); margin: 0; }
-      .hint { margin-top: 18px; font-size: 12px; color: #94a3b8; }
+      @media (max-width: 560px) {
+        body { padding: 0; place-items: stretch; background: var(--surface); }
+        .boot-card { min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; }
+        .masthead, .process-head, .steps, .footnote { padding-left: 22px; padding-right: 22px; }
+        .local-only, .footnote span:last-child { display: none; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .step[data-status="active"] .marker::before { animation-duration: 2.2s; }
+      }
     </style>
   </head>
   <body>
-    <!-- 启动画面:Tauri setup 先加载本页(内置,tauri://localhost);后台起自带 colima VM,
-         VM + 内嵌 axum 就绪后,Rust 侧把主窗导航到 http://127.0.0.1:UI/ 的真实 6 屏 UI。 -->
-    <div class="card">
-      <div class="spinner"></div>
-      <h1>正在启动自带运行时</h1>
-      <p>首次启动需初始化自带的 Linux 虚拟机并准备容器环境,可能需要几分钟,请稍候。</p>
-      <p class="hint">此过程不影响你机器上的其它 Docker / 虚拟机。</p>
-    </div>
+    <main class="boot-card" aria-labelledby="boot-title">
+      <header class="masthead">
+        <div class="route-mark" aria-hidden="true"></div>
+        <div>
+          <p class="eyebrow">Local secure boot</p>
+          <h1 id="boot-title">正在搭建专属运行环境</h1>
+          <p id="live-status" aria-live="polite">检查随应用提供的运行组件…</p>
+        </div>
+      </header>
+
+      <div class="process-head">
+        <span>启动路径 · 6 步</span>
+        <span class="local-only">仅在本机运行</span>
+      </div>
+
+      <ol class="steps">
+        <li class="step" data-step="runtime" data-status="pending">
+          <span class="marker" aria-hidden="true">01</span>
+          <div class="step-body"><p class="step-title">准备运行时</p><p class="step-detail">检查应用内置组件与本机路径</p></div>
+        </li>
+        <li class="step" data-step="vm" data-status="pending">
+          <span class="marker" aria-hidden="true">02</span>
+          <div class="step-body"><p class="step-title">初始化虚拟机</p><p class="step-detail">首次启动需要下载 Linux 虚拟机镜像</p></div>
+        </li>
+        <li class="step" data-step="docker" data-status="pending">
+          <span class="marker" aria-hidden="true">03</span>
+          <div class="step-body"><p class="step-title">等待容器引擎就绪</p><p class="step-detail">建立应用专属的容器连接</p></div>
+        </li>
+        <li class="step" data-step="bundled" data-status="pending">
+          <span class="marker" aria-hidden="true">04</span>
+          <div class="step-body"><p class="step-title">载入内置 VPN 镜像</p><p class="step-detail">从应用本地资源载入，无需联网</p></div>
+        </li>
+        <li class="step" data-step="mihomo" data-status="pending">
+          <span class="marker" aria-hidden="true">05</span>
+          <div class="step-body"><p class="step-title">下载分流内核</p><p class="step-detail">Docker Hub 不可用时自动切换镜像源</p></div>
+        </li>
+        <li class="step" data-step="service" data-status="pending">
+          <span class="marker" aria-hidden="true">06</span>
+          <div class="step-body"><p class="step-title">启动分流服务</p><p class="step-detail">载入通道规则并打开管理界面</p></div>
+        </li>
+      </ol>
+
+      <section class="error-panel" id="error-panel" hidden aria-live="assertive">
+        <p class="error-title">这一步未完成</p>
+        <p class="error-message" id="error-message"></p>
+        <div class="log-wrap" id="log-wrap" hidden>
+          <span class="log-label">最近的启动日志</span>
+          <pre class="log-tail" id="log-tail"></pre>
+        </div>
+        <div class="actions">
+          <button class="action primary" id="retry" type="button">重试这一步</button>
+          <button class="action" id="open-settings" type="button" hidden>打开系统设置</button>
+          <span class="action-message" id="action-message" role="status"></span>
+        </div>
+      </section>
+
+      <footer class="footnote">
+        <span>127.0.0.1 · vpnmgr 专属虚拟机</span>
+        <span>不会修改其他 Docker 环境</span>
+      </footer>
+    </main>
+
+    <script>
+      (() => {
+        const numbers = { runtime: "01", vm: "02", docker: "03", bundled: "04", mihomo: "05", service: "06" };
+        const panel = document.getElementById("error-panel");
+        const message = document.getElementById("error-message");
+        const logWrap = document.getElementById("log-wrap");
+        const logTail = document.getElementById("log-tail");
+        const retry = document.getElementById("retry");
+        const settings = document.getElementById("open-settings");
+        const actionMessage = document.getElementById("action-message");
+        const liveStatus = document.getElementById("live-status");
+        document.querySelectorAll(".step").forEach((item) => {
+          item.dataset.defaultDetail = item.querySelector(".step-detail").textContent;
+        });
+
+        function itemFor(stepId) {
+          return document.querySelector(`[data-step="${stepId}"]`);
+        }
+
+        function setMarker(item, stepId, status) {
+          const marker = item.querySelector(".marker");
+          marker.textContent = status === "active" ? "" : status === "done" ? "✓" : status === "warning" ? "!" : status === "failed" ? "×" : numbers[stepId];
+        }
+
+        async function invoke(name) {
+          const command = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+          if (!command) throw new Error("启动控制通道不可用，请重新打开应用");
+          return command(name);
+        }
+
+        window.boot = {
+          update(stepId, status, detail) {
+            const item = itemFor(stepId);
+            if (!item) return;
+            item.dataset.status = status;
+            item.toggleAttribute("aria-current", status === "active");
+            setMarker(item, stepId, status);
+            const detailNode = item.querySelector(".step-detail");
+            if (detail) detailNode.textContent = detail;
+            const title = item.querySelector(".step-title").textContent;
+            if (status === "active") liveStatus.textContent = detail || `正在${title}…`;
+            if (status === "warning") liveStatus.textContent = detail || `${title}需要注意`;
+          },
+
+          fail(stepId, error, lines, actions) {
+            const item = itemFor(stepId);
+            if (!item) return;
+            this.update(stepId, "failed", "需要处理后继续");
+            item.querySelector(".step-body").appendChild(panel);
+            panel.hidden = false;
+            message.textContent = error || "启动步骤未完成";
+            const logs = Array.isArray(lines) ? lines.filter(Boolean) : [];
+            logTail.textContent = logs.join("\n");
+            logWrap.hidden = logs.length === 0;
+            settings.hidden = !(Array.isArray(actions) && actions.includes("settings"));
+            retry.disabled = false;
+            actionMessage.textContent = "";
+            liveStatus.textContent = "启动已暂停，处理后可从这里重试";
+            document.title = "启动未完成 · VPN 管理网关";
+          },
+
+          reset() {
+            document.querySelectorAll(".step").forEach((item) => {
+              const stepId = item.dataset.step;
+              item.dataset.status = "pending";
+              item.removeAttribute("aria-current");
+              setMarker(item, stepId, "pending");
+              item.querySelector(".step-detail").textContent = item.dataset.defaultDetail;
+            });
+            panel.hidden = true;
+            retry.disabled = false;
+            actionMessage.textContent = "";
+            liveStatus.textContent = "检查随应用提供的运行组件…";
+            document.title = "正在启动 · VPN 管理网关";
+          }
+        };
+
+        retry.addEventListener("click", async () => {
+          retry.disabled = true;
+          actionMessage.textContent = "正在重试…";
+          try {
+            await invoke("boot_retry");
+          } catch (error) {
+            retry.disabled = false;
+            actionMessage.textContent = String(error);
+          }
+        });
+
+        settings.addEventListener("click", async () => {
+          settings.disabled = true;
+          actionMessage.textContent = "正在打开系统设置…";
+          try {
+            await invoke("boot_open_settings");
+            actionMessage.textContent = "请检查“隐私与安全性”中的权限";
+          } catch (error) {
+            actionMessage.textContent = String(error);
+          } finally {
+            settings.disabled = false;
+          }
+        });
+      })();
+    </script>
   </body>
 </html>
