@@ -139,14 +139,17 @@ fn set_env_if_unset(k: &str, v: &str) {
 
 fn write_0600(path: &Path, content: &str) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(path)?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     f.write_all(content.as_bytes())?;
+    f.flush()?;
+    f.sync_all()?;
     Ok(())
 }
 
@@ -240,7 +243,7 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
         if let Some(parent) = host_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(host_path, render_base_config(&cfg.mihomo_secret))
+        write_0600(host_path, &render_base_config(&cfg.mihomo_secret))
             .map_err(|e| anyhow!("种入 mihomo 基础配置 {host_cfg}: {e}"))?;
     }
     // 投递宿主工作副本(基础或累积)进容器,mihomo 启动即读到完整 DNS/sniffer/控制端口/密钥。
@@ -326,6 +329,16 @@ mod tests {
             std::env::var("MIHOMO_CTRL_URL").unwrap(),
             format!("http://127.0.0.1:{}", p1.mihomo_ctrl_port)
         );
+    }
+
+    #[test]
+    fn secure_writer_used_by_initial_seed_sets_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        write_0600(&path, "secret: value\n").unwrap();
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     /// 真机 e2e(需 colima `vpnmgr` 在跑 + DOCKER_HOST 指向它):建网络 + 起 mihomo#1 + 控制 API 通 + rebuild。

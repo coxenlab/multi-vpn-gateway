@@ -58,7 +58,9 @@
   window.toast = function (msg, icon = true) {
     const t = document.createElement("div");
     t.className = "toast";
-    t.innerHTML = (icon ? CHECK : "") + `<span>${msg}</span>`;
+    // msg 可能夹带动态文案:内联最小 5 字符转义(app.js 早于 feedback.js 加载,取不到 fb.esc);CHECK 图标是可信 HTML,不转义
+    const safe = String(msg == null ? "" : msg).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    t.innerHTML = (icon ? CHECK : "") + `<span>${safe}</span>`;
     host().appendChild(t);
     setTimeout(() => { t.style.opacity = "0"; t.style.transform = "translateY(8px)"; }, 2400);
     setTimeout(() => t.remove(), 2700);

@@ -178,44 +178,44 @@
 
     // 通道卡片
     function actionsFor(c) {
-      const detail = `<a class="btn btn-sm btn-secondary" href="channel.html?id=${c.id}">详情</a>`;
-      const del = `<button class="btn btn-sm btn-danger spacer" onclick="askDel('${c.id}')">删除</button>`;
+      const detail = `<a class="btn btn-sm btn-secondary" href="channel.html?id=${fb.esc(c.id)}">详情</a>`;
+      const del = `<button class="btn btn-sm btn-danger spacer" onclick="askDel('${fb.esc(c.id)}')">删除</button>`;
       // 停止态:容器没起,登录/探活都无意义 → 只给「启动」(走重建);状态已由右上角徽章表达,不再放死的「已停止」占位钮。
       if (c.status === "stopped")
-        return `<button class="btn btn-sm btn-primary" onclick="power('${c.id}','start',this)">启动</button>${detail}${del}`;
+        return `<button class="btn btn-sm btn-primary" onclick="power('${fb.esc(c.id)}','start',this)">启动</button>${detail}${del}`;
       // 运行态:登录/重新登录(无头通道隐藏)+ 检测连通 + 停止。「重启」属低频操作,留在详情页。
       const headless = c.login_method === "headless";
       const login = headless ? ""
         : (c.status === "logged_in"
-            ? `<a class="btn btn-sm btn-secondary" href="channel.html?id=${c.id}#login">重新登录</a>`
-            : `<a class="btn btn-sm btn-primary" href="channel.html?id=${c.id}#login">登录</a>`);
+            ? `<a class="btn btn-sm btn-secondary" href="channel.html?id=${fb.esc(c.id)}#login">重新登录</a>`
+            : `<a class="btn btn-sm btn-primary" href="channel.html?id=${fb.esc(c.id)}#login">登录</a>`);
       return `${login}
-        <button class="btn btn-sm btn-secondary" onclick="probe('${c.id}', this)">检测连通</button>
-        <button class="btn btn-sm btn-secondary" onclick="power('${c.id}','stop',this)">停止</button>
+        <button class="btn btn-sm btn-secondary" onclick="probe('${fb.esc(c.id)}', this)">检测连通</button>
+        <button class="btn btn-sm btn-secondary" onclick="power('${fb.esc(c.id)}','stop',this)">停止</button>
         ${detail}${del}`;
     }
     function cardHTML(c) {
       const k = kindMeta(c.vpn_type);
       const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "—";
       const tags = [];
-      c.domains.forEach(d => tags.push(`<span class="tag mono">${d.pattern}${d.enabled ? "" : " · 停用"}</span>`));
-      (c.ips || []).forEach(d => tags.push(`<span class="tag mono ip">${d.pattern}${d.enabled ? "" : " · 停用"}</span>`));
+      c.domains.forEach(d => tags.push(`<span class="tag mono">${fb.esc(d.pattern)}${d.enabled ? "" : " · 停用"}</span>`));
+      (c.ips || []).forEach(d => tags.push(`<span class="tag mono ip">${fb.esc(d.pattern)}${d.enabled ? "" : " · 停用"}</span>`));
       const doms = tags.length ? tags.join("") : `<span class="t-sm muted">未绑定规则</span>`;
       return `<article class="ch-card" data-od-id="ch-${c.id}">
         <div class="ch-top">
           <div class="grow">
-            <div class="ch-name">${c.name}</div>
-            <div class="ch-meta">${k.label}${c.ec_ver ? " " + c.ec_ver : ""} · id ${c.id} · ${c.server.replace("https://","")}</div>
+            <div class="ch-name">${fb.esc(c.name)}</div>
+            <div class="ch-meta">${fb.esc(k.label)}${c.ec_ver ? " " + fb.esc(c.ec_ver) : ""} · id ${c.id} · ${fb.esc(c.server.replace("https://",""))}</div>
           </div>
           ${badgeHTML(c.status)}
         </div>
         <div class="ch-grid">
-          <div class="kv"><div class="k">SOCKS5 出口</div><div class="v">${c.socks_endpoint}</div></div>
+          <div class="kv"><div class="k">SOCKS5 出口</div><div class="v">${fb.esc(c.socks_endpoint)}</div></div>
           <div class="kv"><div class="k">隧道延迟</div><div class="v">${lat}</div></div>
-          <div class="kv"><div class="k">运行时长</div><div class="v">${c.uptime != null ? c.uptime : "—"}</div></div>
+          <div class="kv"><div class="k">运行时长</div><div class="v">${c.uptime != null ? fb.esc(c.uptime) : "—"}</div></div>
         </div>
         <div class="ch-domains">${doms}</div>
-        <form class="row" style="margin-bottom:14px; gap:8px;" onsubmit="return bindRule('${c.id}', this)">
+        <form class="row" style="margin-bottom:14px; gap:8px;" onsubmit="return bindRule('${fb.esc(c.id)}', this)">
           <input class="input" name="pat" placeholder="绑定域名或 IP/网段，可多个" style="flex:1;" />
           <button class="btn btn-sm btn-secondary" type="submit">绑定 → 走这条</button>
         </form>

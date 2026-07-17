@@ -483,7 +483,7 @@
       $("#top-badge").innerHTML = badgeHTML(ch.status);
       $("#crumb-name").textContent = ch.name;
       $("#ch-title").textContent = ch.name;
-      $("#ch-kind").innerHTML = `<span class="kind-tag ${k.cls}">${k.label}</span>`;
+      $("#ch-kind").innerHTML = `<span class="kind-tag ${k.cls}">${fb.esc(k.label)}</span>`;
       $("#ch-ident").textContent = `id ${ch.id} · ${hostName}`;
 
       $("#cfg-kind").textContent = kindLabel;
@@ -502,16 +502,16 @@
     // ── 概览：容器配置 kv-list ──
     function rowsConfig() {
       return [
-        ["VPN 网关", `<span class="copyable"><span>${hostName}</span></span>`],
-        ["类型 / 版本", kindLabel],
+        ["VPN 网关", `<span class="copyable"><span>${fb.esc(hostName)}</span></span>`],
+        ["类型 / 版本", fb.esc(kindLabel)],
         ["登录方式", methodLabel],
-        ["SOCKS5 出口", `${ch.socks_endpoint}<span class="note">仅 Docker 内网暴露，本机绑 127.0.0.1</span>`],
-        ["noVNC 端口", `:${ch.novnc_port}<span class="note">交互登录用，绑 127.0.0.1</span>`],
-        ["fake_hwaddr", `${ch.mac}<span class="note">建通道时生成、落库；重建复用以降低重绑</span>`],
-        ["卷名", `${ch.volume_name}<span class="note">挂载到 /root，持久化登录态</span>`],
-        ["VNC 密码", `<span class="copyable"><span id="vnc-pw" class="pw-mask">${pwShown ? ch.vnc_password : "••••••••"}</span><button class="btn btn-sm btn-ghost" id="pw-toggle" type="button">${pwShown ? "隐藏" : "显示"}</button></span><span class="note">≤ 8 字符（tigervnc 上限，超长静默截断）</span>`],
+        ["SOCKS5 出口", `${fb.esc(ch.socks_endpoint)}<span class="note">仅 Docker 内网暴露，本机绑 127.0.0.1</span>`],
+        ["noVNC 端口", `:${fb.esc(ch.novnc_port)}<span class="note">交互登录用，绑 127.0.0.1</span>`],
+        ["fake_hwaddr", `${fb.esc(ch.mac)}<span class="note">建通道时生成、落库；重建复用以降低重绑</span>`],
+        ["卷名", `${fb.esc(ch.volume_name)}<span class="note">挂载到 /root，持久化登录态</span>`],
+        ["VNC 密码", `<span class="copyable"><span id="vnc-pw" class="pw-mask">${pwShown ? fb.esc(ch.vnc_password) : "••••••••"}</span><button class="btn btn-sm btn-ghost" id="pw-toggle" type="button">${pwShown ? "隐藏" : "显示"}</button></span><span class="note">≤ 8 字符（tigervnc 上限，超长静默截断）</span>`],
         ["容器 id", `<span class="copyable"><span>${containerId}</span><button class="icon-btn icon-copy" id="copy-cid" type="button" aria-label="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button></span>`],
-        ["内网探测 URL", `<span class="t-xs">${ch.probe_url}</span><span class="note">SOCKS5 探活目标，登录成功判据</span>`],
+        ["内网探测 URL", `<span class="t-xs">${fb.esc(ch.probe_url)}</span><span class="note">SOCKS5 探活目标，登录成功判据</span>`],
       ];
     }
     function renderConfig() {
@@ -544,8 +544,8 @@
       const ph = $("#portal-host");
       if (ph) ph.textContent = hostName;
       $("#li-method").textContent = methodLabel;
-      $("#li-port").innerHTML = `<span class="mono">:${ch.novnc_port}</span>`;
-      $("#li-probe").innerHTML = `<span class="mono">${ch.probe_url}</span>`;
+      $("#li-port").innerHTML = `<span class="mono">:${fb.esc(ch.novnc_port)}</span>`;
+      $("#li-probe").innerHTML = `<span class="mono">${fb.esc(ch.probe_url)}</span>`;
     }
 
     // ── 登录 tab：真 noVNC iframe（进入 login tab 时拉 url）──
@@ -770,7 +770,7 @@
         ? `<td class="muted t-xs">IP-CIDR · <span class="mono">no-resolve</span></td>`
         : `<td class="muted t-xs">DOMAIN-SUFFIX</td>`;
       return `<tr data-id="${d.id}">
-        <td class="mono">${d.pattern}</td>
+        <td class="mono">${fb.esc(d.pattern)}</td>
         ${meta}
         <td><span class="switch ${d.enabled ? "on" : ""}" role="switch" aria-checked="${!!d.enabled}" data-toggle="${d.id}"></span></td>
         <td class="r"><button class="btn btn-sm btn-danger" data-del="${d.id}" aria-label="删除">删除</button></td>

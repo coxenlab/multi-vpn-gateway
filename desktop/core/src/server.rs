@@ -101,12 +101,22 @@ mod tests {
         }
     }
 
+    fn state_with_bad_docker(db_dir: &std::path::Path) -> AppState {
+        let state = state_with_db(db_dir);
+        let socket = db_dir.join("not-a-docker.sock");
+        std::fs::write(&socket, b"").unwrap();
+        let docker = bollard::Docker::connect_with_unix(
+            socket.to_str().unwrap(), 5, bollard::API_DEFAULT_VERSION).unwrap();
+        state.set_docker(Some(docker));
+        state
+    }
+
     #[tokio::test]
     async fn system_route_shape() {
         let dir = tempfile::tempdir().unwrap();
         crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
         let app = build_router(state_with_db(dir.path()));
-        let resp = app
+        let resp = app.clone()
             .oneshot(Request::builder().uri("/api/system").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -177,7 +187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_rules_classifies_and_persists() {
+    async fn rule_mutations_without_docker_503_without_db_changes() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("vpnmgr.db");
         crate::store::init(&db).unwrap();
@@ -187,17 +197,80 @@ mod tests {
         conn.execute("INSERT INTO channels(id,name,vpn_type,login_method,status) VALUES('c1','c','easyconnect','interactive','running')", []).unwrap();
         drop(conn);
         let app = build_router(state_with_db(dir.path()));
+        let rid = crate::store::add_rule(&db, "c1", "domain", "old.example").unwrap();
         let body = r#"{"patterns":["a.com","10.0.0.0/8","a.com"]}"#;
-        let resp = app.oneshot(
+        let resp = app.clone().oneshot(
             Request::builder().method("POST").uri("/api/channels/c1/rules")
                 .header("content-type", "application/json").body(Body::from(body)).unwrap()
         ).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
-        assert_eq!(v["added"]["domain"], 1);
-        assert_eq!(v["added"]["ip"], 1);
-        assert_eq!(v["domains"][0]["pattern"], "a.com");
-        assert_eq!(v["ips"][0]["pattern"], "10.0.0.0/8");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(crate::store::list_rules(&db, "c1").unwrap().len(), 1);
+
+        let resp = app.clone().oneshot(
+            Request::builder().method("PATCH").uri(format!("/api/channels/c1/rules/{rid}"))
+                .header("content-type", "application/json").body(Body::from(r#"{"enabled":false}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(crate::store::get_rule(&db, rid).unwrap().unwrap().enabled, 1);
+
+        let resp = app.oneshot(
+            Request::builder().method("DELETE").uri(format!("/api/channels/c1/rules/{rid}"))
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(crate::store::get_rule(&db, rid).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn rule_mutations_return_non_2xx_when_rebuild_is_not_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,vpn_type,login_method,status) VALUES('c1','c','easyconnect','interactive','running')", []).unwrap();
+        let app = build_router(state_with_bad_docker(dir.path()));
+
+        let response = app.clone().oneshot(Request::builder().method("POST")
+            .uri("/api/channels/c1/rules").header("content-type", "application/json")
+            .body(Body::from(r#"{"patterns":["a.com"]}"#)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let rid = crate::store::list_rules(&db, "c1").unwrap()[0].id;
+
+        let response = app.clone().oneshot(Request::builder().method("PATCH")
+            .uri(format!("/api/channels/c1/rules/{rid}")).header("content-type", "application/json")
+            .body(Body::from(r#"{"enabled":false}"#)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(crate::store::get_rule(&db, rid).unwrap().unwrap().enabled, 0);
+
+        let response = app.oneshot(Request::builder().method("DELETE")
+            .uri(format!("/api/channels/c1/rules/{rid}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(crate::store::get_rule(&db, rid).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rule_patch_delete_enforce_channel_ownership_and_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,status) VALUES('c1','one','running'),('c2','two','running')", []).unwrap();
+        drop(conn);
+        let rid = crate::store::add_rule(&db, "c1", "domain", "a.com").unwrap();
+        let app = build_router(state_with_bad_docker(dir.path()));
+
+        for method in ["PATCH", "DELETE"] {
+            let mut request = Request::builder().method(method)
+                .uri(format!("/api/channels/c2/rules/{rid}"));
+            if method == "PATCH" {
+                request = request.header("content-type", "application/json");
+            }
+            let body = if method == "PATCH" { Body::from(r#"{"enabled":false}"#) } else { Body::empty() };
+            let response = app.clone().oneshot(request.body(body).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        assert_eq!(crate::store::get_rule(&db, rid).unwrap().unwrap().enabled, 1);
     }
 
     #[tokio::test]
@@ -232,16 +305,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_marks_stopped_even_without_docker() {
+    async fn lifecycle_without_docker_503s_without_mutating_db() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("vpnmgr.db");
         crate::store::init(&db).unwrap();
         rusqlite::Connection::open(&db).unwrap().execute(
             "INSERT INTO channels(id,name,vpn_type,login_method,status) VALUES('c1','c','easyconnect','interactive','running')", []).unwrap();
         let app = build_router(state_with_db(dir.path()));
-        let resp = app.oneshot(Request::builder().method("POST").uri("/api/channels/c1/stop").body(Body::empty()).unwrap()).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(crate::store::get_channel(&db, "c1").unwrap().unwrap().status, "stopped");
+        for (method, uri) in [("POST", "/api/channels/c1/start"), ("POST", "/api/channels/c1/stop"),
+                              ("DELETE", "/api/channels/c1")] {
+            let resp = app.clone().oneshot(Request::builder().method(method).uri(uri)
+                .body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{method} {uri}");
+            assert_eq!(crate::store::get_channel(&db, "c1").unwrap().unwrap().status, "running");
+        }
     }
 
     #[tokio::test]
@@ -292,6 +369,30 @@ mod tests {
         let resp = app.oneshot(Request::builder().uri("/api/mirrors").body(Body::empty()).unwrap()).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
         assert!(v.as_array().unwrap().iter().any(|m| m["host"] == "my.mirror.io"));
+    }
+
+    #[tokio::test]
+    async fn mirrors_add_rejects_injection_host() {
+        // E(命门②):userinfo '@' 等注入 host → 400,不落库。
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().method("POST").uri("/api/mirrors")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"host":"user@127.0.0.1:8443/admin"}"#)).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn mirrors_test_rejects_injection_host() {
+        // E(命门②):非法 host 不发请求,直接 400。
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.oneshot(Request::builder().method("POST").uri("/api/mirrors/test")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"host":"user@127.0.0.1:8443/admin"}"#)).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -348,10 +449,10 @@ mod tests {
         seed_channel(&db, &key, "hb", "Headless", "anyconnect", "headless", "secret-b");
         crate::store::add_rule(&db, "ia", "domain", "a.com").unwrap();
         let rid = crate::store::add_rule(&db, "ia", "ip", "10.0.0.0/8").unwrap();
-        crate::store::set_rule_enabled(&db, rid, false).unwrap();
+        crate::store::set_rule_enabled(&db, "ia", rid, false).unwrap();
 
         let app = build_router(state_with_db(dir.path()));
-        let resp = app
+        let resp = app.clone()
             .oneshot(Request::builder().uri("/api/config/export").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -489,7 +590,7 @@ mod tests {
         let db = dir.path().join("vpnmgr.db");
         crate::store::init(&db).unwrap();
         let app = build_router(state_with_db(dir.path()));
-        let resp = app
+        let resp = app.clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -501,6 +602,176 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let resp = app.oneshot(Request::builder().method("POST").uri("/api/config/import")
+            .header("content-type", "application/json").body(Body::from("[]")).unwrap())
+            .await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn config_import_skips_malformed_rules() {
+        // 命门②:非法 ip(parse 失败)与注入域名跳过,合法规则照常恢复(堵 cidr 中毒 + 输出面注入)。
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        let doc = serde_json::json!({
+            "kind": "vpnmgr-export",
+            "version": 1,
+            "channels": [{
+                "name": "Imp", "vpn_type": "anyconnect", "login_method": "headless",
+                "config": {},
+                "rules": [
+                    {"kind": "ip", "pattern": "10.2.0.0/16", "enabled": 1},   // 合法
+                    {"kind": "ip", "pattern": "bad/8", "enabled": 1},          // 非法 CIDR → 跳过
+                    {"kind": "domain", "pattern": "ok.com", "enabled": 1},     // 合法
+                    {"kind": "domain", "pattern": "evil,MATCH", "enabled": 1}  // 注入域名 → 跳过
+                ]
+            }]
+        });
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/config/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(doc.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response["skipped"].as_array().unwrap().len(), 2,
+                   "每条非法规则都必须出现在 skipped");
+        let chans = crate::store::list_channels(&db).unwrap();
+        let ch = chans.iter().find(|c| c.name == "Imp").unwrap();
+        let rules = crate::store::list_rules(&db, &ch.id).unwrap();
+        let pats: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(pats.contains(&"10.2.0.0/16"));
+        assert!(pats.contains(&"ok.com"));
+        assert!(!pats.contains(&"bad/8"), "非法 CIDR 不入库");
+        assert!(!pats.contains(&"evil,MATCH"), "注入域名不入库");
+        assert_eq!(rules.len(), 2, "只有 2 条合法规则");
+    }
+
+    #[tokio::test]
+    async fn config_import_nested_type_errors_are_controlled_and_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        let doc = serde_json::json!({
+            "kind": "vpnmgr-export", "version": 1,
+            "channels": [
+                {"name": "bad-config", "vpn_type": "easyconnect", "config": [],
+                 "rules": [{"kind": "unknown", "pattern": "x.example"}]},
+                {"name": "good", "vpn_type": "easyconnect", "config": {},
+                 "rules": [42, {"kind": "ip", "pattern": "10.0.0.0/99"},
+                           {"kind": "domain", "pattern": ["bad"]},
+                           {"kind": "domain", "pattern": "bad-enabled.example", "enabled": []},
+                           {"kind": "domain", "pattern": "OK.中国", "enabled": true}]}
+            ]
+        });
+        let response = build_router(state_with_db(dir.path())).oneshot(Request::builder()
+            .method("POST").uri("/api/config/import").header("content-type", "application/json")
+            .body(Body::from(doc.to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["imported"], serde_json::json!(["good"]));
+        assert!(body["skipped"].as_array().unwrap().len() >= 5);
+        let channel = crate::store::list_channels(&db).unwrap().remove(0);
+        let rules = crate::store::list_rules(&db, &channel.id).unwrap();
+        assert_eq!(rules.iter().map(|r| r.pattern.as_str()).collect::<Vec<_>>(), vec!["ok.中国"]);
+    }
+
+    #[tokio::test]
+    async fn config_import_write_failure_rolls_back_all_channels_and_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute_batch(
+            "CREATE TRIGGER fail_import_rule BEFORE INSERT ON rules
+             WHEN NEW.pattern='fail.example' BEGIN SELECT RAISE(FAIL, 'forced insert failure'); END;").unwrap();
+        let doc = serde_json::json!({"kind":"vpnmgr-export","version":1,"channels":[
+            {"name":"first","vpn_type":"easyconnect","config":{},
+             "rules":[{"kind":"domain","pattern":"ok.example"}]},
+            {"name":"second","vpn_type":"easyconnect","config":{},
+             "rules":[{"kind":"domain","pattern":"fail.example"}]}
+        ]});
+        let response = build_router(state_with_db(dir.path())).oneshot(Request::builder()
+            .method("POST").uri("/api/config/import").header("content-type", "application/json")
+            .body(Body::from(doc.to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(crate::store::list_channels(&db).unwrap().is_empty());
+        assert!(crate::store::all_rules(&db).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn config_import_enabled_update_failure_rolls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute_batch(
+            "CREATE TRIGGER fail_import_enabled BEFORE UPDATE OF enabled ON rules
+             BEGIN SELECT RAISE(FAIL, 'forced enabled failure'); END;").unwrap();
+        let doc = serde_json::json!({"kind":"vpnmgr-export","version":1,"channels":[
+            {"name":"disabled","vpn_type":"easyconnect","config":{},
+             "rules":[{"kind":"domain","pattern":"off.example","enabled":false}]}
+        ]});
+        let response = build_router(state_with_db(dir.path())).oneshot(Request::builder()
+            .method("POST").uri("/api/config/import").header("content-type", "application/json")
+            .body(Body::from(doc.to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(crate::store::list_channels(&db).unwrap().is_empty());
+        assert!(crate::store::all_rules(&db).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn config_import_normalizes_rules() {
+        // 命门②双栈一致:导入的非规范化 pattern 存前先规范化(与 Python _norm_ip/_norm_domain 对齐),
+        // 而非原样落库——Corp.COM→corp.com、+.x.com→x.com、10.0.0.5→10.0.0.5/32。
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        let doc = serde_json::json!({
+            "kind": "vpnmgr-export",
+            "version": 1,
+            "channels": [{
+                "name": "Norm", "vpn_type": "anyconnect", "login_method": "headless",
+                "config": {},
+                "rules": [
+                    {"kind": "domain", "pattern": "Corp.COM", "enabled": 1},
+                    {"kind": "domain", "pattern": "+.x.com", "enabled": 1},
+                    {"kind": "ip", "pattern": "10.0.0.5", "enabled": 1}
+                ]
+            }]
+        });
+        let app = build_router(state_with_db(dir.path()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/config/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(doc.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let chans = crate::store::list_channels(&db).unwrap();
+        let ch = chans.iter().find(|c| c.name == "Norm").unwrap();
+        let rules = crate::store::list_rules(&db, &ch.id).unwrap();
+        let pats: Vec<&str> = rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(pats.contains(&"corp.com"), "Corp.COM 应规范化为 corp.com,实际 {pats:?}");
+        assert!(pats.contains(&"x.com"), "+.x.com 应 bare 为 x.com");
+        assert!(pats.contains(&"10.0.0.5/32"), "裸 IP 应补 /32");
+        assert!(!pats.contains(&"Corp.COM"), "不应存原样大写");
     }
 
     #[tokio::test]

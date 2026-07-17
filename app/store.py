@@ -101,19 +101,23 @@ def _public_config(raw):
     return {k: v for k, v in obj.get("_fields", {}).items() if k not in sk}
 
 
-def add_channel(ch, config=None, secret_keys=None):
+def _insert_channel(c, ch, config=None, secret_keys=None):
     pw = F.encrypt(ch["password"].encode()).decode() if ch.get("password") else ""
     cfg_json = _enc_config(config or {}, secret_keys or [])
+    c.execute(
+        """INSERT INTO channels(id,name,vpn_type,server,ec_ver,login_method,
+           username,password_enc,vnc_password,mac,probe_url,status,config_json)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (ch["id"], _clean_field("name", ch["name"]), ch["vpn_type"],
+         _clean_field("server", ch["server"]), ch["ec_ver"], ch["login_method"],
+         _clean_field("username", ch["username"]), pw, ch["vnc_password"], ch["mac"],
+         _clean_field("probe_url", ch["probe_url"]), ch["status"], cfg_json),
+    )
+
+
+def add_channel(ch, config=None, secret_keys=None):
     with _c() as c:
-        c.execute(
-            """INSERT INTO channels(id,name,vpn_type,server,ec_ver,login_method,
-               username,password_enc,vnc_password,mac,probe_url,status,config_json)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (ch["id"], _clean_field("name", ch["name"]), ch["vpn_type"],
-             _clean_field("server", ch["server"]), ch["ec_ver"], ch["login_method"],
-             _clean_field("username", ch["username"]), pw, ch["vnc_password"], ch["mac"],
-             _clean_field("probe_url", ch["probe_url"]), ch["status"], cfg_json),
-        )
+        _insert_channel(c, ch, config, secret_keys)
 
 
 def update_channel(cid, fields, secret_keys=()):
@@ -207,7 +211,8 @@ def set_config_field(cid, key, value, secret=False):
 
 def list_channels():
     with _c() as c:
-        return [_row(r) for r in c.execute("SELECT * FROM channels").fetchall()]
+        # ORDER BY id:rebuild 的 proxies 数组顺序需确定性(否则每次热加载顺序抖动)
+        return [_row(r) for r in c.execute("SELECT * FROM channels ORDER BY id").fetchall()]
 
 
 def del_channel(cid):
@@ -217,26 +222,31 @@ def del_channel(cid):
         c.execute("DELETE FROM rules WHERE channel_id=?", (cid,))
 
 
+def _insert_rule(c, cid, kind, pattern):
+    cur = c.execute(
+        "INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES(?,?,?,1)",
+        (cid, kind, pattern),
+    )
+    return cur.lastrowid
+
+
 def add_rule(cid, kind, pattern):
     with _c() as c:
-        cur = c.execute(
-            "INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES(?,?,?,1)",
-            (cid, kind, pattern),
-        )
-        return cur.lastrowid
+        return _insert_rule(c, cid, kind, pattern)
 
 
 def list_rules(cid):
     with _c() as c:
+        # ORDER BY id:输出面(rebuild/provider/snippet/pac)按插入序稳定,排序逻辑靠它定序
         return [dict(r) for r in c.execute(
-            "SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE channel_id=?",
+            "SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE channel_id=? ORDER BY id",
             (cid,)).fetchall()]
 
 
 def all_rules():
     with _c() as c:
         return [dict(r) for r in c.execute(
-            "SELECT id,channel_id,kind,pattern,enabled FROM rules").fetchall()]
+            "SELECT id,channel_id,kind,pattern,enabled FROM rules ORDER BY id").fetchall()]
 
 
 def get_rule(rid):
@@ -253,9 +263,25 @@ def del_rule(cid, rid):
 
 def set_rule_enabled(cid, rid, enabled):
     with _c() as c:
-        cur = c.execute("UPDATE rules SET enabled=? WHERE id=? AND channel_id=?",
-                        (1 if enabled else 0, rid, cid))
-        return cur.rowcount
+        return _set_rule_enabled(c, cid, rid, enabled)
+
+
+def _set_rule_enabled(c, cid, rid, enabled):
+    cur = c.execute("UPDATE rules SET enabled=? WHERE id=? AND channel_id=?",
+                    (1 if enabled else 0, rid, cid))
+    return cur.rowcount
+
+
+def import_channels(plans):
+    """Apply a fully validated import plan in one SQLite transaction."""
+    with _c() as c:
+        for plan in plans:
+            ch = plan["channel"]
+            _insert_channel(c, ch, plan["config"], plan["secret_keys"])
+            for rule in plan["rules"]:
+                rid = _insert_rule(c, ch["id"], rule["kind"], rule["pattern"])
+                if not rule["enabled"] and _set_rule_enabled(c, ch["id"], rid, False) != 1:
+                    raise sqlite3.IntegrityError("imported rule enabled update missed inserted row")
 
 
 def set_latency(cid, ms):

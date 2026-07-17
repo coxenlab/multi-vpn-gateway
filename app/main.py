@@ -1,4 +1,6 @@
 import os
+import re
+import json
 import time
 import uuid
 import random
@@ -7,6 +9,7 @@ import sqlite3
 import ipaddress
 
 import requests
+import yaml
 
 import docker
 
@@ -19,35 +22,14 @@ import manager
 import registry
 import dockerhub
 import preflight
+from ruleutil import (classify as _classify, norm_domain as _norm_domain,
+                      norm_ip as _norm_ip, normalize_stored_rule)
 
 HERE = os.path.dirname(__file__)
 MIHOMO_HOST_PORT = os.environ.get("MIHOMO_HOST_PORT", "?")
 
 app = FastAPI(title="VPN 管理网关")
 store.init()
-
-
-def _classify(token):
-    """返回 ('ip', cidr) / ('domain', token) / None。裸 IP 补 /32 或 /128;保留地址形态。"""
-    t = (token or "").strip()
-    if not t:
-        return None
-    addr = t.split("/")[0]
-    try:
-        ipaddress.ip_address(addr)
-    except ValueError:
-        # 域名:剥离 scheme / 路径 / userinfo / 端口,只留主机名
-        # (否则 "https://oa.x.com/" 整串被当域名,生成的 DOMAIN-SUFFIX 永不命中)。
-        host = t.split("://", 1)[-1].split("/", 1)[0].split("@")[-1]
-        host = host.split(":", 1)[0].strip().strip(".").lower()
-        return ("domain", host) if host else None
-    if "/" in t:
-        try:
-            ipaddress.ip_network(t, strict=False)
-        except ValueError:
-            return None
-        return ("ip", t)
-    return ("ip", t + ("/128" if ":" in addr else "/32"))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -207,36 +189,71 @@ def status(cid):
     return {"status": new, "connected": ok, "latency_ms": ms}
 
 
+def _confirmed_rebuild():
+    try:
+        code = manager.rebuild()
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        return None, JSONResponse({"error": "mihomo reload failed", "reload_status": detail},
+                                  status_code=502)
+    if type(code) is not int or not 200 <= code < 300:
+        return code, JSONResponse({"error": "mihomo reload failed", "reload_status": code},
+                                  status_code=502)
+    return code, None
+
+
 @app.post("/api/channels/{cid}/rules")
 async def add_rules(cid, req: Request):
+    try:
+        ch = store.get_channel(cid)
+    except sqlite3.Error as exc:
+        return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
+    if not ch:
+        raise HTTPException(404, "channel not found")
     b = await req.json()
+    if not isinstance(b, dict):
+        raise HTTPException(400, "invalid rule request")
     patterns = b.get("patterns") or ([b["pattern"]] if b.get("pattern") else [])
+    if not isinstance(patterns, list):
+        raise HTTPException(400, "patterns must be an array")
     forced = b.get("kind")
     added = {"domain": 0, "ip": 0}
     rejected = []
-    existing = {(r["kind"], r["pattern"]) for r in store.list_rules(cid)}
-    for tok in patterns:
-        if forced == "domain":
-            kind, pat = "domain", (tok or "").strip()
-        elif forced == "ip":
-            c = _classify(tok)
-            if not c or c[0] != "ip":
-                rejected.append(tok)
+    try:
+        existing = {(r["kind"], r["pattern"]) for r in store.list_rules(cid)}
+        for tok in patterns:
+            if forced == "domain":
+                pat = _norm_domain(tok)
+                if not pat:
+                    rejected.append(tok)
+                    continue
+                kind = "domain"
+            elif forced == "ip":
+                pat = _norm_ip(tok)
+                if not pat:
+                    rejected.append(tok)
+                    continue
+                kind = "ip"
+            else:
+                classified = _classify(tok)
+                if not classified:
+                    rejected.append(tok)
+                    continue
+                kind, pat = classified
+            if (kind, pat) in existing:
                 continue
-            kind, pat = c
-        else:
-            c = _classify(tok)
-            if not c:
-                rejected.append(tok)
-                continue
-            kind, pat = c
-        if not pat or (kind, pat) in existing:
-            continue
-        store.add_rule(cid, kind, pat)
-        existing.add((kind, pat))
-        added[kind] += 1
-    code = manager.rebuild()
-    rs = store.list_rules(cid)
+            store.add_rule(cid, kind, pat)
+            existing.add((kind, pat))
+            added[kind] += 1
+    except sqlite3.Error as exc:
+        return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
+    code, failure = _confirmed_rebuild()
+    if failure:
+        return failure
+    try:
+        rs = store.list_rules(cid)
+    except sqlite3.Error as exc:
+        return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
     return {"reload_status": code,
             "domains": [r for r in rs if r["kind"] == "domain"],
             "ips": [r for r in rs if r["kind"] == "ip"],
@@ -245,17 +262,27 @@ async def add_rules(cid, req: Request):
 
 @app.delete("/api/channels/{cid}/rules/{rid}")
 def del_rule(cid, rid: int):
-    if not store.del_rule(cid, rid):
-        raise HTTPException(404, "rule not found")
-    return {"ok": True, "reload_status": manager.rebuild()}
+    try:
+        if not store.del_rule(cid, rid):
+            raise HTTPException(404, "rule not found")
+    except sqlite3.Error as exc:
+        return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
+    code, failure = _confirmed_rebuild()
+    return failure or {"ok": True, "reload_status": code}
 
 
 @app.patch("/api/channels/{cid}/rules/{rid}")
 async def patch_rule(cid, rid: int, req: Request):
     b = await req.json()
-    if not store.set_rule_enabled(cid, rid, bool(b.get("enabled"))):
-        raise HTTPException(404, "rule not found")
-    return {"ok": True, "reload_status": manager.rebuild()}
+    if not isinstance(b, dict):
+        raise HTTPException(400, "invalid rule request")
+    try:
+        if not store.set_rule_enabled(cid, rid, bool(b.get("enabled"))):
+            raise HTTPException(404, "rule not found")
+    except sqlite3.Error as exc:
+        return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
+    code, failure = _confirmed_rebuild()
+    return failure or {"ok": True, "reload_status": code}
 
 
 @app.post("/api/channels/{cid}/start")
@@ -332,18 +359,82 @@ def config_export():
 async def config_import(req: Request):
     """导入导出文件:只落库(status=stopped,新 id/MAC/VNC 密码),不起容器——
     同步起 N 个容器要几分钟且缺镜像会整批失败;「启动」本就是重建原语,导入后按需逐个启动。
-    同名通道跳过(重复导入幂等),未知类型跳过;规则不重新 classify,原样恢复。"""
-    b = await req.json()
-    if b.get("kind") != "vpnmgr-export" or not isinstance(b.get("channels"), list):
+    同名通道跳过(重复导入幂等),未知类型跳过;规则按统一存储契约校验并规范化。"""
+    try:
+        b = await req.json()
+    except Exception:
         return JSONResponse({"error": "不是有效的配置导出文件"}, status_code=400)
-    existing = {c["name"] for c in store.list_channels()}
-    imported, skipped = [], []
+    if (not isinstance(b, dict) or b.get("kind") != "vpnmgr-export"
+            or not isinstance(b.get("channels"), list)):
+        return JSONResponse({"error": "不是有效的配置导出文件"}, status_code=400)
+    try:
+        existing = {c["name"] for c in store.list_channels()}
+    except sqlite3.Error as exc:
+        return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
+    imported, skipped, plans = [], [], []
     for entry in b["channels"]:
-        if not isinstance(entry, dict):    # 手编文件混入非对象条目:跳过而非 500
+        if not isinstance(entry, dict):
             skipped.append({"name": "", "reason": "条目格式错误"})
             continue
-        name = (entry.get("name") or "").strip()
-        vtype = entry.get("vpn_type") or ""
+
+        raw_name = entry.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        raw_rules = entry.get("rules")
+        rules_shape_ok = raw_rules is None or isinstance(raw_rules, list)
+        planned_rules = []
+        if not rules_shape_ok:
+            skipped.append({"name": name, "reason": "规则列表格式错误"})
+            raw_rules = []
+        for index, rule in enumerate(raw_rules or [], start=1):
+            if not isinstance(rule, dict):
+                skipped.append({"name": name, "reason": f"规则 #{index} 格式错误"})
+                continue
+            kind = rule.get("kind")
+            pattern = rule.get("pattern")
+            if kind not in ("domain", "ip") or not isinstance(pattern, str):
+                skipped.append({"name": name, "reason": f"非法规则 {pattern!r}"})
+                continue
+            raw_enabled = rule.get("enabled", True)
+            if not isinstance(raw_enabled, (bool, int)):
+                skipped.append({"name": name, "reason": f"规则 enabled 类型错误 {pattern}"})
+                continue
+            normalized = normalize_stored_rule(kind, pattern)
+            if not normalized:
+                skipped.append({"name": name, "reason": f"非法规则 {pattern}"})
+                continue
+            _, pattern = normalized
+            planned_rules.append({"kind": kind, "pattern": pattern,
+                                  "enabled": bool(raw_enabled)})
+
+        text_fields = {}
+        malformed_field = None
+        for field, default in (("name", ""), ("vpn_type", ""), ("server", ""),
+                               ("ec_ver", ""), ("login_method", "interactive"),
+                               ("username", ""), ("probe_url", "")):
+            value = entry.get(field)
+            if value is None:
+                value = default
+            if not isinstance(value, str):
+                malformed_field = field
+                break
+            text_fields[field] = value
+        raw_config = entry.get("config")
+        if raw_config is None:
+            cfg = {}
+        elif isinstance(raw_config, dict):
+            cfg = raw_config
+        else:
+            cfg = None
+        if malformed_field or cfg is None:
+            reason = (f"字段 {malformed_field} 类型错误" if malformed_field else
+                      "config 格式错误")
+            skipped.append({"name": name, "reason": reason})
+            continue
+        if not rules_shape_ok:
+            continue
+
+        name = text_fields["name"].strip()
+        vtype = text_fields["vpn_type"]
         try:
             spec = registry.get(vtype)
         except KeyError:
@@ -353,27 +444,31 @@ async def config_import(req: Request):
             skipped.append({"name": name, "reason": "同名通道已存在"})
             continue
         cid = uuid.uuid4().hex[:8]
-        cfg = entry.get("config") or {}
+        imported_name = name or cid
+        cfg_server = cfg.get("server", "")
+        cfg_username = cfg.get("username", "")
+        cfg_server = cfg_server if isinstance(cfg_server, str) else str(cfg_server)
+        cfg_username = cfg_username if isinstance(cfg_username, str) else str(cfg_username)
         ch = {
-            "id": cid, "name": name or cid, "vpn_type": vtype,
-            "server": entry.get("server") or cfg.get("server", ""),
-            "ec_ver": entry.get("ec_ver") or "",
-            "login_method": entry.get("login_method") or "interactive",
-            "username": entry.get("username") or cfg.get("username", ""),
+            "id": cid, "name": imported_name, "vpn_type": vtype,
+            "server": text_fields["server"] or cfg_server,
+            "ec_ver": text_fields["ec_ver"],
+            "login_method": text_fields["login_method"] or "interactive",
+            "username": text_fields["username"] or cfg_username,
             "password": "",                    # 交互登录密码不在导出文件里
             "vnc_password": secrets.token_hex(4),
             "mac": "02:" + ":".join(f"{random.randint(0, 255):02x}" for _ in range(5)),
-            "probe_url": entry.get("probe_url", ""), "status": "stopped",
+            "probe_url": text_fields["probe_url"], "status": "stopped",
         }
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
-        store.add_channel(ch, config=cfg, secret_keys=secret_keys)
-        for r in entry.get("rules") or []:
-            if isinstance(r, dict) and r.get("pattern") and r.get("kind") in ("domain", "ip"):
-                rid = store.add_rule(cid, r["kind"], r["pattern"])
-                if not r.get("enabled", 1):
-                    store.set_rule_enabled(cid, rid, False)
-        existing.add(ch["name"])
-        imported.append(ch["name"])
+        plans.append({"channel": ch, "config": cfg, "secret_keys": secret_keys,
+                      "rules": planned_rules})
+        existing.add(imported_name)
+        imported.append(imported_name)
+    try:
+        store.import_channels(plans)
+    except Exception as exc:
+        return JSONResponse({"error": f"导入失败: {type(exc).__name__}: {exc}"}, status_code=500)
     return {"ok": True, "reload_status": manager.rebuild(),
             "imported": imported, "skipped": skipped}
 
@@ -448,24 +543,23 @@ def api_proxies():
     return {"proxies": manager.proxies()}
 
 
-def _bare(p):
-    for pre in ("+.", "*."):
-        if p.startswith(pre):
-            return p[len(pre):]
-    return p
-
-
 @app.get("/clash/vpn-rules.yaml", response_class=PlainTextResponse)
 def clash_provider():
-    lines = ["payload:"]
+    # 命门:provider 的 IP-CIDR 不带 no-resolve(外层 Clash 的 RULE-SET,...,no-resolve 集合级统一施加)。
+    # 顺序 = ORDER BY id 插入序(不做前缀排序);存量脏规则先按统一契约跳过,再经 yaml.safe_dump 编码。
+    payload = []
     for r in store.all_rules():
         if not r["enabled"]:
             continue
-        if r["kind"] == "ip":
-            lines.append(f"  - IP-CIDR,{r['pattern']}")
+        normalized = normalize_stored_rule(r["kind"], r["pattern"])
+        if not normalized:
+            continue
+        kind, pattern = normalized
+        if kind == "ip":
+            payload.append(f"IP-CIDR,{pattern}")
         else:
-            lines.append(f"  - DOMAIN-SUFFIX,{_bare(r['pattern'])}")
-    return "\n".join(lines) + "\n"
+            payload.append(f"DOMAIN-SUFFIX,{pattern}")
+    return yaml.safe_dump({"payload": payload}, allow_unicode=True, sort_keys=False)
 
 
 @app.get("/api/clash-snippet", response_class=PlainTextResponse)
@@ -493,13 +587,18 @@ def clash_snippet():
         "",
         "# ② 方式乙:直接内联(不想用 provider 时)",
     ]
-    if rules:
-        for r in rules:
-            if r["kind"] == "ip":
-                L.append(f"  - IP-CIDR,{r['pattern']},vpn-router,no-resolve")
-            else:
-                L.append(f"  - DOMAIN-SUFFIX,{_bare(r['pattern'])},vpn-router,no-resolve")
-    else:
+    emitted = False
+    for r in rules:
+        normalized = normalize_stored_rule(r["kind"], r["pattern"])
+        if not normalized:
+            continue
+        kind, pat = normalized
+        if kind == "ip":
+            L.append(f"  - IP-CIDR,{pat},vpn-router,no-resolve")
+        else:
+            L.append(f"  - DOMAIN-SUFFIX,{pat},vpn-router,no-resolve")
+        emitted = True
+    if not emitted:
         L.append("  # (还没绑定任何规则)")
     L += [
         "",
@@ -519,24 +618,27 @@ def entry_pac():
     for r in store.all_rules():
         if not r["enabled"]:
             continue
-        if r["kind"] == "domain":
-            d = _bare(r["pattern"]).strip().lower()
-            if d:
-                domains.append(d)
+        normalized = normalize_stored_rule(r["kind"], r["pattern"])
+        if not normalized:
+            continue
+        kind, pattern = normalized
+        if kind == "domain":
+            domains.append(pattern)
         else:
             try:
-                net = ipaddress.ip_network(r["pattern"], strict=False)
+                net = ipaddress.ip_network(pattern, strict=False)
             except ValueError:
                 continue
             if net.version == 4:
                 nets.append((str(net.network_address), str(net.netmask)))
-    dom_js = ",".join('"%s"' % d for d in domains)
-    net_js = ",".join('["%s","%s"]' % (a, m) for a, m in nets)
+    # json.dumps 生成整个数组字面量:pattern 里的引号/逗号被 JSON 转义,消除裸 '"%s"' 引号逃逸(命门②)
+    dom_js = json.dumps(domains)
+    net_js = json.dumps([[a, m] for a, m in nets])
     pac = (
         "// 本工具自动生成 · 命中客户域名/IP 走入口,其余 DIRECT\n"
         'var PROXY = "' + proxy + '";\n'
-        "var DOMAINS = [" + dom_js + "];\n"
-        "var NETS = [" + net_js + "];\n"
+        "var DOMAINS = " + dom_js + ";\n"
+        "var NETS = " + net_js + ";\n"
         "function FindProxyForURL(url, host) {\n"
         "  host = (host || '').toLowerCase();\n"
         "  for (var i = 0; i < DOMAINS.length; i++) {\n"
@@ -583,11 +685,22 @@ def mirrors_list():
     return store.list_mirrors()
 
 
+# 镜像源 host 白名单:允许 host:port/path 形态,拒 @(userinfo)/ 空白 / 逗号 / 换行 / 引号等
+# 注入字符(命门②)。add 与 test 共用同一校验,避免 test 旁路直发请求。内网源合法,不限私网。
+_MIRROR_HOST_RE = re.compile(r"[A-Za-z0-9._:/-]+")
+
+
+def _valid_mirror_host(host):
+    return isinstance(host, str) and _MIRROR_HOST_RE.fullmatch(host) is not None
+
+
 @app.post("/api/mirrors")
 def mirrors_add(body: dict = Body(...)):
     host = (body.get("host") or "").strip()
     if not host:
         return JSONResponse({"error": "host required"}, status_code=400)
+    if not _valid_mirror_host(host):
+        raise HTTPException(400, "非法镜像源地址")
     try:
         mid = store.add_mirror(host)
     except sqlite3.IntegrityError:
@@ -610,6 +723,8 @@ def mirrors_del(mid: int):
 @app.post("/api/mirrors/test")
 def mirrors_test(body: dict = Body(...)):
     host = (body.get("host") or "").strip()
+    if not _valid_mirror_host(host):   # 非法 host → 400,绝不发请求(命门②·E)
+        raise HTTPException(400, "非法镜像源地址")
     t0 = time.monotonic()
     try:
         requests.get(f"https://{host}/v2/", timeout=5)

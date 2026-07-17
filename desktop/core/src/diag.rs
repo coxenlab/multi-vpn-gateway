@@ -5,7 +5,7 @@
 //! 登录成功与否的唯一判据仍是 SOCKS5 探活(/status)。实测 EC 在登录页时 svpnservice
 //! 也活着、tun0 也有 IP——所以 EC 不出 tunnel_up,只出 ec_client_alive + ec_kick_age。
 
-use axum::{extract::State, Json};
+use axum::{extract::State, response::IntoResponse, Json};
 use bollard::Docker;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{json, Value};
@@ -155,9 +155,16 @@ pub async fn diag_one(docker: &Docker, ch: &crate::store::ChannelPublic) -> Valu
 }
 
 /// GET /api/diag —— 全通道并发诊断,单通道 6s 超时(exec 卡死不拖全表)。
-pub async fn diag(State(st): State<AppState>) -> Json<Value> {
+pub async fn diag(State(st): State<AppState>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    let chans = crate::store::list_channels(&db).unwrap_or_default();
+    // 前端 allSettled 已优雅降级,放心 5xx(而非空表掩盖 db 故障)。
+    let chans = match crate::store::list_channels(&db) {
+        Ok(c) => c,
+        Err(e) => return crate::api::err_detail(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("list_channels: {e}"),
+        ),
+    };
     let channels: Vec<Value> = match st.docker() {
         Some(d) => {
             let futs = chans.iter().map(|c| {
@@ -173,7 +180,7 @@ pub async fn diag(State(st): State<AppState>) -> Json<Value> {
         }
         None => chans.iter().map(|c| json!({ "id": c.id, "state": "unknown" })).collect(),
     };
-    Json(json!({ "channels": channels }))
+    Json(json!({ "channels": channels })).into_response()
 }
 
 #[cfg(test)]

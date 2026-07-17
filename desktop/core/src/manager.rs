@@ -15,6 +15,16 @@ struct ProxyEntry {
     udp: bool,
 }
 
+/// 取 CIDR 前缀长度(`10.20.30.40/32` → 32,`fd00::/8` → 8)。裸 IP(无 `/`,理论上
+/// `_classify` 已补 /32、/128)保守视为最具体(128),确保它排在任何网段之前。
+fn cidr_prefix_len(pattern: &str) -> u8 {
+    pattern
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse::<u8>().ok())
+        .unwrap_or(128)
+}
+
 /// 命门 #2/#7:纯函数生成 mihomo 配置(读-改-写:保留 base 其它键)。
 pub fn build_mihomo_config(mut base: Yaml, channels: &[ChannelPublic], rules: &[Rule]) -> Yaml {
     if !base.is_mapping() {
@@ -30,18 +40,31 @@ pub fn build_mihomo_config(mut base: Yaml, channels: &[ChannelPublic], rules: &[
             udp: true,
         })
         .collect();
-    let mut out: Vec<String> = Vec::new();
+    // 命门 #2:mihomo 是**首个命中**(非最长前缀),故 IP-CIDR 须按前缀长度**降序**产出
+    // ——更具体的绑定(/32)排在宽网段(/24)之前,否则跨通道撞同一私网段时宽段会盖住具体主机
+    // 绑定(见「客户A .73 被客户B /24 盖住」)。同前缀长度保持插入顺序(stable sort);域名保持原序,
+    // 与 IP 分组互不干扰(域名匹配域名连接、IP-CIDR 匹配 IP 连接,二者正交)。
+    let mut domain_out: Vec<String> = Vec::new();
+    let mut ip_out: Vec<(u8, String)> = Vec::new();
     for r in rules {
         if r.enabled == 0 {
             continue;
         }
-        if r.kind == "ip" {
-            out.push(format!("IP-CIDR,{},ch-{},no-resolve", r.pattern, r.channel_id));
+        let Some((kind, pattern)) = crate::webutil::normalize_stored_rule(&r.kind, &r.pattern) else {
+            continue;
+        };
+        if kind == "ip" {
+            ip_out.push((
+                cidr_prefix_len(&pattern),
+                format!("IP-CIDR,{pattern},ch-{},no-resolve", r.channel_id),
+            ));
         } else {
-            // 对照 manager.py:非 "ip" 一律 DOMAIN-SUFFIX(catch-all,非仅 "domain")。命门 #2 不对称不变。
-            out.push(format!("DOMAIN-SUFFIX,{},ch-{}", r.pattern, r.channel_id));
+            domain_out.push(format!("DOMAIN-SUFFIX,{pattern},ch-{}", r.channel_id));
         }
     }
+    ip_out.sort_by_key(|(plen, _)| std::cmp::Reverse(*plen)); // 稳定降序:前缀越长(越具体)越靠前
+    let mut out: Vec<String> = domain_out;
+    out.extend(ip_out.into_iter().map(|(_, text)| text));
     out.push("MATCH,DIRECT".to_string());
 
     if let Yaml::Mapping(m) = &mut base {
@@ -59,34 +82,90 @@ pub fn mihomo_config_path() -> String {
     std::env::var("MIHOMO_CONFIG_PATH").unwrap_or_else(|_| "/cfg/config.yaml".into())
 }
 
+fn atomic_write_0600(path: &std::path::Path, content: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("config");
+    let mut opened = None;
+    for _ in 0..16 {
+        let tmp = parent.join(format!(".{name}.{:016x}.tmp", rand::random::<u64>()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp) {
+            Ok(file) => {
+                opened = Some((tmp, file));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let (tmp, mut file) = opened.ok_or_else(|| anyhow!("could not create unique config temp file"))?;
+    let result = (|| -> Result<()> {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(content)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// 串行化并发 rebuild：api.rs 有 8 处调用点，加上 rebuild 末尾 spawn 的 tun_sync 会并发触发；
+/// 两个 rebuild 交错「读 base → 写盘」会互相冲掉对方并入的非托管键(dns/listeners)、或让读者看到
+/// 半截配置。全程持锁把「读-改-原子写-put_file-PUT reload」串成一个原子序列。
+static REBUILD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// 命门 #3:写 CFG + PUT /configs?force=true(不重启 mihomo、不断连)。返回状态码串或错误串。
 ///
 /// host-VM 模型下 mihomo 跑在 VM 容器里、宿主无 `/cfg` 共享挂载,故:读宿主工作副本
 /// (`mihomo_config_path()`)当 base、并入通道/规则、写回工作副本,再经 `put_archive` 把成品
 /// 投递进容器 `/cfg/config.yaml`(`docker` 为 Some 时),最后 PUT 让 mihomo 从容器内绝对路径重载。
-/// compose 模型下宿主写的就是共享挂载本身,put_archive 失败被忽略(容器名不同),不影响重载。
+/// `docker` 为 Some 时 put_file 是配置进容器的**唯一通道**,失败即判整体重载失败(返回 "put_file failed: ..."、
+/// reload_ok 判 false,端点不误报绑定成功);`docker` 为 None(bind-mount / 无 docker 测试)时跳过投递、直接 PUT。
 pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::path::Path) -> String {
+    let _guard = REBUILD_LOCK.lock().await; // 全程持锁,读-改-写-重载串行(见 REBUILD_LOCK 说明)
     let inner = async {
         let channels = crate::store::list_channels(db)?;
         let rules = crate::store::all_rules(db)?;
         let cfg_path = mihomo_config_path();
-        let base: Yaml = std::fs::read_to_string(&cfg_path)
-            .ok()
-            .and_then(|s| serde_yaml::from_str(&s).ok())
-            .unwrap_or_else(|| Yaml::Mapping(serde_yaml::Mapping::new()));
+        // base 读取:NotFound = 首启合法(空 Mapping);其余 IO 错误 / YAML 解析错误 → 不写盘、
+        // 直接上抛(配置文件保持原样)。否则一次读失败就把 dns/listeners 等非托管键整份冲掉,
+        // oss 容器依赖 mihomo DoH+listen:53,冲掉即容器断解析。
+        let base: Yaml = match std::fs::read_to_string(&cfg_path) {
+            Ok(s) => serde_yaml::from_str(&s).map_err(|e| anyhow!("config parse error: {e}"))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Yaml::Mapping(serde_yaml::Mapping::new())
+            }
+            Err(e) => return Err(anyhow!("config read error: {e}")),
+        };
         let merged = build_mihomo_config(base, &channels, &rules);
         let yaml = serde_yaml::to_string(&merged)?;
-        std::fs::write(&cfg_path, &yaml)?; // 宿主工作副本(compose:即共享挂载)
+        // 唯一同目录 0600 临时文件,flush+fsync 后原子 rename；读者不见半截或宽权限配置。
+        atomic_write_0600(std::path::Path::new(&cfg_path), yaml.as_bytes())?;
         if let Some(d) = docker {
-            // host-VM:投递进容器卷;best-effort(compose 下容器名不同会失败,但共享挂载已落地)
-            let _ = crate::docker::put_file(
+            // host-VM 模型:put_file 经 put_archive 把成品投递进容器,是配置进容器的**唯一通道**。
+            // 失败即整体重载失败——不再发 PUT(否则 mihomo reload 的是容器里的旧配置)、不返回裸 2xx,
+            // 让 reload_ok 判 false、端点不误报绑定成功(此前 let _ 吞掉后仍并入 "204 (put_file failed:...)",
+            // reload_ok 只看首个 2xx token 就误判成功)。docker 为 None(bind-mount/无 docker 测试)不投递。
+            if let Err(e) = crate::docker::put_file(
                 d,
                 crate::infra::MIHOMO_CONTAINER,
                 crate::infra::MIHOMO_CFG_DIR,
                 crate::infra::MIHOMO_CFG_FILE,
                 yaml.as_bytes(),
             )
-            .await;
+            .await
+            {
+                eprintln!("[manager] put_file 投递配置进容器失败(判整体重载失败): {e}");
+                return Ok::<String, anyhow::Error>(format!("put_file failed: {e}"));
+            }
         }
         let client = reqwest::Client::new();
         let resp = client
@@ -97,10 +176,10 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await?;
-        Ok::<u16, anyhow::Error>(resp.status().as_u16())
+        Ok::<String, anyhow::Error>(resp.status().as_u16().to_string())
     };
     let status = match inner.await {
-        Ok(code) => code.to_string(),
+        Ok(s) => s,
         Err(e) => format!("{e}"),
     };
     // 层3 TUN 入口路由对账(best-effort):**detach** 到后台跑,不把 helper IPC 往返
@@ -456,7 +535,10 @@ pub async fn ensure_novnc_bridge(docker: &bollard::Docker, cid: &str) {
     let script = "ss -tln 2>/dev/null | grep -q :8082 && exit 0; \
                   for i in $(seq 1 30); do ss -tln 2>/dev/null | grep -q :5901 && break; sleep 0.3; done; \
                   websockify --daemon 127.0.0.1:8082 127.0.0.1:5901 >/tmp/novnc-bridge.log 2>&1";
-    let _ = crate::docker::exec_detach(docker, &name, vec!["sh", "-c", script]).await;
+    // best-effort:登录页有自身重试 UX,不阻塞调用方;仅告警,不上抛。
+    if let Err(e) = crate::docker::exec_detach(docker, &name, vec!["sh", "-c", script]).await {
+        eprintln!("[manager] ensure_novnc_bridge 起 websockify 桥失败(登录页会自重试): {e}");
+    }
 }
 
 #[cfg(test)]
@@ -497,6 +579,140 @@ mod tests {
         assert!(!texts.iter().any(|t| t.contains("disabled.com")));
         assert!(!texts.iter().any(|t| t.starts_with("DOMAIN-SUFFIX") && t.contains("no-resolve")));
         assert_eq!(texts.last().unwrap(), "MATCH,DIRECT");
+    }
+
+    #[test]
+    fn mihomo_config_skips_malicious_pattern() {
+        // 命门②出口再校验:落盘 mihomo 规则前,含 DANGER 字符的存量脏 pattern 整条跳过(不成注入行)。
+        let base = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let chans = vec![ch("a")];
+        let rules = vec![
+            rule("a", "domain", "victim.example,DIRECT", 1), // 逗号注入(第三字段变策略)
+            rule("a", "ip", "10.0.0.0/8\nMATCH,DIRECT", 1),  // 换行注入
+            rule("a", "domain", "corp.example.com", 1),       // 干净
+        ];
+        let cfg = build_mihomo_config(base, &chans, &rules);
+        let texts: Vec<String> = cfg.get("rules").unwrap().as_sequence().unwrap()
+            .iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        assert!(!texts.iter().any(|t| t.contains("victim.example")), "逗号脏条被跳过");
+        assert!(!texts.iter().any(|t| t.contains("10.0.0.0/8")), "换行脏条被跳过");
+        assert!(texts.iter().any(|t| t == "DOMAIN-SUFFIX,corp.example.com,ch-a"), "干净条仍在");
+        assert_eq!(texts.last().unwrap(), "MATCH,DIRECT");
+        assert_eq!(texts.len(), 2, "只剩 1 条干净域名 + MATCH,DIRECT 兜底");
+    }
+
+    #[test]
+    fn mihomo_config_skips_invalid_stored_semantics_and_normalizes_unicode() {
+        let rules = vec![
+            rule("a", "domain", "ÄBC.中国", 1),
+            rule("a", "ip", "10.0.0.0/99", 1),
+            rule("a", "domain", "bad..example", 1),
+            rule("a", "unknown", "unknown.example", 1),
+        ];
+        let cfg = build_mihomo_config(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &[ch("a")], &rules);
+        let text: Vec<&str> = cfg["rules"].as_sequence().unwrap().iter()
+            .map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(text, vec!["DOMAIN-SUFFIX,äbc.中国,ch-a", "MATCH,DIRECT"]);
+    }
+
+    #[test]
+    fn atomic_config_write_replaces_with_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write_0600(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn rebuild_put_file_failure_is_not_success() {
+        // D 故障注入:docker 指向不存在的 socket → put_file 必失败(host-VM 下投递是配置进容器唯一通道)。
+        // rebuild 应返回 "put_file failed: ..."(无裸 2xx),即使控制器 PUT 本会 204 也不返回成功语义
+        //(此前吞掉后并入 "204 (put_file failed:...)" 被 reload_ok 首 token 误判成功)。
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        let cfg = Config::from_getter(|_| None);
+        // 造一个"存在但非 docker"的 sock 文件:connect_with_unix 只查路径存在性(构造通过),
+        // 而 put_file 首个 API 调用连它即失败(非真 socket)→ 稳定触发 put_file 失败路径。
+        let sock = dir.path().join("not-a-docker.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let bad = bollard::Docker::connect_with_unix(
+            sock.to_str().unwrap(), 5, bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        let status = rebuild(&cfg, Some(&bad), &db).await;
+        assert!(status.starts_with("put_file failed:"), "put_file 失败应返回明确失败串,实际: {status}");
+        // 复刻 api::reload_ok 的完整字符串解析:失败串不是裸 2xx 状态码 → 不判成功。
+        assert!(status.parse::<u16>().is_err(), "失败串非裸状态码,reload_ok 判 false");
+    }
+
+    #[test]
+    fn mihomo_config_ip_rules_most_specific_first() {
+        // 命门 #2:首个命中语义下,更具体的前缀必须排在宽网段之前,否则跨通道 /24 盖住 /32
+        //(复现「客户A .73/32 被客户B 10.20.30.0/24 盖住」)。插入顺序故意宽段在前。
+        let base = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let chans = vec![ch("wide"), ch("host")];
+        let rules = vec![
+            rule("wide", "ip", "10.20.30.0/24", 1),
+            rule("host", "ip", "10.20.30.40/32", 1),
+            rule("wide", "ip", "10.0.0.0/8", 1),
+            rule("host", "domain", "corp.example.com", 1),
+        ];
+        let cfg = build_mihomo_config(base, &chans, &rules);
+        let rules_seq = cfg.get("rules").unwrap().as_sequence().unwrap();
+        let texts: Vec<String> = rules_seq.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        let pos = |needle: &str| texts.iter().position(|t| t.contains(needle)).unwrap();
+        // /32 先于 /24 先于 /8:更具体的绑定优先命中
+        assert!(pos("10.20.30.40/32") < pos("10.20.30.0/24"));
+        assert!(pos("10.20.30.0/24") < pos("10.0.0.0/8"));
+        assert_eq!(texts.last().unwrap(), "MATCH,DIRECT");
+    }
+
+    #[test]
+    fn golden_mihomo_rules_match_fixture() {
+        // 双栈 golden 契约(tests/fixtures/golden_rules.json,Python test_golden.py 同源消费):
+        // 钉死 mihomo rules 的顺序/格式。key→固定 id 映射,expected 内 {ch0}/{ch1} 占位符按同映射
+        // 替换;比对解析后的列表逐项相等(不比字节,PyYAML 与 serde_yaml 格式本就不同)。
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/golden_rules.json")).unwrap();
+        // key→固定 id 映射(与 expected 内 {ch0}/{ch1} 占位符同源)。
+        let id_of = |key: &str| -> &'static str {
+            match key {
+                "ch0" => "aaa111",
+                "ch1" => "bbb222",
+                other => panic!("golden fixture 出现未映射的 key: {other}"),
+            }
+        };
+        let channels: Vec<ChannelPublic> = fixture["channels"]
+            .as_array().unwrap().iter()
+            .map(|c| ch(id_of(c["key"].as_str().unwrap())))
+            .collect();
+        let rules: Vec<Rule> = fixture["rules_insertion_order"]
+            .as_array().unwrap().iter().enumerate()
+            .map(|(i, r)| Rule {
+                id: (i + 1) as i64, // ORDER BY id → 插入序
+                channel_id: id_of(r["channel"].as_str().unwrap()).to_string(),
+                kind: r["kind"].as_str().unwrap().to_string(),
+                pattern: r["pattern"].as_str().unwrap().to_string(),
+                enabled: r["enabled"].as_bool().unwrap() as i64,
+            })
+            .collect();
+        let cfg = build_mihomo_config(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &rules);
+        let got: Vec<String> = cfg.get("rules").unwrap().as_sequence().unwrap().iter()
+            .map(|v| v.as_str().unwrap().to_string()).collect();
+        let expected: Vec<String> = fixture["expected_mihomo_rules"]
+            .as_array().unwrap().iter()
+            .map(|v| v.as_str().unwrap().replace("{ch0}", "aaa111").replace("{ch1}", "bbb222"))
+            .collect();
+        assert_eq!(got, expected);
     }
 
     #[test]

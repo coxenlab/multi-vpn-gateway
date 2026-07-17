@@ -366,12 +366,12 @@
       const pct = ms == null ? 0 : Math.min(100, Math.round((ms / 200) * 100));
       return `<div class="lat-row">
         <div>
-          <div class="lname">${name}</div>
-          <div class="lsub">${sub}</div>
+          <div class="lname">${fb.esc(name)}</div>
+          <div class="lsub">${fb.esc(sub)}</div>
         </div>
         <div class="lat-bar ${cls}"><i style="width:${pct}%"></i></div>
         <div class="lms">${ms == null ? "—" : ms + " ms"}</div>
-        <div class="alive ${alive ? "on" : "off"}" title="${dotTitle || (alive ? "alive" : "offline")}"></div>
+        <div class="alive ${alive ? "on" : "off"}" title="${fb.esc(dotTitle || (alive ? "alive" : "offline"))}"></div>
       </div>`;
     }
     function renderLatency() {
@@ -419,10 +419,10 @@
       const direct = !id;   // 末跳非 ch-* 即兜底直连（DIRECT）
       const chainCell = direct
         ? `<div class="chain-cell"><span class="cn muted">直连</span><span class="ce">DIRECT</span></div>`
-        : `<div class="chain-cell"><span class="cn">${chanName(id)}</span><span class="ce">${g.tail} → vpn-${id}:1080</span></div>`;
+        : `<div class="chain-cell"><span class="cn">${fb.esc(chanName(id))}</span><span class="ce">${fb.esc(g.tail)} → vpn-${fb.esc(id)}:1080</span></div>`;
       return `<tr class="${direct ? "is-direct" : ""}">
-        <td class="mono">${g.host}</td>
-        <td class="hide-sm"><span class="rule-tag">${g.rule}</span></td>
+        <td class="mono">${fb.esc(g.host)}</td>
+        <td class="hide-sm"><span class="rule-tag">${fb.esc(g.rule)}</span></td>
         <td>${chainCell}</td>
         <td class="r num-col">${g.count > 1 ? `<span class="pill">×${g.count}</span>` : g.count}</td>
         <td class="r num-col">${fmtBytes(g.up)}</td>

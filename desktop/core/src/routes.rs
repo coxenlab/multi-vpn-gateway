@@ -1,7 +1,8 @@
-use axum::{extract::State, Json};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use crate::{store, AppState};
+use crate::api::err_detail;
 
 pub async fn system(State(st): State<AppState>) -> Json<Value> {
     let alive = st.mihomo.alive().await;
@@ -86,14 +87,21 @@ pub async fn proxies(State(st): State<AppState>) -> Json<Value> {
     Json(json!({ "proxies": st.mihomo.proxies().await }))
 }
 
-pub async fn channels(State(st): State<AppState>) -> Json<Value> {
+pub async fn channels(State(st): State<AppState>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    let chans = store::list_channels(&db).unwrap_or_default();
+    // db 读失败 → 5xx(而非静默空表):空表会让概览误显示「没有通道」,用户以为配置丢了。
+    let chans = match store::list_channels(&db) {
+        Ok(c) => c,
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_channels: {e}")),
+    };
 
     let mut rules_map: HashMap<String, (Vec<Value>, Vec<Value>)> = HashMap::new();
     let mut uptime_map: HashMap<String, Option<String>> = HashMap::new();
     for c in &chans {
-        let rules = store::list_rules(&db, &c.id).unwrap_or_default();
+        let rules = match store::list_rules(&db, &c.id) {
+            Ok(r) => r,
+            Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_rules {}: {e}", c.id)),
+        };
         rules_map.insert(c.id.clone(), split_rules(rules));
         let up = if c.status != "stopped" {
             crate::docker::uptime(st.docker().as_ref(), &c.id).await
@@ -102,7 +110,7 @@ pub async fn channels(State(st): State<AppState>) -> Json<Value> {
         };
         uptime_map.insert(c.id.clone(), up);
     }
-    Json(json!(build_channels_response(chans, &rules_map, &uptime_map)))
+    Json(json!(build_channels_response(chans, &rules_map, &uptime_map))).into_response()
 }
 
 /// 纯函数:把通道 + 预取的 rules/uptime 组装成 /api/channels 输出(对照 main.py channels 路由)。

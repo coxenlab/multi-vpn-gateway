@@ -547,9 +547,9 @@
     function renderTypeGrid(list) {
       const grid = $("#type-grid");
       grid.innerHTML = list.map((a, i) => `
-        <label class="choice${i === 0 ? " sel" : ""}" data-type="${a.key}">
-          <div class="ct">${TYPE_ICONS[a.key] || TYPE_ICONS._default}${a.label}</div>
-          <div class="cd">${a.desc || ""}</div>
+        <label class="choice${i === 0 ? " sel" : ""}" data-type="${fb.esc(a.key)}">
+          <div class="ct">${TYPE_ICONS[a.key] || TYPE_ICONS._default}${fb.esc(a.label)}</div>
+          <div class="cd">${fb.esc(a.desc || "")}</div>
         </label>`).join("");
     }
 
@@ -607,12 +607,12 @@
         const id = "dyn-" + inp.key;
         const req = inp.required ? " required" : "";
         if (inp.type === "file") {
-          return `<div class="field col-span"><label>${inp.label}</label>
-            <input class="input" id="${id}" type="file" data-key="${inp.key}"${req}></div>`;
+          return `<div class="field col-span"><label>${fb.esc(inp.label)}</label>
+            <input class="input" id="${fb.esc(id)}" type="file" data-key="${fb.esc(inp.key)}"${req}></div>`;
         }
         const t = inp.secret ? "password" : (inp.type === "url" ? "url" : "text");
-        return `<div class="field col-span"><label>${inp.label}</label>
-          <input class="input mono" id="${id}" type="${t}" data-key="${inp.key}"
+        return `<div class="field col-span"><label>${fb.esc(inp.label)}</label>
+          <input class="input mono" id="${fb.esc(id)}" type="${t}" data-key="${fb.esc(inp.key)}"
                  autocomplete="off"${req}></div>`;
       }).join("");
       model.fields = {};
@@ -639,9 +639,9 @@
         const { versions } = await api.vpnVersions(key);
         const def = versions.find(v => v.usable_here) || versions[0];
         sel.innerHTML = versions.map(v =>
-          `<option value="${v.tag}"${def && v.tag === def.tag ? " selected" : ""}` +
+          `<option value="${fb.esc(v.tag)}"${def && v.tag === def.tag ? " selected" : ""}` +
           `${v.usable_here ? "" : " disabled"}>` +
-          `${v.tag}${v.usable_here ? "" : "(本机不可用)"}</option>`).join("");
+          `${fb.esc(v.tag)}${v.usable_here ? "" : "(本机不可用)"}</option>`).join("");
         model.ecver = def ? def.tag : "";
       } catch (e) {
         sel.innerHTML = `<option value="7.6.3" selected>7.6.3</option>`;
@@ -746,7 +746,7 @@
       const s = ['<span class="str">', "</span>"];
       const c = ['<span class="cmt">', "</span>"];
       const L = [];
-      L.push(`${c[0]}# 通道 ${model.name || "—"} · id ${chanId}(oss 无头)${c[1]}`);
+      L.push(`${c[0]}# 通道 ${fb.esc(model.name || "—")} · id ${chanId}(oss 无头)${c[1]}`);
       L.push(`docker run -d \\`);
       L.push(`  --name ${s[0]}vpn-${chanId}${s[1]} --hostname ${s[0]}${chanId}${s[1]} \\`);
       L.push(`  ${k[0]}--device${k[1]} /dev/net/tun:/dev/net/tun:rwm \\`);
@@ -768,7 +768,7 @@
       const c = ['<span class="cmt">', "</span>"];
       const L = [];
       // 行内注释独占一行（以 # 起头），让每行命令统一以 \ 续行、整段可直接复制
-      L.push(`${c[0]}# 通道 ${model.name || "—"} · id ${chanId}${c[1]}`);
+      L.push(`${c[0]}# 通道 ${fb.esc(model.name || "—")} · id ${chanId}${c[1]}`);
       L.push(`docker run -d \\`);
       L.push(`  --name ${s[0]}vpn-${chanId}${s[1]} --hostname ${s[0]}${chanId}${s[1]} \\`);
       L.push(`  ${k[0]}--device${k[1]} /dev/net/tun:/dev/net/tun:rwm \\`);
@@ -776,12 +776,12 @@
       L.push(`  ${k[0]}-e${k[1]} FAKE_HWADDR=${s[0]}${fakeMac}${s[1]} \\`);
       L.push(`  ${c[0]}# EXIT 留空 = 断线自动重连${c[1]}`);
       L.push(`  ${k[0]}-e${k[1]} EXIT=${s[0]}${s[1]} \\`);
-      L.push(`  ${k[0]}-e${k[1]} PING_ADDR=${s[0]}${model.probe || "<内网可达>"}${s[1]} \\`);
+      L.push(`  ${k[0]}-e${k[1]} PING_ADDR=${s[0]}${fb.esc(model.probe || "<内网可达>")}${s[1]} \\`);
       if (model.type === "easyconnect") {
         if (model.login === "password") {
           L.push(`  ${k[0]}-e${k[1]} EC_VER=${s[0]}${model.ecver}${s[1]} \\`);
           L.push(`  ${c[0]}# CLI_OPTS 无头注入账密，跳过登录步骤；cli 镜像仅 amd64，本机 arm64 走 QEMU（慢、偶发不稳）或退回 GUI noVNC 登一次${c[1]}`);
-          L.push(`  ${k[0]}-e${k[1]} CLI_OPTS=${s[0]}"-d ${model.fields.server || "<网关>"} -u ${model.fields.username || "<账号>"} -p ******"${s[1]} \\`);
+          L.push(`  ${k[0]}-e${k[1]} CLI_OPTS=${s[0]}"-d ${fb.esc(model.fields.server || "<网关>")} -u ${fb.esc(model.fields.username || "<账号>")} -p ******"${s[1]} \\`);
         } else {
           L.push(`  ${k[0]}-e${k[1]} EC_VER=${s[0]}${model.ecver}${s[1]} \\`);
           L.push(`  ${c[0]}# noVNC 交互登录（过短信 / SSO）${c[1]}`);
@@ -938,7 +938,7 @@
       $("#probe-cmd").innerHTML =
         `${c[0]}# 后端 exec_run 在容器内执行${c[1]}\n` +
         `curl --socks5-hostname 127.0.0.1:1080 \\\n` +
-        `  ${s[0]}${model.probe || "<内网探测URL>"}${s[1]} \\\n` +
+        `  ${s[0]}${fb.esc(model.probe || "<内网探测URL>")}${s[1]} \\\n` +
         `  --max-time 5 -o /dev/null -w ${s[0]}"%{http_code} %{time_total}s"${s[1]}`;
     }
     async function runProbe() {
@@ -986,7 +986,7 @@
         const all = [...r.domains.map(d => ({ pattern: d.pattern, ip: false })),
                      ...r.ips.map(d => ({ pattern: d.pattern, ip: true }))];
         $("#bound-list").innerHTML = all.map(b =>
-          `<span class="tag mono${b.ip ? " ip" : ""}">${b.pattern}</span>`).join("");
+          `<span class="tag mono${b.ip ? " ip" : ""}">${fb.esc(b.pattern)}</span>`).join("");
         $("#done-name").textContent = model.name;
         const a = ADAPTERS.find(x => x.key === model.type) || {};
         const label = a.label || model.type;

@@ -1,9 +1,10 @@
 """容器编排 + mihomo 热加载 + SOCKS5 探活。"""
 import os
 import io
-import re
 import socket
 import tarfile
+import tempfile
+import threading
 import time
 import requests
 import urllib3
@@ -17,6 +18,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import store
 import registry
 import adapters
+from ruleutil import normalize_stored_rule
 
 VPN_NET = os.environ["VPN_NET"]
 CTRL = os.environ["MIHOMO_CTRL_URL"]
@@ -256,47 +258,97 @@ def probe(ch):
         return False, None
 
 
+# rebuild 全程持锁:FastAPI 同步端点走线程池,main.py 多处并发调用 rebuild 真实存在,
+# 「读 base→渲染→写盘→PUT reload」必须整体串行,否则并发写会互相撕裂配置文件。
+_REBUILD_LOCK = threading.Lock()
+
+
+def _cidr_prefix_len(pattern):
+    """CIDR 前缀长度,作 ip 桶排序键。对齐 Rust cidr_prefix_len:取 '/' 尾段 int();
+    解析失败(裸 IP / 畸形串)按 128(最具体)兜底——正常入库已补 /32、/128,兜底只护非常规路径。"""
+    try:
+        return int(pattern.rsplit("/", 1)[1])
+    except (IndexError, ValueError):
+        return 128
+
+
+def _atomic_write_yaml(path, value):
+    """Write a same-directory 0600 temp file, fsync it, then atomically replace path."""
+    parent = os.path.dirname(os.path.abspath(path))
+    prefix = "." + os.path.basename(path) + "."
+    fd, tmp = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=parent)
+    owned_fd = fd
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            owned_fd = None
+            yaml.safe_dump(value, f, allow_unicode=True, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if owned_fd is not None:
+            os.close(owned_fd)
+
+
 def rebuild():
     """按当前所有通道+规则重写 mihomo 配置并热加载(force reload,不断现有连接)。"""
-    chs = store.list_channels()
-    rules = store.all_rules()
-    try:
-        with open(CFG) as f:
-            base = yaml.safe_load(f) or {}
-    except FileNotFoundError:
-        base = {}
+    with _REBUILD_LOCK:
+        chs = store.list_channels()
+        rules = store.all_rules()
+        try:
+            with open(CFG) as f:
+                base = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            base = {}
 
-    base["proxies"] = [
-        {"name": f"ch-{c['id']}", "type": "socks5",
-         "server": f"vpn-{c['id']}", "port": 1080, "udp": True}
-        for c in chs
-    ]
-    base["proxy-groups"] = []
-    out = []
-    for r in rules:
-        if not r["enabled"]:
-            continue
-        if r["kind"] == "ip":
-            out.append(f"IP-CIDR,{r['pattern']},ch-{r['channel_id']},no-resolve")
-        else:
-            out.append(f"DOMAIN-SUFFIX,{r['pattern']},ch-{r['channel_id']}")
-    out.append("MATCH,DIRECT")
-    base["rules"] = out
+        base["proxies"] = [
+            {"name": f"ch-{c['id']}", "type": "socks5",
+             "server": f"vpn-{c['id']}", "port": 1080, "udp": True}
+            for c in chs
+        ]
+        base["proxy-groups"] = []
+        # enabled 规则拆两桶:domain 桶保持输入序(ORDER BY id)整体在前;ip 桶按 CIDR
+        # 前缀长度全局降序、同长度稳定保序(sorted 稳定)。输出:domain 全部→ip 全部→MATCH 恒最后。
+        # 与 Rust 侧 build_mihomo_config 排序语义逐字一致(golden fixture 钉死)。
+        # 命门:IP-CIDR 带 no-resolve、DOMAIN-SUFFIX 不带——有意不对称,勿修平。
+        # 出口再校验:enabled 且 pattern 不含 DANGER 字符——存量脏条即便在库也不写进配置(命门②·C)
+        domains, ips = [], []
+        for r in rules:
+            if not r["enabled"]:
+                continue
+            normalized = normalize_stored_rule(r["kind"], r["pattern"])
+            if not normalized:
+                continue
+            kind, pattern = normalized
+            item = dict(r, kind=kind, pattern=pattern)
+            (ips if kind == "ip" else domains).append(item)
+        ips = sorted(ips, key=lambda r: _cidr_prefix_len(r["pattern"]), reverse=True)
+        out = [f"DOMAIN-SUFFIX,{r['pattern']},ch-{r['channel_id']}" for r in domains]
+        out += [f"IP-CIDR,{r['pattern']},ch-{r['channel_id']},no-resolve" for r in ips]
+        out.append("MATCH,DIRECT")
+        base["rules"] = out
 
-    with open(CFG, "w") as f:
-        yaml.safe_dump(base, f, allow_unicode=True, sort_keys=False)
+        # 原子写:同目录唯一 0600 临时文件,flush+fsync 后 replace,避免半截/宽权限配置。
+        _atomic_write_yaml(CFG, base)
 
-    try:
-        r = requests.put(
-            f"{CTRL}/configs",
-            params={"force": "true"},
-            json={"path": CFG},
-            headers={"Authorization": f"Bearer {SECRET}"},
-            timeout=10,
-        )
-        return r.status_code
-    except Exception as e:
-        return f"{type(e).__name__}: {e}"
+        try:
+            r = requests.put(
+                f"{CTRL}/configs",
+                params={"force": "true"},
+                json={"path": CFG},
+                headers={"Authorization": f"Bearer {SECRET}"},
+                timeout=10,
+            )
+            return r.status_code
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"
 
 
 def _parse_docker_time(s):

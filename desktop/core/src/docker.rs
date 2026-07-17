@@ -87,21 +87,37 @@ pub async fn load_image_if_absent(docker: &Docker, image: &str, tar_path: &std::
     Ok(true)
 }
 
+fn container_action_result(
+    action: &str,
+    name: &str,
+    result: std::result::Result<(), bollard::errors::Error>,
+    not_found_ok: bool,
+) -> Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) if not_found_ok && is_not_found(&e) => Ok(()),
+        Err(e) => Err(anyhow!("{action} {name}: {e}")),
+    }
+}
+
 pub async fn rm_force(docker: &Docker, name: &str) -> Result<()> {
-    let _ = docker
+    // 404(容器不存在)= 幂等成功；其余错误带上下文上抛（对照 restart()），别再吞掉让上层误判已删。
+    let result = docker
         .remove_container(name, Some(RemoveContainerOptions { force: true, ..Default::default() }))
         .await;
-    Ok(())
+    container_action_result("remove", name, result, true)
 }
 
 pub async fn stop(docker: &Docker, name: &str) -> Result<()> {
-    let _ = docker.stop_container(name, None::<StopContainerOptions>).await;
-    Ok(())
+    // 404 → 幂等成功；已停止(304)被 bollard 视作成功；其余错误上抛（对照 Python NotFound→pass）。
+    let result = docker.stop_container(name, None::<StopContainerOptions>).await;
+    container_action_result("stop", name, result, true)
 }
 
 pub async fn start(docker: &Docker, name: &str) -> Result<()> {
-    let _ = docker.start_container(name, None::<StartContainerOptions<String>>).await;
-    Ok(())
+    // 404 is an error for start: a missing container was not started. Only stop/remove are idempotent.
+    let result = docker.start_container(name, None::<StartContainerOptions<String>>).await;
+    container_action_result("start", name, result, false)
 }
 
 /// 原地重启容器(保留端口映射/配置)。看门狗据此重启 mihomo,让其分流口"重新出现"→
@@ -416,6 +432,17 @@ mod tests {
         let e500 = bollard::errors::Error::DockerResponseServerError { status_code: 500, message: "boom".into() };
         assert!(is_not_found(&e404));
         assert!(!is_not_found(&e500));
+    }
+
+    #[test]
+    fn start_404_is_error_but_stop_and_remove_are_idempotent() {
+        let missing = || bollard::errors::Error::DockerResponseServerError {
+            status_code: 404,
+            message: "no such container".into(),
+        };
+        assert!(container_action_result("start", "vpn-x", Err(missing()), false).is_err());
+        assert!(container_action_result("stop", "vpn-x", Err(missing()), true).is_ok());
+        assert!(container_action_result("remove", "vpn-x", Err(missing()), true).is_ok());
     }
 
 

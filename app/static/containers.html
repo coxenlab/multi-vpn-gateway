@@ -213,14 +213,14 @@
         return `<div>分流核心 · <span class="mono">vpn-router</span></div><div class="role-sub">所有分流经它 · 分流口 :${sys.mihomo_port || "—"}</div>`;
       if (x.role === "channel") {
         const k = kindMeta(x.vpn_type);
-        return `<div>通道 · <a class="grp-name" href="channel.html?id=${x.channel_id}">${x.channel_name}</a></div><div class="role-sub">${k.label} · SOCKS5 出口(仅 docker 内网)</div>`;
+        return `<div>通道 · <a class="grp-name" href="channel.html?id=${fb.esc(x.channel_id)}">${fb.esc(x.channel_name)}</a></div><div class="role-sub">${fb.esc(k.label)} · SOCKS5 出口(仅 docker 内网)</div>`;
       }
       return `<div>孤儿残留</div><div class="role-sub">通道已删 / 探活容器泄漏,可安全清理</div>`;
     }
 
     function statusCell(x) {
       const bits = [];
-      let main = STATE_ZH[x.state] || x.state;
+      let main = STATE_ZH[x.state] || fb.esc(x.state);
       if (x.state === "running" && x.uptime_secs != null) main += ` · ${fmtAge(x.uptime_secs)}`;
       if (x.exit_code != null && x.exit_code !== 0) bits.push(`<div class="st-sub bad">退出码 ${x.exit_code}</div>`);
       if (x.crash_loop) bits.push(`<div class="st-sub bad">死循环:已重启 ${x.restart_count} 次${x.uptime_secs != null ? ` · 本次存活 ${fmtAge(x.uptime_secs)}` : ""}</div>`);
@@ -230,17 +230,17 @@
 
     function actionsCell(x) {
       const b = [];
-      const logBtn = `<button class="btn btn-sm btn-ghost" data-act="logs" data-name="${x.name}">日志</button>`;
+      const logBtn = `<button class="btn btn-sm btn-ghost" data-act="logs" data-name="${fb.esc(x.name)}">日志</button>`;
       if (x.role === "infra") {
         b.push(`<button class="btn btn-sm" data-act="heal">修复</button>`);
         if (x.state !== "missing") b.push(logBtn);
       } else if (x.role === "channel") {
         const stopped = x.channel_status === "stopped" || x.channel_status === "error" || x.state === "missing" || x.state === "exited";
-        if (stopped) b.push(`<button class="btn btn-sm" data-act="start" data-cid="${x.channel_id}" data-cname="${x.channel_name}">启动</button>`);
-        else b.push(`<button class="btn btn-sm btn-ghost" data-act="stop" data-cid="${x.channel_id}" data-cname="${x.channel_name}">停止</button>`);
+        if (stopped) b.push(`<button class="btn btn-sm" data-act="start" data-cid="${fb.esc(x.channel_id)}" data-cname="${fb.esc(x.channel_name)}">启动</button>`);
+        else b.push(`<button class="btn btn-sm btn-ghost" data-act="stop" data-cid="${fb.esc(x.channel_id)}" data-cname="${fb.esc(x.channel_name)}">停止</button>`);
         if (x.state !== "missing") b.push(logBtn);
       } else {
-        b.push(`<button class="btn btn-sm btn-danger" data-act="clean" data-name="${x.name}">清理</button>`);
+        b.push(`<button class="btn btn-sm btn-danger" data-act="clean" data-name="${fb.esc(x.name)}">清理</button>`);
         if (x.state !== "missing") b.push(logBtn);
       }
       return `<div class="row-actions">${b.join("")}</div>`;
@@ -267,10 +267,10 @@
         const missNote = x.state === "missing" && x.role === "channel" && x.channel_status !== "stopped"
           ? `<div class="st-sub bad">容器缺失 · 点「启动」原样重建</div>` : "";
         return `<tr class="${cls}">
-          <td class="mono">${x.name}</td>
+          <td class="mono">${fb.esc(x.name)}</td>
           <td>${roleCell(x)}</td>
           <td>${statusCell(x)}${missNote}</td>
-          <td class="hide-sm mono t-xs">${x.image || "—"}</td>
+          <td class="hide-sm mono t-xs">${fb.esc(x.image || "—")}</td>
           <td>${actionsCell(x)}</td>
         </tr>`;
       }).join("") || `<tr><td colspan="5" class="muted">暂无容器</td></tr>`;

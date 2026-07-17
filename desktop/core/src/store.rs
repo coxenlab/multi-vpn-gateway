@@ -184,7 +184,7 @@ fn map_channel(row: &rusqlite::Row) -> rusqlite::Result<ChannelPublic> {
 
 pub fn list_channels(db: &Path) -> anyhow::Result<Vec<ChannelPublic>> {
     let conn = Connection::open(db)?;
-    let mut stmt = conn.prepare(&format!("SELECT {CH_COLS} FROM channels"))?;
+    let mut stmt = conn.prepare(&format!("SELECT {CH_COLS} FROM channels ORDER BY id"))?;
     let rows = stmt.query_map([], map_channel)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
@@ -211,14 +211,16 @@ fn map_rule(row: &rusqlite::Row) -> rusqlite::Result<Rule> {
 
 pub fn list_rules(db: &Path, cid: &str) -> anyhow::Result<Vec<Rule>> {
     let conn = Connection::open(db)?;
-    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE channel_id=?1")?;
+    // ORDER BY id:钉死插入序,让规则输出面(mihomo rules/provider/pac)两栈顺序可复现(golden 契约)。
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE channel_id=?1 ORDER BY id")?;
     let rows = stmt.query_map([cid], map_rule)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
     let conn = Connection::open(db)?;
-    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules")?;
+    // ORDER BY id:同 list_rules，插入序是规则排序/编码的稳定输入（golden 契约）。
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules ORDER BY id")?;
     let rows = stmt.query_map([], map_rule)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
@@ -226,6 +228,10 @@ pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
 /// 对照 add_rule:INSERT enabled=1,返回 lastrowid。
 pub fn add_rule(db: &Path, cid: &str, kind: &str, pattern: &str) -> anyhow::Result<i64> {
     let conn = Connection::open(db)?;
+    insert_rule(&conn, cid, kind, pattern)
+}
+
+fn insert_rule(conn: &Connection, cid: &str, kind: &str, pattern: &str) -> anyhow::Result<i64> {
     conn.execute(
         "INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES(?1,?2,?3,1)",
         rusqlite::params![cid, kind, pattern],
@@ -243,19 +249,26 @@ pub fn get_rule(db: &Path, rid: i64) -> anyhow::Result<Option<Rule>> {
     }
 }
 
-pub fn del_rule(db: &Path, rid: i64) -> anyhow::Result<()> {
+pub fn del_rule(db: &Path, cid: &str, rid: i64) -> anyhow::Result<bool> {
     let conn = Connection::open(db)?;
-    conn.execute("DELETE FROM rules WHERE id=?1", [rid])?;
-    Ok(())
+    let changed = conn.execute(
+        "DELETE FROM rules WHERE id=?1 AND channel_id=?2",
+        rusqlite::params![rid, cid],
+    )?;
+    Ok(changed == 1)
 }
 
-pub fn set_rule_enabled(db: &Path, rid: i64, enabled: bool) -> anyhow::Result<()> {
+pub fn set_rule_enabled(db: &Path, cid: &str, rid: i64, enabled: bool) -> anyhow::Result<bool> {
     let conn = Connection::open(db)?;
-    conn.execute(
-        "UPDATE rules SET enabled=?1 WHERE id=?2",
-        rusqlite::params![if enabled { 1 } else { 0 }, rid],
+    set_rule_enabled_in(&conn, cid, rid, enabled)
+}
+
+fn set_rule_enabled_in(conn: &Connection, cid: &str, rid: i64, enabled: bool) -> anyhow::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE rules SET enabled=?1 WHERE id=?2 AND channel_id=?3",
+        rusqlite::params![if enabled { 1 } else { 0 }, rid, cid],
     )?;
-    Ok(())
+    Ok(changed == 1)
 }
 
 // ── config 字段级 Fernet 加解密 (命门 #5) ─────────────────────────────────────
@@ -417,6 +430,19 @@ pub struct NewChannel {
     pub status: String,
 }
 
+pub struct ImportRule {
+    pub kind: String,
+    pub pattern: String,
+    pub enabled: bool,
+}
+
+pub struct ImportChannel {
+    pub channel: NewChannel,
+    pub config: serde_json::Map<String, Value>,
+    pub secret_keys: Vec<String>,
+    pub rules: Vec<ImportRule>,
+}
+
 /// 对照 add_channel:密码 Fernet(空→'');config 经 enc_config;name/server/username/probe_url 清洗。
 pub fn add_channel(
     db: &Path,
@@ -426,9 +452,19 @@ pub fn add_channel(
     secret_keys: &[String],
 ) -> anyhow::Result<()> {
     let f = fernet_for(key)?;
-    let pw_enc = if ch.password.is_empty() { String::new() } else { f.encrypt(ch.password.as_bytes()) };
-    let cfg_json = enc_config(&f, config, secret_keys);
     let conn = Connection::open(db)?;
+    insert_channel(&conn, &f, ch, config, secret_keys)
+}
+
+fn insert_channel(
+    conn: &Connection,
+    f: &Fernet,
+    ch: &NewChannel,
+    config: &serde_json::Map<String, Value>,
+    secret_keys: &[String],
+) -> anyhow::Result<()> {
+    let pw_enc = if ch.password.is_empty() { String::new() } else { f.encrypt(ch.password.as_bytes()) };
+    let cfg_json = enc_config(f, config, secret_keys);
     conn.execute(
         "INSERT INTO channels(id,name,vpn_type,server,ec_ver,login_method,username,password_enc,vnc_password,mac,probe_url,status,config_json) \
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
@@ -448,6 +484,24 @@ pub fn add_channel(
             cfg_json,
         ],
     )?;
+    Ok(())
+}
+
+/// Apply one fully validated config import in a single SQLite transaction.
+pub fn import_channels(db: &Path, key: &str, plans: &[ImportChannel]) -> anyhow::Result<()> {
+    let f = fernet_for(key)?;
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction()?;
+    for plan in plans {
+        insert_channel(&tx, &f, &plan.channel, &plan.config, &plan.secret_keys)?;
+        for rule in &plan.rules {
+            let rid = insert_rule(&tx, &plan.channel.id, &rule.kind, &rule.pattern)?;
+            if !rule.enabled && !set_rule_enabled_in(&tx, &plan.channel.id, rid, false)? {
+                anyhow::bail!("imported rule enabled update missed inserted row");
+            }
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -516,10 +570,12 @@ pub fn set_latency(db: &Path, cid: &str, ms: i64) -> anyhow::Result<()> {
 
 /// 对照 del_channel:手动级联(无 FK)删 channels + domains + rules。
 pub fn del_channel(db: &Path, cid: &str) -> anyhow::Result<()> {
-    let conn = Connection::open(db)?;
-    conn.execute("DELETE FROM channels WHERE id=?1", [cid])?;
-    conn.execute("DELETE FROM domains WHERE channel_id=?1", [cid])?;
-    conn.execute("DELETE FROM rules WHERE channel_id=?1", [cid])?;
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM channels WHERE id=?1", [cid])?;
+    tx.execute("DELETE FROM domains WHERE channel_id=?1", [cid])?;
+    tx.execute("DELETE FROM rules WHERE channel_id=?1", [cid])?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -860,13 +916,24 @@ mod tests {
         assert_eq!(r.pattern, "a.com");
         assert_eq!(r.enabled, 1);
 
-        set_rule_enabled(&db, rid, false).unwrap();
+        assert!(!set_rule_enabled(&db, "other", rid, false).unwrap());
+        assert!(set_rule_enabled(&db, "c1", rid, false).unwrap());
         assert_eq!(get_rule(&db, rid).unwrap().unwrap().enabled, 0);
-        set_rule_enabled(&db, rid, true).unwrap();
+        assert!(set_rule_enabled(&db, "c1", rid, true).unwrap());
         assert_eq!(get_rule(&db, rid).unwrap().unwrap().enabled, 1);
 
-        del_rule(&db, rid).unwrap();
+        assert!(!del_rule(&db, "other", rid).unwrap());
+        assert!(del_rule(&db, "c1", rid).unwrap());
         assert!(get_rule(&db, rid).unwrap().is_none());
+    }
+
+    #[test]
+    fn rule_writers_propagate_database_open_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_db = dir.path(); // opening a directory as SQLite must fail
+        assert!(add_rule(bad_db, "c", "domain", "a.com").is_err());
+        assert!(del_rule(bad_db, "c", 1).is_err());
+        assert!(set_rule_enabled(bad_db, "c", 1, false).is_err());
     }
 
     #[test]

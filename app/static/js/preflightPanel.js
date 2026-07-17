@@ -6,17 +6,20 @@
     install_docker: "tutorials/install-docker.html",
     switch_registry_mirror: "tutorials/registry-mirror.html",
   };
+  // 转义统一走 feedback.js 的 fb.esc(全站唯一实现);本文件早于 feedback.js 加载,但 row()/run()
+  // 均运行时触发(其时 fb 已就位),与本文件既有 `window.fb && fb.*` 惯用法一致;反馈层缺失则不渲染(fail-closed)。
+  const esc = (s) => (window.fb && window.fb.esc) ? window.fb.esc(s) : "";
 
   function row(c) {
     const fix = c.fix && c.fix.kind === "auto"
-      ? `<button class="btn btn-secondary btn-sm" data-fix="${c.fix.action}" data-image="${(c.fix.params && c.fix.params.image) || ""}">${c.fix.label || "修复"}</button>`
+      ? `<button class="btn btn-secondary btn-sm" data-fix="${esc(c.fix.action)}" data-image="${esc((c.fix.params && c.fix.params.image) || "")}">${esc(c.fix.label || "修复")}</button>`
       : c.fix && c.fix.kind === "tutorial"
-      ? `<a class="btn btn-secondary btn-sm" target="_blank" href="${TUTORIAL_PAGE[c.fix.action] || "#"}">${c.fix.label || "查看教程"}</a>`
+      ? `<a class="btn btn-secondary btn-sm" target="_blank" href="${TUTORIAL_PAGE[c.fix.action] || "#"}">${esc(c.fix.label || "查看教程")}</a>`
       : "";
     return `<div class="chk chk-${c.status}">
       <span class="chk-ic">${ICON[c.status] || "?"}</span>
-      <div class="chk-body"><div class="chk-title">${c.title}</div>
-        <div class="chk-detail">${c.detail || ""}</div></div>
+      <div class="chk-body"><div class="chk-title">${esc(c.title)}</div>
+        <div class="chk-detail">${esc(c.detail || "")}</div></div>
       <div class="chk-act">${fix}</div></div>`;
   }
 
@@ -43,7 +46,7 @@
       host.innerHTML = `<div class="chk-loading">体检中…</div>`;
       let res;
       try { res = await api.preflight(opts.vpnType, opts.version, opts.scope); }
-      catch (e) { host.innerHTML = `<div class="banner danger">体检失败:${e.message}</div>`; return null; }
+      catch (e) { host.innerHTML = `<div class="banner danger">体检失败:${esc(e.message)}</div>`; return null; }
       host.innerHTML = res.checks.map(row).join("");
       host.querySelectorAll("[data-fix]").forEach((b) =>
         b.addEventListener("click", () => doFix(b.dataset.fix, b.dataset.image)));

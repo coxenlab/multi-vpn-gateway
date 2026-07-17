@@ -313,7 +313,7 @@
       }
       box.innerHTML = ms.map(m => `
         <div class="chk" data-id="${m.id}">
-          <label class="row" style="gap:6px;flex:1;"><input type="checkbox" ${m.enabled ? "checked" : ""} data-toggle> ${m.host}</label>
+          <label class="row" style="gap:6px;flex:1;"><input type="checkbox" ${m.enabled ? "checked" : ""} data-toggle> ${fb.esc(m.host)}</label>
           <span class="chk-detail" data-lat>p${m.priority}</span>
           <div class="chk-act">
             <button class="btn btn-secondary btn-sm" data-test>测速</button>
@@ -377,10 +377,7 @@
     /* ── 镜像清单 ── */
     const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>';
     const KIND_LABEL = { pull: "上游拉取", build: "自建镜像", compose: "compose 构建" };
-
-    function esc(s) {
-      return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-    }
+    // 转义统一走 fb.esc(全站唯一实现);下方各调用均在运行时(renderImages/imgCard),feedback.js 已加载。
 
     function imgCommands(e, arch, tag, mirrors) {
       const out = [];
@@ -422,12 +419,12 @@
         <div class="row" style="justify-content:space-between; align-items:flex-start; gap:var(--space-3);">
           <div>
             <div class="row" style="gap:var(--space-2); align-items:center; flex-wrap:wrap;">
-              <strong>${esc(e.title)}</strong>
-              <span class="tag mono">${esc(e.display)}</span>
+              <strong>${fb.esc(e.title)}</strong>
+              <span class="tag mono">${fb.esc(e.display)}</span>
               ${presentBadge}
             </div>
             <div class="t-xs muted" style="margin-top:4px;">
-              ${esc(KIND_LABEL[e.kind] || e.kind)}${e.used_by && e.used_by.length ? " · 用于 " + esc(e.used_by.join("、")) : ""}${e.build_context ? " · 上下文 " + esc(e.build_context) : ""}
+              ${fb.esc(KIND_LABEL[e.kind] || e.kind)}${e.used_by && e.used_by.length ? " · 用于 " + fb.esc(e.used_by.join("、")) : ""}${e.build_context ? " · 上下文 " + fb.esc(e.build_context) : ""}
             </div>
           </div>
           <div class="img-actions"></div>
@@ -444,7 +441,7 @@
         const sel = document.createElement("select");
         sel.className = "input"; sel.style.maxWidth = "220px";
         sel.innerHTML = e.versions.map(v =>
-          `<option value="${esc(v.tag)}" ${v.tag === state.tag ? "selected" : ""}>${esc(v.tag)}${v.arch && v.arch.length ? ` (${esc(v.arch.join("/"))})` : ""}${v.usable_here ? "" : " ·本机不可用"}</option>`).join("");
+          `<option value="${fb.esc(v.tag)}" ${v.tag === state.tag ? "selected" : ""}>${fb.esc(v.tag)}${v.arch && v.arch.length ? ` (${fb.esc(v.arch.join("/"))})` : ""}${v.usable_here ? "" : " ·本机不可用"}</option>`).join("");
         sel.addEventListener("change", () => { state.tag = sel.value; paint(); });
         const wrap = document.createElement("label");
         wrap.className = "t-xs muted"; wrap.style.cssText = "display:flex;gap:6px;align-items:center;";
@@ -455,7 +452,7 @@
         const sel = document.createElement("select");
         sel.className = "input"; sel.style.maxWidth = "140px";
         sel.innerHTML = archOpts.map(a =>
-          `<option value="${a}" ${a === state.arch ? "selected" : ""}>${a}</option>`).join("");
+          `<option value="${fb.esc(a)}" ${a === state.arch ? "selected" : ""}>${fb.esc(a)}</option>`).join("");
         sel.addEventListener("change", () => { state.arch = sel.value; paint(); });
         const wrap = document.createElement("label");
         wrap.className = "t-xs muted"; wrap.style.cssText = "display:flex;gap:6px;align-items:center;";
@@ -494,9 +491,9 @@
       function paint() {
         cmds.innerHTML = imgCommands(e, state.arch, state.tag, mirrors).map(c => `
           <div>
-            <div class="code-head"><span>${esc(c.h)}</span>
+            <div class="code-head"><span>${fb.esc(c.h)}</span>
               <button class="copy-btn" data-cmd="${encodeURIComponent(c.t)}">${COPY_ICON}复制</button></div>
-            <pre class="code">${esc(c.t)}</pre>
+            <pre class="code">${fb.esc(c.t)}</pre>
           </div>`).join("");
         cmds.querySelectorAll("[data-cmd]").forEach(b =>
           b.addEventListener("click", () => copyText(decodeURIComponent(b.dataset.cmd), "已复制命令")));

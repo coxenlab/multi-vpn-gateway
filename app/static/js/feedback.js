@@ -148,6 +148,7 @@
   }
   function F(title, message, hint, detail) { return { title, message, hint, detail }; }
   window.fb = window.fb || {};
+  window.fb.esc = esc;             // 全站唯一 HTML 转义(&<>"' 五字符),各屏 innerHTML sink 共用,取代屏内阉割版
   window.fb.friendlyError = friendlyError;
 
   /* ── errorBanner:友好错误条(标题 + 说明 + 可折叠技术细节 + 重试按钮) ──

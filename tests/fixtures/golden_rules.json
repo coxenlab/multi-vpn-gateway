@@ -1,0 +1,47 @@
+{
+  "_readme": "双栈 golden 契约(评审本周组⑤):Python tests/test_golden.py 与 desktop/core(manager.rs/webutil.rs 测试)共同消费,钉死两栈规则输出的顺序与格式语义。channels[].key 由各测试自行映射为真实/固定通道 id;expected_* 内 {ch0}/{ch1} 占位符按同映射替换。断言用解析后的列表逐项相等(语义相等),不比对序列化字节(PyYAML 与 serde_yaml 格式本就不同)。",
+  "channels": [
+    { "key": "ch0", "name": "甲客户" },
+    { "key": "ch1", "name": "乙客户" }
+  ],
+  "rules_insertion_order": [
+    { "channel": "ch0", "kind": "ip", "pattern": "10.20.30.0/24", "enabled": true },
+    { "channel": "ch1", "kind": "ip", "pattern": "10.20.30.40/32", "enabled": true },
+    { "channel": "ch0", "kind": "domain", "pattern": "example.com", "enabled": true },
+    { "channel": "ch1", "kind": "domain", "pattern": "corp.example.com", "enabled": true },
+    { "channel": "ch0", "kind": "ip", "pattern": "10.0.0.0/8", "enabled": true },
+    { "channel": "ch1", "kind": "ip", "pattern": "fd00::/8", "enabled": true },
+    { "channel": "ch0", "kind": "ip", "pattern": "2001:db8::1/128", "enabled": true },
+    { "channel": "ch1", "kind": "ip", "pattern": "10.1.2.0/24", "enabled": false },
+    { "channel": "ch0", "kind": "ip", "pattern": "172.16.0.5/32", "enabled": true }
+  ],
+  "expected_mihomo_rules": [
+    "DOMAIN-SUFFIX,example.com,ch-{ch0}",
+    "DOMAIN-SUFFIX,corp.example.com,ch-{ch1}",
+    "IP-CIDR,2001:db8::1/128,ch-{ch0},no-resolve",
+    "IP-CIDR,10.20.30.40/32,ch-{ch1},no-resolve",
+    "IP-CIDR,172.16.0.5/32,ch-{ch0},no-resolve",
+    "IP-CIDR,10.20.30.0/24,ch-{ch0},no-resolve",
+    "IP-CIDR,10.0.0.0/8,ch-{ch0},no-resolve",
+    "IP-CIDR,fd00::/8,ch-{ch1},no-resolve",
+    "MATCH,DIRECT"
+  ],
+  "expected_provider_payload": [
+    "IP-CIDR,10.20.30.0/24",
+    "IP-CIDR,10.20.30.40/32",
+    "DOMAIN-SUFFIX,example.com",
+    "DOMAIN-SUFFIX,corp.example.com",
+    "IP-CIDR,10.0.0.0/8",
+    "IP-CIDR,fd00::/8",
+    "IP-CIDR,2001:db8::1/128",
+    "IP-CIDR,172.16.0.5/32"
+  ],
+  "invariants": [
+    "命门#2:mihomo 配置内 IP-CIDR 带 no-resolve、DOMAIN-SUFFIX 不带(有意不对称,勿修平)",
+    "第三处有意不对称:provider payload 的 IP-CIDR 不带 no-resolve(由外层 Clash 的 RULE-SET,vpn-rules,vpn-router,no-resolve 在集合级统一施加)",
+    "mihomo rules:domain 桶保持插入序(ORDER BY id)整体在前;ip 桶全局按 CIDR 前缀长度降序(/128→/32→/24→/8),同长度稳定保序、v4/v6 不分家同一维度;MATCH,DIRECT 恒为最后一行",
+    "provider payload:保持 ORDER BY id 插入序、domain/ip 交错原样,不做前缀排序(全部指向同一 vpn-router,首命中歧义无害)",
+    "disabled 规则绝不出现在任何输出面",
+    "前缀长度解析失败(裸 IP/畸形串)按 128(最具体)兜底——正常入库路径已保证补 /32、/128,兜底只护非常规路径"
+  ]
+}

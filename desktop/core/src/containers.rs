@@ -79,9 +79,15 @@ fn merged(mut base: Value, meta: Option<Value>) -> Value {
 
 /// GET /api/containers —— 依赖容器全量盘点:infra + 每通道 + 孤儿。
 /// docker 不可用时仍列出「应该有哪些」(state 全 missing),页面能解释依赖关系。
-pub async fn list(State(st): State<AppState>) -> Json<Value> {
+pub async fn list(State(st): State<AppState>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    let chans = crate::store::list_channels(&db).unwrap_or_default();
+    let chans = match crate::store::list_channels(&db) {
+        Ok(c) => c,
+        Err(e) => return crate::api::err_detail(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("list_channels: {e}"),
+        ),
+    };
     let docker = st.docker();
 
     // docker 侧真实存在的本系统容器名(all=true 含已停止),供孤儿发现
@@ -144,7 +150,7 @@ pub async fn list(State(st): State<AppState>) -> Json<Value> {
         out.push(merged(json!({ "name": name, "role": "orphan" }), meta));
     }
 
-    Json(json!({ "docker_available": docker.is_some(), "containers": out }))
+    Json(json!({ "docker_available": docker.is_some(), "containers": out })).into_response()
 }
 
 /// GET /api/containers/:name/logs —— 原始 docker logs(本系统容器限定)。

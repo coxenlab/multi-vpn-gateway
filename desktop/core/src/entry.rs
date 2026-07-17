@@ -378,10 +378,18 @@ pub fn route_sets(rules: &[crate::store::Rule]) -> (Vec<String>, Vec<String>) {
         if r.enabled == 0 || r.kind != "ip" {
             continue;
         }
-        if r.pattern.contains(':') {
-            v6.insert(r.pattern.clone());
-        } else {
-            v4.insert(r.pattern.clone());
+        // 命门②:分桶前先 parse::<IpNet>——按解析结果的 v4/v6 分桶(替代裸 contains(':')),
+        // 畸形串告警跳过,绝不下发 helper 变成宿主路由。
+        match r.pattern.parse::<ipnet::IpNet>() {
+            Ok(ipnet::IpNet::V4(_)) => {
+                v4.insert(r.pattern.clone());
+            }
+            Ok(ipnet::IpNet::V6(_)) => {
+                v6.insert(r.pattern.clone());
+            }
+            Err(e) => {
+                eprintln!("[entry] route_sets 跳过畸形 CIDR {}: {e}", r.pattern);
+            }
         }
     }
     (v4.into_iter().collect(), v6.into_iter().collect())

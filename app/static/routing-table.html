@@ -262,8 +262,10 @@
      * 且 tun 状态要过 helper socket(慢),故与主轮询分离:启动拉一次 + 每 30s 刷新。 */
     let entry = null;   // null=检测中;{clash,sysproxy,tun} 各项 null=该接口不可用
     const node = (dot, pn, ps, notes) => {
-      const extra = (notes || []).map((n) => `<div class="ps ${n.cls}">${n.text}</div>`).join("");
-      return `<div class="pipe-node"><span class="pdot ${dot}"></span><div><div class="pn">${pn}</div>${ps ? `<div class="ps">${ps}</div>` : ""}${extra}</div></div>`;
+      // pn / ps / note.text 一律是纯文本(server、socks_endpoint、probeHost、clash.version、k.label 等经此渲染);
+      // dot / n.cls 为固定 class 常量,不转义。统一在 node 出口转义,覆盖所有穿透图节点 sink。
+      const extra = (notes || []).map((n) => `<div class="ps ${n.cls}">${fb.esc(n.text)}</div>`).join("");
+      return `<div class="pipe-node"><span class="pdot ${dot}"></span><div><div class="pn">${fb.esc(pn)}</div>${ps ? `<div class="ps">${fb.esc(ps)}</div>` : ""}${extra}</div></div>`;
     };
     const ARROW = `<span class="pipe-arrow">→</span>`;
     const fmtAge = (s) => (s < 60 ? `${s} 秒` : s < 3600 ? `${Math.floor(s / 60)} 分钟` : `${Math.floor(s / 3600)} 小时`);
@@ -359,7 +361,7 @@
         }
 
         return `<div class="pipe-row${up ? "" : " dim"}">
-          <div class="pipe-ch"><a class="grp-name" href="channel.html?id=${c.id}">${c.name}</a>${badgeHTML(c.status)}</div>
+          <div class="pipe-ch"><a class="grp-name" href="channel.html?id=${fb.esc(c.id)}">${fb.esc(c.name)}</a>${badgeHTML(c.status)}</div>
           <div class="pipe">
             ${node(en ? "ok" : "", "分流规则", en ? `${doms} 域名 + ${ips} IP 命中走此通道` : "未绑定 · 不参与分流")}
             ${ARROW}
@@ -379,8 +381,8 @@
       const confNote = new Map();
       const addNote = (r, txt) => confNote.set(r.id, [...(confNote.get(r.id) || []), txt]);
       conflicts.forEach(({ a, b, why }) => {
-        addNote(a.r, `与「${b.ch.name}」的 ${b.r.pattern} ${why}`);
-        addNote(b.r, `与「${a.ch.name}」的 ${a.r.pattern} ${why}`);
+        addNote(a.r, `与「${fb.esc(b.ch.name)}」的 ${fb.esc(b.r.pattern)} ${why}`);
+        addNote(b.r, `与「${fb.esc(a.ch.name)}」的 ${fb.esc(a.r.pattern)} ${why}`);
       });
       const deadRules = [];
       chs.filter(isDeadCh).forEach((c) => enabledRules(c).forEach((r) => deadRules.push({ ch: c, r })));
@@ -406,17 +408,17 @@
         `<div class="banner warn"><svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><p style="color:inherit; margin:0;">${html}</p></div>`;
       const issues = [];
       conflicts.forEach(({ a, b, why }) =>
-        issues.push(warnBanner(`${why}:「${a.ch.name}」<span class="mono">${a.r.pattern}</span> ↔ 「${b.ch.name}」<span class="mono">${b.r.pattern}</span> —— 命中时走规则表里排前的那条(先绑定者),另一条轮空。`)));
+        issues.push(warnBanner(`${why}:「${fb.esc(a.ch.name)}」<span class="mono">${fb.esc(a.r.pattern)}</span> ↔ 「${fb.esc(b.ch.name)}」<span class="mono">${fb.esc(b.r.pattern)}</span> —— 命中时走规则表里排前的那条(先绑定者),另一条轮空。`)));
       if (deadRules.length)
-        issues.push(warnBanner(`${deadRules.map((d) => `「${d.ch.name}」<span class="mono">${d.r.pattern}</span>`).join("、")} 所属通道已停止,但规则仍启用——命中后进死出口、<strong>不会</strong>回落直连。启动通道,或在详情页停用/删除这些规则。`));
+        issues.push(warnBanner(`${deadRules.map((d) => `「${fb.esc(d.ch.name)}」<span class="mono">${fb.esc(d.r.pattern)}</span>`).join("、")} 所属通道已停止,但规则仍启用——命中后进死出口、<strong>不会</strong>回落直连。启动通道,或在详情页停用/删除这些规则。`));
       // 诊断层问题(diag 接口可用时):死循环 / 服务端踢线
       if (diagMap) chs.forEach((c) => {
         const d = diagMap[c.id];
         if (!d) return;
         if (d.crash_loop)
-          issues.push(warnBanner(`「${c.name}」容器在死循环:已重启 <strong>${d.restart_count}</strong> 次${d.uptime_secs != null ? `、本次仅存活 ${fmtAge(d.uptime_secs)}` : ""}——多为隧道起不来(查通道日志);期间不影响其它通道,但持续空转,建议先停止。`));
+          issues.push(warnBanner(`「${fb.esc(c.name)}」容器在死循环:已重启 <strong>${d.restart_count}</strong> 次${d.uptime_secs != null ? `、本次仅存活 ${fmtAge(d.uptime_secs)}` : ""}——多为隧道起不来(查通道日志);期间不影响其它通道,但持续空转,建议先停止。`));
         if (d.ec_kick_age != null && d.ec_kick_age < 7200)
-          issues.push(warnBanner(`「${c.name}」${fmtAge(d.ec_kick_age)}前被 VPN <strong>服务端主动登出</strong>——常见于同一账号在别处登录互踢;这是服务端行为,与本机其它通道无关。`));
+          issues.push(warnBanner(`「${fb.esc(c.name)}」${fmtAge(d.ec_kick_age)}前被 VPN <strong>服务端主动登出</strong>——常见于同一账号在别处登录互踢;这是服务端行为,与本机其它通道无关。`));
       });
       $("#issues").innerHTML = issues.join("");
 
@@ -428,8 +430,8 @@
         const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "—";
         const en = enabledRules(c).length, tot = allRules(c).length;
         rows.push(`<tr class="grp"><td colspan="4"><div class="grp-line">
-          <a class="grp-name" href="channel.html?id=${c.id}">${c.name}</a>
-          <span class="grp-meta">${k.label} · ${c.socks_endpoint} · ${lat}${c.uptime ? " · " + c.uptime : ""}</span>
+          <a class="grp-name" href="channel.html?id=${fb.esc(c.id)}">${fb.esc(c.name)}</a>
+          <span class="grp-meta">${fb.esc(k.label)} · ${fb.esc(c.socks_endpoint)} · ${lat}${c.uptime ? " · " + fb.esc(c.uptime) : ""}</span>
           ${badgeHTML(c.status)}
           <span class="grp-meta spacer" style="text-align:right;">${en} / ${tot} 条启用</span>
         </div></td></tr>`);
@@ -449,7 +451,7 @@
             notes.push(`<span class="note-dead">通道已停止,命中不回落直连</span>`);
           }
           rows.push(`<tr class="${cls}">
-            <td class="pat mono">${r.pattern}</td>
+            <td class="pat mono">${fb.esc(r.pattern)}</td>
             <td>${r.kind === "ip" ? "IP 网段" : "域名后缀"}</td>
             <td class="hide-sm">${r.enabled ? "启用" : `<span class="muted">停用</span>`}</td>
             <td>${notes.join("<br>") || `<span class="muted">—</span>`}</td>

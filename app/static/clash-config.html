@@ -410,11 +410,10 @@
   <script src="js/app.js"></script>
   <script src="js/feedback.js"></script>
   <script>
-    // 高亮辅助：把 yaml 文本里的注释 / 键 / 串套上色彩 class
-    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const cmt = (s) => `<span class="cmt">${esc(s)}</span>`;
-    const key = (s) => `<span class="key">${esc(s)}</span>`;
-    const str = (s) => `<span class="str">${esc(s)}</span>`;
+    // 高亮辅助：把 yaml 文本里的注释 / 键 / 串套上色彩 class(转义统一走 fb.esc,全站唯一实现;渲染在 render() 运行时,fb 已就位)
+    const cmt = (s) => `<span class="cmt">${fb.esc(s)}</span>`;
+    const key = (s) => `<span class="key">${fb.esc(s)}</span>`;
+    const str = (s) => `<span class="str">${fb.esc(s)}</span>`;
 
     let chs = [], sys = {}, cmds = {};
 
@@ -511,7 +510,7 @@
         `    ${key("path")}: ${str("./providers/vpn-rules.yaml")}`,
         ``,
         `${cmt("# rules 顶部加一行引用：")}`,
-        `- ${key("RULE-SET")},${esc("vpn-rules")},${str("vpn-router")},${esc("no-resolve")}`,
+        `- ${key("RULE-SET")},${fb.esc("vpn-rules")},${str("vpn-router")},${fb.esc("no-resolve")}`,
       ].join("\n");
 
       // ② 内联规则
@@ -520,8 +519,8 @@
         ...cidrs.map((p) => `- IP-CIDR,${p},vpn-router,no-resolve`),
       ].join("\n")) || "# （还没绑定任何域名 / IP）";
       $("#code-rules").innerHTML = (patterns.length + cidrs.length) ? [
-        ...patterns.map((p) => `- ${key("DOMAIN-SUFFIX")},${esc(p)},${str("vpn-router")},${esc("no-resolve")}`),
-        ...cidrs.map((p) => `- ${key("IP-CIDR")},${esc(p)},${str("vpn-router")},${esc("no-resolve")}`),
+        ...patterns.map((p) => `- ${key("DOMAIN-SUFFIX")},${fb.esc(p)},${str("vpn-router")},${fb.esc("no-resolve")}`),
+        ...cidrs.map((p) => `- ${key("IP-CIDR")},${fb.esc(p)},${str("vpn-router")},${fb.esc("no-resolve")}`),
       ].join("\n") : cmt("# （还没绑定任何域名 / IP）");
 
       // ⑥ 浏览器域名清单
@@ -575,7 +574,7 @@
         tag.classList.remove("ok");
         if (det.running) {
           tag.textContent = "已检测到"; tag.classList.add("ok");
-          line.innerHTML = `本机有 ${det.meta ? "mihomo/Clash.Meta " : "Clash "}在运行${det.version ? "（" + det.version + "）" : ""},控制台 <span class="mono">${det.controller || "127.0.0.1:9090"}</span>。推荐用下面的 Verge 导入块,或方式①订阅。`;
+          line.innerHTML = `本机有 ${det.meta ? "mihomo/Clash.Meta " : "Clash "}在运行${det.version ? "（" + fb.esc(det.version) + "）" : ""},控制台 <span class="mono">${fb.esc(det.controller || "127.0.0.1:9090")}</span>。推荐用下面的 Verge 导入块,或方式①订阅。`;
         } else {
           tag.textContent = "未运行";
           line.textContent = "未检测到运行中的 Clash(9090 无应答)。若你用 Clash 先启动它;否则用「全局接管」Tab 的 PAC / 系统代理。";

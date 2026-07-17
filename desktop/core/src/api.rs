@@ -43,8 +43,17 @@ pub async fn add_rules(
     State(st): State<AppState>,
     Path(cid): Path<String>,
     Json(b): Json<Value>,
-) -> Json<Value> {
+) -> axum::response::Response {
     let db = st.cfg.db_path();
+    match store::get_channel(&db, &cid) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err404("channel not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
+    }
+    let docker = match st.docker() {
+        Some(d) => d,
+        None => return err503("docker unavailable"),
+    };
     let patterns: Vec<String> = b
         .get("patterns")
         .and_then(|v| v.as_array())
@@ -53,17 +62,24 @@ pub async fn add_rules(
         .or_else(|| b.get("pattern").and_then(|v| v.as_str()).map(|s| vec![s.to_string()]))
         .unwrap_or_default();
     let forced = b.get("kind").and_then(|v| v.as_str());
-    let existing: Vec<(String, String)> = store::list_rules(&db, &cid)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|r| (r.kind, r.pattern))
-        .collect();
+    let existing: Vec<(String, String)> = match store::list_rules(&db, &cid) {
+        Ok(rules) => rules.into_iter().map(|r| (r.kind, r.pattern)).collect(),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_rules: {e}")),
+    };
     let plan = webutil::plan_rules(&patterns, forced, &existing);
     for (kind, pat) in &plan.to_add {
-        let _ = store::add_rule(&db, &cid, kind, pat);
+        if let Err(e) = store::add_rule(&db, &cid, kind, pat) {
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("add_rule: {e}"));
+        }
     }
-    let code = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
-    let rs = store::list_rules(&db, &cid).unwrap_or_default();
+    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    if !reload_ok(&code) {
+        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+    }
+    let rs = match store::list_rules(&db, &cid) {
+        Ok(rules) => rules,
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_rules: {e}")),
+    };
     let (domains, ips) = crate::routes::split_rules(rs);
     Json(json!({
         "reload_status": code,
@@ -71,23 +87,58 @@ pub async fn add_rules(
         "ips": ips,
         "added": plan.added,
         "rejected": plan.rejected,
-    }))
+    })).into_response()
 }
 
-pub async fn del_rule(State(st): State<AppState>, Path((_cid, rid)): Path<(String, i64)>) -> Json<Value> {
+pub async fn del_rule(State(st): State<AppState>, Path((cid, rid)): Path<(String, i64)>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    let _ = store::del_rule(&db, rid);
-    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await }))
+    match store::get_channel(&db, &cid) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err404("channel not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
+    }
+    let docker = match st.docker() {
+        Some(d) => d,
+        None => return err503("docker unavailable"),
+    };
+    match store::del_rule(&db, &cid, rid) {
+        Ok(true) => {}
+        Ok(false) => return err404("rule not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_rule: {e}")),
+    }
+    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    if !reload_ok(&code) {
+        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+    }
+    Json(json!({ "ok": true, "reload_status": code })).into_response()
 }
 
 pub async fn patch_rule(
     State(st): State<AppState>,
-    Path((_cid, rid)): Path<(String, i64)>,
+    Path((cid, rid)): Path<(String, i64)>,
     Json(b): Json<Value>,
-) -> Json<Value> {
+) -> axum::response::Response {
     let db = st.cfg.db_path();
-    let _ = store::set_rule_enabled(&db, rid, b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false));
-    Json(json!({ "ok": true, "reload_status": manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await }))
+    match store::get_channel(&db, &cid) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err404("channel not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
+    }
+    let docker = match st.docker() {
+        Some(d) => d,
+        None => return err503("docker unavailable"),
+    };
+    let enabled = b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    match store::set_rule_enabled(&db, &cid, rid, enabled) {
+        Ok(true) => {}
+        Ok(false) => return err404("rule not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_rule_enabled: {e}")),
+    }
+    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    if !reload_ok(&code) {
+        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+    }
+    Json(json!({ "ok": true, "reload_status": code })).into_response()
 }
 
 // ── 通道创建/编辑(命门 #5:oss 凭据经 provision→oss_connect 注入) ──────────
@@ -116,6 +167,23 @@ pub(crate) fn err500(msg: &str) -> axum::response::Response {
 pub(crate) fn err404(msg: &str) -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": msg }))).into_response()
 }
+pub(crate) fn err503(msg: &str) -> axum::response::Response {
+    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": msg }))).into_response()
+}
+/// FastAPI 风格错误体 `{"detail": msg}`(未捕获异常时 FastAPI 即此形状)——db 读失败 / docker
+/// 操作失败等新增的错误传播路径用它,与 Python 侧同类 5xx 对齐(前端 friendlyError 兼收 error/detail)。
+pub(crate) fn err_detail(status: StatusCode, msg: &str) -> axum::response::Response {
+    (status, Json(json!({ "detail": msg }))).into_response()
+}
+/// rebuild() 回的 reload_status:成功只能是完整的 2xx HTTP 状态码串,失败是错误串。
+/// create/update/start/delete 仍只记录失败；规则变更端点据此返回非 2xx。
+fn reload_ok(status: &str) -> bool {
+    status
+        .parse::<u16>()
+        .ok()
+        .map(|c| (200..300).contains(&c))
+        .unwrap_or(false)
+}
 pub(crate) fn channel_json(db: &std::path::Path, cid: &str) -> axum::response::Response {
     match store::get_channel(db, cid) {
         Ok(Some(c)) => Json(serde_json::to_value(&c).unwrap()).into_response(),
@@ -131,13 +199,22 @@ async fn provision(
     vnc_pwd: &str,
 ) -> anyhow::Result<(String, Option<i64>)> {
     let docker = st.docker().ok_or_else(|| anyhow::anyhow!("docker unavailable"))?;
-    let (id, novnc) = manager::create_channel(&docker, &st.cfg, ch, vnc_pwd).await?;
+    provision_with_docker(st, &docker, ch, vnc_pwd).await
+}
+
+async fn provision_with_docker(
+    st: &AppState,
+    docker: &bollard::Docker,
+    ch: &store::ChannelPublic,
+    vnc_pwd: &str,
+) -> anyhow::Result<(String, Option<i64>)> {
+    let (id, novnc) = manager::create_channel(docker, &st.cfg, ch, vnc_pwd).await?;
     let spec = registry::get(&ch.vpn_type)?;
     if spec.runtime == "oss" {
         let key = store::master_key(&st.cfg.data_dir)?;
         let config = store::get_config(&st.cfg.db_path(), &key, &ch.id)?;
         let proto = spec.protocol.clone().unwrap_or_default();
-        manager::oss_connect(&docker, &ch.id, &proto, &config).await?;
+        manager::oss_connect(docker, &ch.id, &proto, &config).await?;
     }
     Ok((id, novnc))
 }
@@ -201,7 +278,11 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
     match provision(&st, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
             let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-            let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+            // 对照 Python create:响应回通道(不含 reload_status);重载未达成仅记日志,不阻断建通道。
+            let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+            if !reload_ok(&reload) {
+                eprintln!("[api] create rebuild 重载未达成 (cid={cid}): {reload}");
+            }
             channel_json(&db, &cid)
         }
         Err(e) => {
@@ -237,7 +318,11 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
         match provision(&st, &ch2, &vnc).await {
             Ok((container_id, novnc)) => {
                 let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-                let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+                // 对照 Python update:响应回通道(不含 reload_status);重载未达成仅记日志。
+                let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+                if !reload_ok(&reload) {
+                    eprintln!("[api] update rebuild 重载未达成 (cid={cid}): {reload}");
+                }
             }
             Err(e) => {
                 let _ = store::set_status(&db, &cid, "error");
@@ -340,49 +425,82 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
         Ok(None) => return err404("not found"),
         Err(e) => return err500(&format!("{e}")),
     };
+    let docker = match st.docker() {
+        Some(d) => d,
+        None => return err503("docker unavailable"),
+    };
     let runtime = registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
     if runtime == "byo" {
         // byo 客户端装在可写层,扛得住原地重启 → 不重建
-        if let Some(d) = st.docker().as_ref() {
-            let _ = manager::start(d, &cid).await;
+        if let Err(e) = manager::start(&docker, &cid).await {
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("start: {e}"));
         }
-        let _ = store::set_status(&db, &cid, "running");
+        if let Err(e) = store::set_status(&db, &cid, "running") {
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
+        }
         return Json(json!({ "ok": true })).into_response();
     }
-    // hagb/oss:原地 start 扛不住 → 重建。重建是同步的,aTrust/EC 要十几秒;期间先落
-    // 「starting」状态,否则前端 8s 轮询拿到的还是 stopped → 卡片一直显示「已停止」(用户以为没生效)。
-    let _ = store::set_status(&db, &cid, "starting");
+    // hagb/oss:原地 start 扛不住 → 重建。Docker outcome 确认前不改 DB。
     let vnc = ch.vnc_password.clone().unwrap_or_default();
-    match provision(&st, &ch, &vnc).await {
+    match provision_with_docker(&st, &docker, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
-            let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-            let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+            if let Err(e) = store::set_container(&db, &cid, &container_id, novnc, "running") {
+                return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_container: {e}"));
+            }
+            // 对照 Python start:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
+            let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+            if !reload_ok(&reload) {
+                eprintln!("[api] start rebuild 重载未达成 (cid={cid}): {reload}");
+            }
             Json(json!({ "ok": true })).into_response()
         }
-        Err(e) => {
-            let _ = store::set_status(&db, &cid, "error");
-            err500(&format!("{e}"))
-        }
+        Err(e) => err500(&format!("{e}")),
     }
 }
 
-pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> Json<Value> {
+pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    if let Some(d) = st.docker().as_ref() {
-        let _ = manager::stop(d, &cid).await;
+    match store::get_channel(&db, &cid) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err404("not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
     }
-    let _ = store::set_status(&db, &cid, "stopped");
-    Json(json!({ "ok": true }))
+    let docker = match st.docker() {
+        Some(d) => d,
+        None => return err503("docker unavailable"),
+    };
+    if let Err(e) = manager::stop(&docker, &cid).await {
+        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("stop: {e}"));
+    }
+    if let Err(e) = store::set_status(&db, &cid, "stopped") {
+        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
+    }
+    Json(json!({ "ok": true })).into_response()
 }
 
-pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> Json<Value> {
+pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    if let Some(d) = st.docker().as_ref() {
-        let _ = manager::remove(d, &cid).await;
+    match store::get_channel(&db, &cid) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err404("not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
     }
-    let _ = store::del_channel(&db, &cid);
-    let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
-    Json(json!({ "ok": true }))
+    let docker = match st.docker() {
+        Some(d) => d,
+        None => return err503("docker unavailable"),
+    };
+    if let Err(e) = manager::remove(&docker, &cid).await {
+        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("remove: {e}"));
+    }
+    if let Err(e) = store::del_channel(&db, &cid) {
+        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_channel: {e}"));
+    }
+    // 对照 Python delete:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
+    let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    if !reload_ok(&reload) {
+        eprintln!("[api] delete rebuild 重载未达成 (cid={cid}): {reload}");
+    }
+    Json(json!({ "ok": true })).into_response()
 }
 
 // ── Clash 接入 / 入口接入(命门 #2:IP 带 no-resolve、域名经 bare) ────────────
@@ -392,18 +510,29 @@ fn text_plain(body: String) -> axum::response::Response {
 }
 
 pub async fn clash_provider(State(st): State<AppState>) -> axum::response::Response {
-    let rules = store::all_rules(&st.cfg.db_path()).unwrap_or_default();
+    // ★最危险:db 读失败绝不能回空 200——那会让外层 Clash 静默丢分流、流量 DIRECT 裸奔。
+    // 必须 5xx,让 Clash 保留上一份 provider(rule-provider 拉取失败时用旧副本)。
+    let rules = match store::all_rules(&st.cfg.db_path()) {
+        Ok(r) => r,
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
+    };
     text_plain(webutil::clash_provider_text(&rules))
 }
 
 pub async fn clash_snippet(State(st): State<AppState>) -> axum::response::Response {
-    let rules = store::all_rules(&st.cfg.db_path()).unwrap_or_default();
+    let rules = match store::all_rules(&st.cfg.db_path()) {
+        Ok(r) => r,
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
+    };
     let ui = st.cfg.ui_port.to_string();
     text_plain(webutil::clash_snippet_text(&rules, &st.cfg.mihomo_host_port, &ui))
 }
 
 pub async fn entry_pac(State(st): State<AppState>) -> axum::response::Response {
-    let rules = store::all_rules(&st.cfg.db_path()).unwrap_or_default();
+    let rules = match store::all_rules(&st.cfg.db_path()) {
+        Ok(r) => r,
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
+    };
     let pac = webutil::pac_text(&rules, &st.cfg.mihomo_host_port);
     ([(axum::http::header::CONTENT_TYPE, "application/x-ns-proxy-autoconfig")], pac).into_response()
 }
@@ -578,14 +707,26 @@ pub async fn images_inventory(State(st): State<AppState>) -> Json<Value> {
     Json(preflight::image_inventory(st.docker().as_ref(), &arch, &mirrors).await)
 }
 
-pub async fn mirrors_list(State(st): State<AppState>) -> Json<Value> {
-    Json(json!(store::list_mirrors(&st.cfg.db_path()).unwrap_or_default()))
+pub async fn mirrors_list(State(st): State<AppState>) -> axum::response::Response {
+    match store::list_mirrors(&st.cfg.db_path()) {
+        Ok(m) => Json(json!(m)).into_response(),
+        Err(e) => err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_mirrors: {e}")),
+    }
+}
+
+/// 双栈镜像 host 契约:Python 当前 ASCII allowlist `[A-Za-z0-9._:/-]+`。add/test 共用。
+fn valid_mirror_host(h: &str) -> bool {
+    !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
 }
 
 pub async fn mirrors_add(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
     let host = b.get("host").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if host.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "host required" }))).into_response();
+    }
+    // 命门②:堵 userinfo '@' / 逗号 / 空白 / 换行等注入字符(对照 Python HTTPException(400));不限私网。
+    if !valid_mirror_host(&host) {
+        return err_detail(StatusCode::BAD_REQUEST, "非法镜像源地址");
     }
     let db = st.cfg.db_path();
     match store::add_mirror(&db, &host) {
@@ -609,8 +750,12 @@ pub async fn mirrors_del(State(st): State<AppState>, Path(mid): Path<i64>) -> Js
     Json(json!({ "ok": true }))
 }
 
-pub async fn mirrors_test(Json(b): Json<Value>) -> Json<Value> {
+pub async fn mirrors_test(Json(b): Json<Value>) -> axum::response::Response {
     let host = b.get("host").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    // 命门②:非法 host(userinfo/逗号/空白/换行等)不发请求,直接 4xx——对齐 mirrors_add 的校验。
+    if !valid_mirror_host(&host) {
+        return err_detail(StatusCode::BAD_REQUEST, "非法镜像源地址");
+    }
     let t0 = std::time::Instant::now();
     // 对照 Python mirrors_test:任何 HTTP 响应(不抛)即可达,不看状态码
     // (区别于 preflight 的 mirror_reachable 用 <500——那个对照 _mirror_reachable)
@@ -621,7 +766,7 @@ pub async fn mirrors_test(Json(b): Json<Value>) -> Json<Value> {
         .await
         .is_ok();
     let ms = if ok { Some(t0.elapsed().as_millis() as i64) } else { None };
-    Json(json!({ "reachable": ok, "latency_ms": ms }))
+    Json(json!({ "reachable": ok, "latency_ms": ms })).into_response()
 }
 
 // ── 配置导出 / 导入(整站通道 + 规则的备份/迁移) ──────────────────────────────
@@ -683,12 +828,16 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
 /// POST /api/config/import:吃一份 config_export 文档,逐条重建通道(新 id/mac/vnc)+ 规则。
 /// **不起容器、不 provision、不 oss_connect**(有意):同步起 N 个容器要几分钟,缺镜像会整批失败;
 /// 「启动」按钮本就是重建原语,导入后用户按需逐个启动。故所有导入的通道落 status="stopped"。
+fn import_text(entry: &Value, key: &'static str, default: &str) -> Result<String, &'static str> {
+    match entry.get(key) {
+        None | Some(Value::Null) => Ok(default.to_string()),
+        Some(Value::String(s)) => Ok(s.clone()),
+        _ => Err(key),
+    }
+}
+
 pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    let key = match store::master_key(&st.cfg.data_dir) {
-        Ok(k) => k,
-        Err(e) => return err500(&format!("master_key: {e}")),
-    };
     let entries = match (
         b.get("kind").and_then(|v| v.as_str()),
         b.get("channels").and_then(|v| v.as_array()),
@@ -696,17 +845,92 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
         (Some("vpnmgr-export"), Some(arr)) => arr.clone(),
         _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "不是有效的配置导出文件" }))).into_response(),
     };
-    // 现有通道名(含本次已导入的),用于同名跳过。
-    let mut names: std::collections::HashSet<String> = store::list_channels(&db)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| c.name)
-        .collect();
+    let mut names: std::collections::HashSet<String> = match store::list_channels(&db) {
+        Ok(channels) => channels.into_iter().map(|c| c.name).collect(),
+        Err(e) => return err500(&format!("list_channels: {e}")),
+    };
     let mut imported: Vec<String> = Vec::new();
     let mut skipped: Vec<Value> = Vec::new();
+    let mut plans: Vec<store::ImportChannel> = Vec::new();
     for entry in &entries {
-        let name = js(entry, "name").trim().to_string();
-        let vtype = js(entry, "vpn_type");
+        if !entry.is_object() {
+            skipped.push(json!({ "name": "", "reason": "条目格式错误" }));
+            continue;
+        }
+        let display_name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+
+        let empty_rules = Vec::new();
+        let (raw_rules, rules_shape_ok) = match entry.get("rules") {
+            None | Some(Value::Null) => (&empty_rules, true),
+            Some(Value::Array(rules)) => (rules, true),
+            _ => {
+                skipped.push(json!({ "name": display_name, "reason": "规则列表格式错误" }));
+                (&empty_rules, false)
+            }
+        };
+        let mut planned_rules = Vec::new();
+        for (index, rule) in raw_rules.iter().enumerate() {
+            let Some(obj) = rule.as_object() else {
+                skipped.push(json!({ "name": display_name, "reason": format!("规则 #{} 格式错误", index + 1) }));
+                continue;
+            };
+            let kind = obj.get("kind").and_then(|v| v.as_str());
+            let pattern = obj.get("pattern").and_then(|v| v.as_str());
+            let (Some(kind), Some(pattern)) = (kind, pattern) else {
+                skipped.push(json!({ "name": display_name, "reason": format!("非法规则 {}", obj.get("pattern").unwrap_or(&Value::Null)) }));
+                continue;
+            };
+            if kind != "domain" && kind != "ip" {
+                skipped.push(json!({ "name": display_name, "reason": format!("非法规则 {pattern}") }));
+                continue;
+            }
+            let enabled = match obj.get("enabled") {
+                None => true,
+                Some(Value::Bool(v)) => *v,
+                Some(Value::Number(v)) if v.as_i64().is_some() => v.as_i64().unwrap_or(1) != 0,
+                _ => {
+                    skipped.push(json!({ "name": display_name, "reason": format!("规则 enabled 类型错误 {pattern}") }));
+                    continue;
+                }
+            };
+            let Some((kind, pattern)) = webutil::normalize_stored_rule(kind, pattern) else {
+                skipped.push(json!({ "name": display_name, "reason": format!("非法规则 {pattern}") }));
+                continue;
+            };
+            planned_rules.push(store::ImportRule { kind, pattern, enabled });
+        }
+
+        type ImportTextFields = (String, String, String, String, String, String, String);
+        let text = (|| -> Result<ImportTextFields, &'static str> {
+            Ok((
+                import_text(entry, "name", "")?,
+                import_text(entry, "vpn_type", "")?,
+                import_text(entry, "server", "")?,
+                import_text(entry, "ec_ver", "")?,
+                import_text(entry, "login_method", "interactive")?,
+                import_text(entry, "username", "")?,
+                import_text(entry, "probe_url", "")?,
+            ))
+        })();
+        let (name, vtype, top_server, ec_ver, login_method, top_username, probe_url) = match text {
+            Ok(fields) => fields,
+            Err(field) => {
+                skipped.push(json!({ "name": display_name, "reason": format!("字段 {field} 类型错误") }));
+                continue;
+            }
+        };
+        let cfg_in = match entry.get("config") {
+            None | Some(Value::Null) => serde_json::Map::new(),
+            Some(Value::Object(map)) => map.clone(),
+            _ => {
+                skipped.push(json!({ "name": display_name, "reason": "config 格式错误" }));
+                continue;
+            }
+        };
+        if !rules_shape_ok {
+            continue;
+        }
+        let name = name.trim().to_string();
         if registry::get(&vtype).is_err() {
             skipped.push(json!({ "name": name, "reason": format!("未知类型 {vtype}") }));
             continue;
@@ -715,61 +939,39 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
             skipped.push(json!({ "name": name, "reason": "同名通道已存在" }));
             continue;
         }
-        let cfg_in: serde_json::Map<String, Value> =
-            entry.get("config").and_then(|v| v.as_object()).cloned().unwrap_or_default();
         let server = {
-            let s = js(entry, "server");
-            if s.is_empty() { cfg_in.get("server").and_then(|v| v.as_str()).unwrap_or("").into() } else { s }
+            if top_server.is_empty() { cfg_in.get("server").and_then(|v| v.as_str()).unwrap_or("").into() } else { top_server }
         };
         let username = {
-            let u = js(entry, "username");
-            if u.is_empty() { cfg_in.get("username").and_then(|v| v.as_str()).unwrap_or("").into() } else { u }
-        };
-        let login_method = {
-            let l = js(entry, "login_method");
-            if l.is_empty() { "interactive".into() } else { l }
+            if top_username.is_empty() { cfg_in.get("username").and_then(|v| v.as_str()).unwrap_or("").into() } else { top_username }
         };
         let cid = rand_hex(4);
+        let imported_name = if name.is_empty() { cid.clone() } else { name.clone() };
         let nc = NewChannel {
             id: cid.clone(),
-            name: name.clone(),
+            name: imported_name.clone(),
             vpn_type: vtype.clone(),
             server,
-            ec_ver: js(entry, "ec_ver"),
-            login_method,
+            ec_ver,
+            login_method: if login_method.is_empty() { "interactive".into() } else { login_method },
             username,
             password: String::new(), // 交互密码不在文件里,导入后重新登录
             vnc_password: rand_hex(4),
             mac: rand_mac(),
-            probe_url: js(entry, "probe_url"),
+            probe_url,
             status: "stopped".into(),
         };
         let sk = secret_keys_of(&vtype);
-        if let Err(e) = store::add_channel(&db, &key, &nc, &cfg_in, &sk) {
-            return err500(&format!("add_channel: {e}"));
-        }
-        // 规则原样恢复(不重新 classify);enabled 为 0/false 的补一次 set_rule_enabled。
-        if let Some(rules) = entry.get("rules").and_then(|v| v.as_array()) {
-            for r in rules {
-                let pattern = js(r, "pattern");
-                let kind = js(r, "kind");
-                if pattern.is_empty() || !(kind == "domain" || kind == "ip") {
-                    continue;
-                }
-                if let Ok(rid) = store::add_rule(&db, &cid, &kind, &pattern) {
-                    let enabled = match r.get("enabled") {
-                        Some(Value::Bool(x)) => *x,
-                        Some(Value::Number(n)) => n.as_i64().unwrap_or(1) != 0,
-                        _ => true,
-                    };
-                    if !enabled {
-                        let _ = store::set_rule_enabled(&db, rid, false);
-                    }
-                }
-            }
-        }
-        names.insert(name.clone());
-        imported.push(name);
+        plans.push(store::ImportChannel { channel: nc, config: cfg_in, secret_keys: sk, rules: planned_rules });
+        names.insert(imported_name.clone());
+        imported.push(imported_name);
+    }
+    let key = match store::master_key(&st.cfg.data_dir) {
+        Ok(k) => k,
+        Err(e) => return err500(&format!("master_key: {e}")),
+    };
+    if let Err(e) = store::import_channels(&db, &key, &plans) {
+        return err500(&format!("config import: {e}"));
     }
     let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
     Json(json!({
@@ -779,4 +981,38 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
         "skipped": skipped,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_ok_judges_put_file_failure_as_failure() {
+        // D:put_file 失败时 rebuild 返回 "put_file failed: ..."(无裸 2xx),reload_ok 判 false;正常 2xx 判成功。
+        // 终点:put_file 失败 → 端点不返回成功语义、前端不显示绑定成功(此前 "204 (put_file failed:...)" 被误判)。
+        assert!(reload_ok("204"));
+        assert!(reload_ok("200"));
+        assert!(!reload_ok("204 (put_file failed: stale config)"));
+        assert!(!reload_ok("put_file failed: error connecting to /nonexistent.sock"));
+        assert!(!reload_ok("config read error: bad yaml"));
+        assert!(!reload_ok("500"));
+        assert!(!reload_ok(""));
+    }
+
+    #[test]
+    fn valid_mirror_host_rejects_userinfo_and_danger() {
+        // E:堵 userinfo '@' 与 DANGER(逗号/空白/换行/引号/反斜杠);允许 host:port/path 形态。
+        assert!(valid_mirror_host("mirror.example.com"));
+        assert!(valid_mirror_host("192.168.1.10:5000"));
+        assert!(valid_mirror_host("host.io:5000/prefix"));
+        assert!(!valid_mirror_host("user@127.0.0.1:8443/admin"));
+        assert!(!valid_mirror_host("a,b"));
+        assert!(!valid_mirror_host("a b"));
+        assert!(!valid_mirror_host("a\nb"));
+        assert!(!valid_mirror_host("host/path?query=1"));
+        assert!(!valid_mirror_host("host/path#fragment"));
+        assert!(!valid_mirror_host("镜像.example"));
+        assert!(!valid_mirror_host(""));
+    }
 }
