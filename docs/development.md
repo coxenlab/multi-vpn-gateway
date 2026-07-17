@@ -101,6 +101,7 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 - **已落地**:三家族适配器(hagb / oss / byo);域名 + IP-CIDR 分流规则、启停、rule-provider 与遥测;前端 5 屏接入真实 API(mock `data.js` 已移除);无 Clash 时的入口接入(PAC + 各平台一键命令);arm64 交互式 noVNC 登录。
 - **TODO(Phase 4)**:逐家国产 VPN 厂商 GUI 的按需预装 / 程序化登录适配器。byo 是长尾兜底(任意客户端手动装),Phase 4 才是逐家专有客户端的一等适配(预装镜像 + 自动化登录)。
+- **已落地(2026-07-16)**:「mihomo 未运行」看门狗盲区手动修复入口。转发器半僵死(容器 Up、端口 TCP 通但零响应)时 `gateway_health=healthy` 但 `mihomo_status=down`——芯片红、横幅沉默、无处可点。修复:`feedback.js` 新增盲区态横幅(danger,「分流路由(mihomo)无响应」+ 复用「手动修复」按钮走 `/api/system/heal-proxy` 两级自愈),红态芯片本身可点、重开横幅;web 版无 `gateway_health` 字段不触发。注意安装版 app 静态资源随包分发,需重建 dmg 才到用户手上。
 - **已推迟**:strongSwan / IKEv2——纯 IPsec 无具名 tun、dante 难 pin egress(须 route-based VTI/XFRMi),暂不收(见 `adapters.yaml` 末尾注释)。
 
 ### byo 失败模式(诚实标注,尽力而为)

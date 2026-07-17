@@ -365,6 +365,19 @@
       chip.classList.toggle("ok", ok);
       chip.classList.toggle("bad", !ok);
       if (txt) txt.textContent = label;
+      // 坏态芯片 = 常驻修复入口:点击重新展开横幅(横幅被收起后仍有地方点)。
+      // 仅桌面版(有 gateway_health 字段、有 heal-proxy 端点)可点;web 版保持纯展示。
+      chip._fbCanHeal = !ok && gh !== undefined;
+      chip.style.cursor = chip._fbCanHeal ? "pointer" : "";
+      chip.title = chip._fbCanHeal ? "点击查看修复选项" : "";
+      if (!chip._fbHealBound) {
+        chip._fbHealBound = true;
+        chip.addEventListener("click", () => {
+          if (!chip._fbCanHeal) return;
+          dismissedKey = null;
+          poll();
+        });
+      }
     }
 
     function render(sys) {
@@ -372,11 +385,22 @@
       const gh = sys && sys.gateway_health;
       window.fb.gatewayHealth = gh || null; // 供 friendlyError 按根因映射容器操作失败
       if (healInFlight) return; // 修复请求在途:别重绘横幅(保住「修复中…」禁用态)
-      currentKey = (gh || "healthy") + "|" + (sys && sys.tunnel_fallback ? 1 : 0);
+      // 看门狗盲区:容器/转发口探测全绿(gateway_health=healthy),但 mihomo 控制口无应答
+      // (转发器半僵死:TCP 能连、无响应)。芯片会红,横幅若不接手就无处可点(2026-07-16)。
+      const ctrlDown = gh === "healthy" && sys && sys.mihomo_status !== "running";
+      currentKey = (gh || "healthy") + "|" + (sys && sys.tunnel_fallback ? 1 : 0) + "|" + (ctrlDown ? 1 : 0);
       if (dismissedKey !== null && dismissedKey !== currentKey) dismissedKey = null; // 状态变化 → 复位收起记忆
       const dismissed = dismissedKey === currentKey;
       // 后端无此字段(老版本)或健康 → 收横幅;若刚从坏态恢复,提示一声。
       if (!gh || gh === "healthy") {
+        if (ctrlDown) {
+          wasBroken = true; healing = false;
+          if (dismissed) { clear(); return; }
+          banner("danger", SVG.cross, "分流路由(mihomo)无响应",
+            "底座检测正常,但分流路由不应答(常见于端口转发半僵死)。点「手动修复」重启分流路由。", healBtn());
+          bindHeal();
+          return;
+        }
         if (wasBroken) window.toast("分流链路已恢复");
         wasBroken = false; healing = false;
         if (sys && sys.tunnel_fallback && !dismissed) {
