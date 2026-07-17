@@ -27,7 +27,7 @@ def test_rebuild_skips_disabled(make_channel, monkeypatch):
                         lambda *a, **k: type("R", (), {"status_code": 204})())
     store.add_channel(make_channel("c1"))
     rid = store.add_rule("c1", "domain", "off.com")
-    store.set_rule_enabled(rid, False)
+    store.set_rule_enabled("c1", rid, False)
     manager.rebuild()
     with open(os.environ["MIHOMO_CONFIG_PATH"]) as f:
         cfg = yaml.safe_load(f)

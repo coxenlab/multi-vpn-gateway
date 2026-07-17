@@ -15,16 +15,16 @@ def test_add_and_list_rules(make_channel):
 def test_set_rule_enabled(make_channel):
     store.add_channel(make_channel("c1"))
     rid = store.add_rule("c1", "ip", "10.0.0.0/8")
-    store.set_rule_enabled(rid, False)
+    store.set_rule_enabled("c1", rid, False)
     assert store.get_rule(rid)["enabled"] == 0
-    store.set_rule_enabled(rid, True)
+    store.set_rule_enabled("c1", rid, True)
     assert store.get_rule(rid)["enabled"] == 1
 
 
 def test_del_rule(make_channel):
     store.add_channel(make_channel("c1"))
     rid = store.add_rule("c1", "domain", "a.com")
-    store.del_rule(rid)
+    store.del_rule("c1", rid)
     assert store.list_rules("c1") == []
 
 

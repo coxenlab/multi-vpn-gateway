@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # 一键启动。所有端口高位随机、只听 127.0.0.1、首次分配后持久化。
 set -euo pipefail
+umask 077   # 新建的 .env / config.yaml 默认 0600,不给同机其他账号读 secret
 cd "$(dirname "$0")"
 
 # 1) 首次运行:生成随机高位端口 + mihomo 密钥,写入 .env(以后保持不变)
 [ -f .env ] || python3 gen_env.py > .env
+chmod 600 .env 2>/dev/null || true
 set -a; . ./.env; set +a
 
 # 2) 首次运行:用密钥渲染 mihomo 初始配置(空规则)。已存在则保留(里面有你建好的通道)
 if [ ! -f mihomo/config.yaml ]; then
   sed "s/__SECRET__/${MIHOMO_SECRET}/" mihomo/config.template.yaml > mihomo/config.yaml
 fi
+chmod 600 mihomo/config.yaml 2>/dev/null || true
 
 echo "==> 构建并启动(全 Docker,本机零新增依赖)..."
 docker compose up -d --build

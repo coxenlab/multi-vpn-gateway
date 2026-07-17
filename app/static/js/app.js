@@ -66,14 +66,17 @@
 
   /* ── 复制到剪贴板 ── */
   window.copyText = function (text, label) {
-    const done = () => toast((label || "已复制") + " ✓");
+    const ok = () => toast((label || "已复制") + " ✓");
+    const fail = () => toast("复制失败,请手动选择后复制", { variant: "danger" });
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, done);
+      navigator.clipboard.writeText(text).then(ok, fail);
     } else {
       const ta = document.createElement("textarea");
       ta.value = text; document.body.appendChild(ta); ta.select();
-      try { document.execCommand("copy"); } catch (e) {}
-      ta.remove(); done();
+      let copied = false;
+      try { copied = document.execCommand("copy"); } catch (e) { copied = false; }
+      ta.remove();
+      copied ? ok() : fail();
     }
   };
 

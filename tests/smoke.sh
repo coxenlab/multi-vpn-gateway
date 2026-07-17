@@ -3,14 +3,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [ ! -f .env ]; then python3 gen_env.py; fi
+umask 077
+if [ ! -f .env ]; then python3 gen_env.py > .env; fi
 set -a; . ./.env; set +a
-# 渲染 mihomo 配置(start.sh 同款占位替换)
-sed "s/__SECRET__/${MIHOMO_SECRET}/" mihomo/config.template.yaml > mihomo/config.yaml
+# 渲染 mihomo 配置(start.sh 同款占位替换;已存在则保留,不冲掉运行中通道)
+if [ ! -f mihomo/config.yaml ]; then
+  sed "s/__SECRET__/${MIHOMO_SECRET}/" mihomo/config.template.yaml > mihomo/config.yaml
+fi
 
 echo "== compose up =="
 docker compose up -d --build
 trap 'docker compose logs --tail=30 app || true' ERR
+trap 'docker compose down >/dev/null 2>&1 || true' EXIT   # 冒烟结束自清理,不留容器
 
 base="http://127.0.0.1:${UI_PORT}"
 echo "== 等待 app 就绪 =="

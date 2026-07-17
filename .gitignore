@@ -9,6 +9,9 @@ mihomo/config.yaml
 # mihomo 运行缓存
 mihomo/cache.db
 
+# 数据卷手动备份(含 master.key / 密文库,绝不入库)
+desktop/core/.data.bak-*/
+
 # macOS
 .DS_Store
 

@@ -10,7 +10,7 @@ import requests
 
 import docker
 
-from fastapi import FastAPI, Request, UploadFile, File, Body
+from fastapi import FastAPI, Request, UploadFile, File, Body, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -245,14 +245,16 @@ async def add_rules(cid, req: Request):
 
 @app.delete("/api/channels/{cid}/rules/{rid}")
 def del_rule(cid, rid: int):
-    store.del_rule(rid)
+    if not store.del_rule(cid, rid):
+        raise HTTPException(404, "rule not found")
     return {"ok": True, "reload_status": manager.rebuild()}
 
 
 @app.patch("/api/channels/{cid}/rules/{rid}")
 async def patch_rule(cid, rid: int, req: Request):
     b = await req.json()
-    store.set_rule_enabled(rid, bool(b.get("enabled")))
+    if not store.set_rule_enabled(cid, rid, bool(b.get("enabled"))):
+        raise HTTPException(404, "rule not found")
     return {"ok": True, "reload_status": manager.rebuild()}
 
 
@@ -369,7 +371,7 @@ async def config_import(req: Request):
             if isinstance(r, dict) and r.get("pattern") and r.get("kind") in ("domain", "ip"):
                 rid = store.add_rule(cid, r["kind"], r["pattern"])
                 if not r.get("enabled", 1):
-                    store.set_rule_enabled(rid, False)
+                    store.set_rule_enabled(cid, rid, False)
         existing.add(ch["name"])
         imported.append(ch["name"])
     return {"ok": True, "reload_status": manager.rebuild(),

@@ -245,14 +245,17 @@ def get_rule(rid):
         return dict(r) if r else None
 
 
-def del_rule(rid):
+def del_rule(cid, rid):
     with _c() as c:
-        c.execute("DELETE FROM rules WHERE id=?", (rid,))
+        cur = c.execute("DELETE FROM rules WHERE id=? AND channel_id=?", (rid, cid))
+        return cur.rowcount
 
 
-def set_rule_enabled(rid, enabled):
+def set_rule_enabled(cid, rid, enabled):
     with _c() as c:
-        c.execute("UPDATE rules SET enabled=? WHERE id=?", (1 if enabled else 0, rid))
+        cur = c.execute("UPDATE rules SET enabled=? WHERE id=? AND channel_id=?",
+                        (1 if enabled else 0, rid, cid))
+        return cur.rowcount
 
 
 def set_latency(cid, ms):
