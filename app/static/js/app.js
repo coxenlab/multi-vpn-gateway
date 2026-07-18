@@ -103,7 +103,10 @@
         tabs.forEach((t) => t.classList.remove("active"));
         tab.classList.add("active");
         const scope = group.closest("[data-tabscope]") || document;
-        $$(".tabpanel", scope).forEach((p) => p.classList.toggle("active", p.dataset.panel === tab.dataset.tab));
+        // 只切当前 scope 的直属 panel；合并页允许 panel 内再嵌一组 tabs。
+        Array.from(scope.children)
+          .filter((p) => p.classList && p.classList.contains("tabpanel"))
+          .forEach((p) => p.classList.toggle("active", p.dataset.panel === tab.dataset.tab));
       }));
     });
   }

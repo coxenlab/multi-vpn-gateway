@@ -285,6 +285,29 @@ async def patch_rule(cid, rid: int, req: Request):
     return failure or {"ok": True, "reload_status": code}
 
 
+@app.patch("/api/rules")
+async def patch_rules(req: Request):
+    b = await req.json()
+    if not isinstance(b, dict) or not isinstance(b.get("enabled"), bool):
+        raise HTTPException(400, "enabled must be boolean")
+    raw_ids = b.get("ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(400, "ids must be a non-empty array")
+    ids = []
+    for rid in raw_ids:
+        if isinstance(rid, bool) or not isinstance(rid, int) or rid <= 0:
+            raise HTTPException(400, "rule ids must be positive integers")
+        if rid not in ids:
+            ids.append(rid)
+    try:
+        if not store.set_rules_enabled(ids, b["enabled"]):
+            raise HTTPException(404, "one or more rules not found")
+    except sqlite3.Error as exc:
+        return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
+    code, failure = _confirmed_rebuild()
+    return failure or {"ok": True, "updated": len(ids), "reload_status": code}
+
+
 @app.post("/api/channels/{cid}/start")
 def start(cid):
     # hagb(EC/aTrust)的守护进程与 oss 经 exec 注入的隧道都扛不住原地 docker start

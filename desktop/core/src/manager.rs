@@ -196,6 +196,11 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
 /// 任意通道类型(含 EC/aTrust)都用它当 socks5h 客户端,与被探的 vpn 容器类型无关。
 const PROBE_IMAGE: &str = "vpnmgr/oss-vpn:latest";
 
+fn probe_container_name(cid: &str) -> String {
+    // 同一通道可能被页面轮询与手动「检测连通」并发探活；名字必须唯一，避免互删。
+    format!("vpncore-probe-{cid}-{:016x}", rand::random::<u64>())
+}
+
 /// 命门 #1:唯一登录成功判据。**host-VM 模型**:Rust core 在宿主、够不着 VM 内网 172.x,
 /// 故探活搬进 VM 内一次性容器(`vpnmgr_vpnnet` 上),`curl --socks5-hostname vpn-{id}:1080`
 /// (socks5h 远程解析)打 probe_url。语义不变:容忍自签证书(`-k`)、6s 超时、status<500 才算通。
@@ -209,7 +214,7 @@ pub async fn probe(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelP
         None => return (false, None),
     };
     let proxy = format!("vpn-{}:1080", ch.id);
-    let name = format!("vpncore-probe-{}", ch.id);
+    let name = probe_container_name(&ch.id);
     let cmd = vec![
         "curl", "-s", "-o", "/dev/null",
         "-w", "%{http_code} %{time_total}",
@@ -743,6 +748,15 @@ mod tests {
         assert_eq!(parse_probe_output("500 0.2"), (false, Some(200)));
         assert_eq!(parse_probe_output("000 0.000"), (false, None));
         assert_eq!(parse_probe_output(""), (false, None));
+    }
+
+    #[test]
+    fn probe_container_names_are_unique_and_stay_in_managed_namespace() {
+        let a = probe_container_name("abc123");
+        let b = probe_container_name("abc123");
+        assert!(a.starts_with("vpncore-probe-abc123-"));
+        assert!(b.starts_with("vpncore-probe-abc123-"));
+        assert_ne!(a, b);
     }
 
     #[test]

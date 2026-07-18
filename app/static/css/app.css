@@ -395,6 +395,10 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 .overlay { position: fixed; inset: 0; background: color-mix(in oklab, var(--fg), transparent 55%); z-index: 80; display: none; align-items: center; justify-content: center; padding: var(--space-6); }
 .overlay.open { display: flex; }
 .modal { background: var(--surface); border-radius: var(--radius-lg); border: 1px solid var(--border); max-width: 560px; width: 100%; box-shadow: var(--elev-raised); max-height: 86vh; overflow: auto; }
+.fb-confirm { max-width: 440px; }
+.fb-confirm-body { padding: var(--space-6); }
+.fb-confirm-body p { margin-top: var(--space-3); color: var(--muted); font-size: var(--text-sm); line-height: 1.6; }
+.fb-confirm-actions { display: flex; justify-content: flex-end; gap: var(--space-2); padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border); background: var(--surface-2); }
 
 /* ─── noVNC remote frame（仿真壳） ──────────────────────────────────────── */
 .vnc-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; background: var(--ink); }

@@ -21,6 +21,16 @@ def test_set_rule_enabled(make_channel):
     assert store.get_rule(rid)["enabled"] == 1
 
 
+def test_set_rules_enabled_is_atomic(make_channel):
+    store.add_channel(make_channel("c1"))
+    first = store.add_rule("c1", "domain", "a.com")
+    second = store.add_rule("c1", "domain", "b.com")
+    assert store.set_rules_enabled([first, second], False)
+    assert [r["enabled"] for r in store.list_rules("c1")] == [0, 0]
+    assert not store.set_rules_enabled([first, 999999], True)
+    assert [r["enabled"] for r in store.list_rules("c1")] == [0, 0]
+
+
 def test_del_rule(make_channel):
     store.add_channel(make_channel("c1"))
     rid = store.add_rule("c1", "domain", "a.com")

@@ -50,6 +50,18 @@ def test_toggle_and_delete_rule(client):
     assert client.get("/api/channels").json()[0]["domains"] == []
 
 
+def test_batch_toggle_rules_is_atomic(client):
+    cid = _create(client)["id"]
+    client.post(f"/api/channels/{cid}/rules", json={"patterns": ["a.com", "b.com"]})
+    ids = [r["id"] for r in client.get("/api/channels").json()[0]["domains"]]
+    res = client.patch("/api/rules", json={"ids": ids, "enabled": False})
+    assert res.status_code == 200 and res.json()["updated"] == 2
+    assert [r["enabled"] for r in client.get("/api/channels").json()[0]["domains"]] == [0, 0]
+    res = client.patch("/api/rules", json={"ids": [ids[0], 999999], "enabled": True})
+    assert res.status_code == 404
+    assert [r["enabled"] for r in client.get("/api/channels").json()[0]["domains"]] == [0, 0]
+
+
 def test_system(client):
     j = client.get("/api/system").json()
     assert j["mihomo_status"] == "running"

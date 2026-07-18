@@ -141,6 +141,43 @@ pub async fn patch_rule(
     Json(json!({ "ok": true, "reload_status": code })).into_response()
 }
 
+pub async fn patch_rules(
+    State(st): State<AppState>,
+    Json(b): Json<Value>,
+) -> axum::response::Response {
+    let enabled = match b.get("enabled").and_then(|v| v.as_bool()) {
+        Some(v) => v,
+        None => return err_detail(StatusCode::BAD_REQUEST, "enabled must be boolean"),
+    };
+    let raw_ids = match b.get("ids").and_then(|v| v.as_array()) {
+        Some(v) if !v.is_empty() => v,
+        _ => return err_detail(StatusCode::BAD_REQUEST, "ids must be a non-empty array"),
+    };
+    let mut ids = std::collections::BTreeSet::new();
+    for value in raw_ids {
+        match value.as_i64() {
+            Some(id) if id > 0 => { ids.insert(id); }
+            _ => return err_detail(StatusCode::BAD_REQUEST, "rule ids must be positive integers"),
+        }
+    }
+    let ids: Vec<i64> = ids.into_iter().collect();
+    let docker = match st.docker() {
+        Some(d) => d,
+        None => return err503("docker unavailable"),
+    };
+    let db = st.cfg.db_path();
+    match store::set_rules_enabled(&db, &ids, enabled) {
+        Ok(true) => {}
+        Ok(false) => return err404("one or more rules not found"),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_rules_enabled: {e}")),
+    }
+    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    if !reload_ok(&code) {
+        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+    }
+    Json(json!({ "ok": true, "updated": ids.len(), "reload_status": code })).into_response()
+}
+
 // ── 通道创建/编辑(命门 #5:oss 凭据经 provision→oss_connect 注入) ──────────
 
 fn rand_hex(n: usize) -> String {

@@ -32,6 +32,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/channels/:cid/upload", axum::routing::post(api::upload))
         .route("/api/channels/:cid/status", get(api::status))
         .route("/api/channels/:cid/rules", axum::routing::post(api::add_rules))
+        .route("/api/rules", axum::routing::patch(api::patch_rules))
         .route(
             "/api/channels/:cid/rules/:rid",
             axum::routing::delete(api::del_rule).patch(api::patch_rule),
@@ -209,6 +210,14 @@ mod tests {
         let resp = app.clone().oneshot(
             Request::builder().method("PATCH").uri(format!("/api/channels/c1/rules/{rid}"))
                 .header("content-type", "application/json").body(Body::from(r#"{"enabled":false}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(crate::store::get_rule(&db, rid).unwrap().unwrap().enabled, 1);
+
+        let resp = app.clone().oneshot(
+            Request::builder().method("PATCH").uri("/api/rules")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"ids":[{rid}],"enabled":false}}"#))).unwrap()
         ).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(crate::store::get_rule(&db, rid).unwrap().unwrap().enabled, 1);

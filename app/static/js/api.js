@@ -72,6 +72,7 @@
     delRule: (id, rid) => req("DELETE", `/api/channels/${id}/rules/${rid}`),
     toggleRule: (id, rid, enabled) =>
       req("PATCH", `/api/channels/${id}/rules/${rid}`, { enabled }),
+    toggleRules: (ids, enabled) => req("PATCH", "/api/rules", { ids, enabled }),
     start: (id) => req("POST", `/api/channels/${id}/start`),
     stop: (id) => req("POST", `/api/channels/${id}/stop`),
     remove: (id) => req("DELETE", `/api/channels/${id}`),

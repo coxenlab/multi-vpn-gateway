@@ -60,6 +60,54 @@
     return richToast(msg, opt);
   };
 
+  /* ── confirm:替代桌面 WKWebView 不支持的 window.confirm ────────────────
+   * 返回 Promise<boolean>;opts={title,confirmLabel,cancelLabel,danger}。
+   * 点击遮罩 / 取消 / Escape 均返回 false,并把焦点还给触发控件。 */
+  function confirmDialog(message, opts) {
+    opts = opts || {};
+    const previousFocus = document.activeElement;
+    const labelId = "fbc-title-" + Math.random().toString(36).slice(2, 8);
+    const descId = "fbc-desc-" + Math.random().toString(36).slice(2, 8);
+    const overlay = document.createElement("div");
+    overlay.className = "overlay fb-confirm-overlay";
+    overlay.innerHTML = `
+      <div class="modal fb-confirm" role="dialog" aria-modal="true" aria-labelledby="${labelId}" aria-describedby="${descId}">
+        <div class="fb-confirm-body">
+          <h3 id="${labelId}">${esc(opts.title || "确认操作")}</h3>
+          <p id="${descId}">${esc(message)}</p>
+        </div>
+        <div class="fb-confirm-actions">
+          <button class="btn btn-secondary" type="button" data-cancel>${esc(opts.cancelLabel || "取消")}</button>
+          <button class="btn ${opts.danger ? "btn-danger" : "btn-primary"}" type="button" data-confirm>${esc(opts.confirmLabel || "确认")}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (answer) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener("keydown", onKeydown, true);
+        overlay.remove();
+        if (previousFocus && typeof previousFocus.focus === "function") previousFocus.focus();
+        resolve(answer);
+      };
+      const onKeydown = (e) => {
+        if (e.key === "Escape") { e.preventDefault(); finish(false); }
+      };
+      overlay.querySelector("[data-cancel]").addEventListener("click", () => finish(false));
+      overlay.querySelector("[data-confirm]").addEventListener("click", () => finish(true));
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) finish(false); });
+      document.addEventListener("keydown", onKeydown, true);
+      requestAnimationFrame(() => {
+        if (settled || !overlay.isConnected) return;
+        overlay.classList.add("open");
+        overlay.querySelector("[data-confirm]").focus();
+      });
+    });
+  }
+
   /* ── friendlyError:把 api.js 抛的结构化 Error 映射成中文人话 + 可操作建议 ──
    * 返回 {title, message, detail, hint}。title=一行人话;message=补充;detail=技术原文(折叠);hint=下一步建议。 */
   function friendlyError(err) {
@@ -150,6 +198,7 @@
   window.fb = window.fb || {};
   window.fb.esc = esc;             // 全站唯一 HTML 转义(&<>"' 五字符),各屏 innerHTML sink 共用,取代屏内阉割版
   window.fb.friendlyError = friendlyError;
+  window.fb.confirm = confirmDialog;
 
   /* ── errorBanner:友好错误条(标题 + 说明 + 可折叠技术细节 + 重试按钮) ──
    * target: DOM 元素或选择器;opts: {title, message, detail, hint, onRetry, retryLabel, fromError}
@@ -320,7 +369,7 @@
     function healBtn(label) {
       return `<div class="fb-eb-acts" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                 <button class="btn btn-secondary btn-sm fb-gw-heal" type="button">${esc(label || "手动修复")}</button>
-                <a class="btn btn-ghost btn-sm" href="env-check.html" style="text-decoration:none;">查看诊断</a>
+                <a class="btn btn-ghost btn-sm" href="clash-config.html?tab=diag" style="text-decoration:none;">查看诊断</a>
               </div>`;
     }
     let healInFlight = false; // 修复进行中:挡住 10s 轮询重渲染(会把禁用按钮重置成可点 → 双发)

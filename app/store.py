@@ -272,6 +272,21 @@ def _set_rule_enabled(c, cid, rid, enabled):
     return cur.rowcount
 
 
+def set_rules_enabled(rids, enabled):
+    """Atomically toggle a set of globally unique rule ids; missing id changes nothing."""
+    ids = list(dict.fromkeys(rids))
+    if not ids:
+        return False
+    marks = ",".join("?" for _ in ids)
+    with _c() as c:
+        found = c.execute(f"SELECT COUNT(*) FROM rules WHERE id IN ({marks})", ids).fetchone()[0]
+        if found != len(ids):
+            return False
+        c.execute(f"UPDATE rules SET enabled=? WHERE id IN ({marks})",
+                  [1 if enabled else 0, *ids])
+    return True
+
+
 def import_channels(plans):
     """Apply a fully validated import plan in one SQLite transaction."""
     with _c() as c:

@@ -271,6 +271,26 @@ fn set_rule_enabled_in(conn: &Connection, cid: &str, rid: i64, enabled: bool) ->
     Ok(changed == 1)
 }
 
+/// 批量启停规则：单事务逐条核对；任一 id 不存在时整批回滚。
+pub fn set_rules_enabled(db: &Path, ids: &[i64], enabled: bool) -> anyhow::Result<bool> {
+    if ids.is_empty() {
+        return Ok(false);
+    }
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction()?;
+    for rid in ids {
+        let changed = tx.execute(
+            "UPDATE rules SET enabled=?1 WHERE id=?2",
+            rusqlite::params![if enabled { 1 } else { 0 }, rid],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+    }
+    tx.commit()?;
+    Ok(true)
+}
+
 // ── config 字段级 Fernet 加解密 (命门 #5) ─────────────────────────────────────
 
 fn fernet_for(key: &str) -> anyhow::Result<Fernet> {
@@ -925,6 +945,20 @@ mod tests {
         assert!(!del_rule(&db, "other", rid).unwrap());
         assert!(del_rule(&db, "c1", rid).unwrap());
         assert!(get_rule(&db, rid).unwrap().is_none());
+    }
+
+    #[test]
+    fn batch_rule_writer_is_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let first = add_rule(&db, "c1", "domain", "a.com").unwrap();
+        let second = add_rule(&db, "c1", "domain", "b.com").unwrap();
+        assert!(set_rules_enabled(&db, &[first, second], false).unwrap());
+        assert_eq!(get_rule(&db, first).unwrap().unwrap().enabled, 0);
+        assert_eq!(get_rule(&db, second).unwrap().unwrap().enabled, 0);
+        assert!(!set_rules_enabled(&db, &[first, 999_999], true).unwrap());
+        assert_eq!(get_rule(&db, first).unwrap().unwrap().enabled, 0);
     }
 
     #[test]

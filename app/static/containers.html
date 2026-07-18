@@ -48,13 +48,9 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
           流量监控
         </a>
-        <a class="nav-item" data-nav="entry" href="clash-config.html">
+        <a class="nav-item" data-nav="system" href="clash-config.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
-          入口接入
-        </a>
-        <a class="nav-item" data-nav="env-check" href="env-check.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
-          环境诊断
+          系统与接入
         </a>
         <a class="nav-item" data-nav="containers" href="containers.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
@@ -88,7 +84,7 @@
           <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
           <div>
             <div class="bt">本系统依赖哪些容器</div>
-            <p>两类：<strong>分流核心</strong> <span class="mono">mihomo</span>（一个，所有分流经它，即你 Clash 里的 <span class="mono">vpn-router</span>）+ <strong>每条通道一个</strong>独立容器 <span class="mono">vpn-*</span>（VPN 客户端 + SOCKS5 出口）。这里可直接做简单管理：通道容器<strong>不支持原地重启</strong>（EC / aTrust / 无头客户端扛不住，「启动」= 原样重建，卷 / MAC / 规则都保留）；分流核心用「修复」（自动重启转发，救不回再上备援隧道）；通道删除后残留的无主容器可一键清理。</p>
+            <p>两类：<strong>分流核心</strong> <span class="mono">mihomo</span>（一个，所有分流经它，即你 Clash 里的 <span class="mono">vpn-router</span>）+ <strong>每条通道一个</strong>独立容器 <span class="mono">vpn-*</span>（VPN 客户端 + SOCKS5 出口）。这里可直接做简单管理：通道容器<strong>不支持原地重启</strong>（EC / aTrust / 无头客户端扛不住，「启动」= 原样重建，卷 / MAC / 规则都保留）；分流核心用「重启修复」（先原地重启，救不回自动上备援隧道）；通道删除后残留的无主容器可一键清理。</p>
           </div>
         </div>
 
@@ -210,7 +206,7 @@
 
     function roleCell(x) {
       if (x.role === "infra")
-        return `<div>分流核心 · <span class="mono">vpn-router</span></div><div class="role-sub">所有分流经它 · 分流口 :${sys.mihomo_port || "—"}</div>`;
+        return `<div>分流核心 · <span class="mono">vpn-router</span></div><div class="role-sub">分流口 :${sys.mihomo_port || "—"} · 原地重启;救不回自动上备援隧道</div>`;
       if (x.role === "channel") {
         const k = kindMeta(x.vpn_type);
         return `<div>通道 · <a class="grp-name" href="channel.html?id=${fb.esc(x.channel_id)}">${fb.esc(x.channel_name)}</a></div><div class="role-sub">${fb.esc(k.label)} · SOCKS5 出口(仅 docker 内网)</div>`;
@@ -232,7 +228,7 @@
       const b = [];
       const logBtn = `<button class="btn btn-sm btn-ghost" data-act="logs" data-name="${fb.esc(x.name)}">日志</button>`;
       if (x.role === "infra") {
-        b.push(`<button class="btn btn-sm" data-act="heal">修复</button>`);
+        b.push(`<button class="btn btn-sm" data-act="heal">重启修复</button>`);
         if (x.state !== "missing") b.push(logBtn);
       } else if (x.role === "channel") {
         const stopped = x.channel_status === "stopped" || x.channel_status === "error" || x.state === "missing" || x.state === "exited";
@@ -316,16 +312,18 @@
     }
     $("#logs-refresh").addEventListener("click", () => { if (logsName) showLogs(logsName); });
 
-    $("#tbody").addEventListener("click", (e) => {
+    $("#tbody").addEventListener("click", async (e) => {
       const btn = e.target.closest("button[data-act]");
       if (!btn) return;
       const { act, name, cid, cname } = btn.dataset;
       if (act === "logs") return showLogs(name);
-      if (act === "heal") return run(btn, () => api.healProxy(), "修复中…", "分流核心已修复");
+      if (act === "heal") return run(btn, () => api.healProxy(), "重启修复中…", "分流核心已重启修复");
       if (act === "start") return run(btn, () => api.start(cid), "重建中…", `「${cname}」已启动(重建),请重新登录`);
       if (act === "stop") return run(btn, () => api.stop(cid), "停止中…", `「${cname}」已停止`);
       if (act === "clean") {
-        if (!confirm(`删除孤儿容器 ${name}?它不属于任何在册通道,删除不影响现有通道。`)) return;
+        if (!await fb.confirm(`删除孤儿容器 ${name}?它不属于任何在册通道,删除不影响现有通道。`, {
+          title: "清理孤儿容器", confirmLabel: "确认清理", danger: true,
+        })) return;
         return run(btn, () => api.containerRemove(name), "清理中…", "已清理");
       }
     });

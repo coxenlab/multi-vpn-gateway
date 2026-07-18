@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>入口接入 · VPN 管理网关</title>
+  <title>系统与接入 · VPN 管理网关</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -34,7 +34,7 @@
     details.adv p { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--muted); line-height: 1.6; }
   </style>
 </head>
-<body data-page="entry">
+<body data-page="system">
   <div class="app">
     <!-- ════ 侧栏（所有屏一致） ════ -->
     <aside class="sidebar">
@@ -58,13 +58,9 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
           流量监控
         </a>
-        <a class="nav-item" data-nav="entry" href="clash-config.html">
+        <a class="nav-item" data-nav="system" href="clash-config.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
-          入口接入
-        </a>
-        <a class="nav-item" data-nav="env-check" href="env-check.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
-          环境诊断
+          系统与接入
         </a>
         <a class="nav-item" data-nav="containers" href="containers.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
@@ -87,7 +83,7 @@
         <button class="icon-btn menu-btn" aria-label="菜单">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
-        <h1>入口接入</h1>
+        <h1>系统与接入</h1>
         <span class="spacer"></span>
         <span class="sys-chip ok hide-mobile" id="chip-entry"><span class="dot"></span>入口运行中</span>
         <a class="btn btn-secondary" href="index.html">
@@ -97,14 +93,28 @@
       </header>
 
       <div class="content content-narrow stack-6">
-        <!-- 反馈层宿主：页面加载/失败提示(默认空,boot 接管) -->
-        <div id="boot-feedback"></div>
-        <!-- 页头说明 -->
-        <div class="page-head" data-od-id="entry-intro">
-          <div class="crumb">设置 / 入口接入</div>
-          <h1>把流量接进统一入口</h1>
-          <p>所有接管方式最终都指向同一个入口：本工具第二个 mihomo 的分流口。命中你绑定的客户域名 / IP → 走对应 VPN 容器；未命中 → 直连放行，永不回环。下面按“接管粒度”分三类，挑一种适合你的即可。</p>
+        <div class="page-head">
+          <div class="crumb">设置 / 系统与接入</div>
+          <h1>系统与接入</h1>
+          <p>在一个地方完成入口接管、环境体检和镜像准备。日常先看入口；安装或容器异常时再切到诊断。</p>
         </div>
+
+        <div data-tabscope id="system-tabs">
+          <div class="tabs" data-tabs>
+            <button class="tab active" data-tab="entry">入口接入</button>
+            <button class="tab" data-tab="diag">环境诊断</button>
+            <button class="tab" data-tab="mirrors">镜像源</button>
+            <button class="tab" data-tab="images">镜像清单</button>
+          </div>
+
+          <div class="tabpanel active" data-panel="entry" style="padding-top:var(--space-6);">
+            <div class="stack-6">
+              <!-- 反馈层宿主：页面加载/失败提示(默认空,boot 接管) -->
+              <div id="boot-feedback"></div>
+              <div class="page-head" data-od-id="entry-intro">
+                <h2>把流量接进统一入口</h2>
+                <p>所有接管方式最终都指向本工具 mihomo 分流口。命中已绑定的客户域名 / IP → 对应 VPN 容器；未命中 → 直连放行，永不回环。</p>
+              </div>
 
         <!-- 入口地址卡 -->
         <div class="card card-pad" data-od-id="entry-addr">
@@ -402,13 +412,52 @@
             <p>系统代理 / PAC / HTTP 代理天然把域名原样交给入口，内层 mihomo 靠 <span class="mono">respect-rules + sniffer</span> 自己在 VPN 侧解析；命令行用 <span class="mono">socks5h</span> 远程解析即可。<span class="mono">no-resolve</span> 是 Clash 规则的修饰，不是代理地址的一部分，别带进这些方式。</p>
           </div>
         </div>
+            </div>
+          </div>
+
+          <div class="tabpanel" data-panel="diag" style="padding-top:var(--space-6);">
+            <div class="card card-pad stack-4">
+              <div class="row-between">
+                <div><h3>环境诊断</h3><p class="t-xs muted" style="margin-top:4px;">检测 Docker、网络、镜像与分流核心，发现问题可按检查项修复。</p></div>
+                <a class="btn btn-secondary btn-sm" href="env-check.html?tab=trouble">查看常见报错</a>
+              </div>
+              <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap;">
+                <select id="diag-type" class="input" style="flex:1; min-width:180px; max-width:320px;">
+                  <option value="">(只查环境，不挑类型)</option>
+                </select>
+                <button class="btn btn-primary" id="diag-run">全量体检</button>
+              </div>
+              <div id="diag-host"></div>
+            </div>
+          </div>
+
+          <div class="tabpanel" data-panel="mirrors" style="padding-top:var(--space-6);">
+            <div class="card card-pad stack-4" id="mir-panel">
+              <div><h3>镜像源</h3><p class="t-xs muted" style="margin-top:4px;">按优先级管理镜像代理；可单独测速、启停或上移。</p></div>
+              <div class="row" style="gap:var(--space-2);">
+                <input id="mir-host" class="input" placeholder="docker.example.com" style="flex:1;">
+                <button class="btn btn-primary" id="mir-add">添加</button>
+              </div>
+              <div id="mir-list"></div>
+            </div>
+          </div>
+
+          <div class="tabpanel" data-panel="images" style="padding-top:var(--space-6);">
+            <div class="card card-pad">
+              <div style="margin-bottom:var(--space-4);"><h3>镜像清单</h3><p class="t-xs muted" style="margin-top:4px;">本系统用到的全部镜像与下载、构建、离线命令；可拉取镜像支持按本机架构一键准备。</p></div>
+              <div id="img-list"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
   <script src="js/api.js"></script>
+  <script src="js/preflightPanel.js"></script>
   <script src="js/app.js"></script>
   <script src="js/feedback.js"></script>
+  <script src="js/environment.js"></script>
   <script>
     // 高亮辅助：把 yaml 文本里的注释 / 键 / 串套上色彩 class(转义统一走 fb.esc,全站唯一实现;渲染在 render() 运行时,fb 已就位)
     const cmt = (s) => `<span class="cmt">${fb.esc(s)}</span>`;
@@ -745,7 +794,9 @@
     }
 
     async function onTunUninstall() {
-      if (!confirm("卸载 root 助手？TUN 入口将停用,路由随 utun 自动清除(需管理员密码)。")) return;
+      if (!await fb.confirm("卸载 root 助手？TUN 入口将停用,路由随 utun 自动清除(需管理员密码)。", {
+        title: "卸载 TUN 助手", confirmLabel: "确认卸载", danger: true,
+      })) return;
       const un = $("#tun-uninstall");
       un.disabled = true;
       try {
@@ -757,6 +808,20 @@
         toast(f.title + "：" + f.message, { variant: "danger" });
       } finally { un.disabled = false; }
     }
+
+    // 兼容旧环境页/教程深链：?tab=diag|mirrors|images 直接打开对应合并页签。
+    document.addEventListener("DOMContentLoaded", () => {
+      const tabs = [...document.querySelectorAll("#system-tabs > [data-tabs] > [data-tab]")];
+      tabs.forEach((tab) => tab.addEventListener("click", () => {
+        const url = new URL(location.href);
+        if (tab.dataset.tab === "entry") url.searchParams.delete("tab");
+        else url.searchParams.set("tab", tab.dataset.tab);
+        history.replaceState(null, "", url);
+      }));
+      const requested = new URLSearchParams(location.search).get("tab");
+      const target = tabs.find((tab) => tab.dataset.tab === requested);
+      if (target) target.click();
+    });
 
     boot();
   </script>

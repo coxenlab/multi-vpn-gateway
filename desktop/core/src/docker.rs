@@ -462,13 +462,46 @@ pub async fn pull_retag(docker: &Docker, mirror: &str, repo: &str, tag: &str, ho
     pull_retag_with_progress(docker, mirror, repo, tag, host_arch, |_| {}).await
 }
 
+struct OneshotCleanup {
+    docker: Docker,
+    id: Option<String>,
+}
+
+impl OneshotCleanup {
+    fn new(docker: &Docker, id: String) -> Self {
+        Self { docker: docker.clone(), id: Some(id) }
+    }
+
+    async fn cleanup(&mut self) -> Result<()> {
+        if let Some(id) = self.id.as_deref() {
+            rm_force(&self.docker, id).await?;
+            self.id = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for OneshotCleanup {
+    fn drop(&mut self) {
+        let Some(id) = self.id.take() else { return };
+        let docker = self.docker.clone();
+        // 请求被取消时仍安排强删；普通成功/失败路径会先 await cleanup() 并清空 id。
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(e) = rm_force(&docker, &id).await {
+                    eprintln!("[docker] cancelled oneshot cleanup {id}: {e}");
+                }
+            });
+        }
+    }
+}
+
 /// 在指定网络上跑一次性容器并捕获 stdout(host-VM probe 用:宿主够不着 VM 内网 172.x,
 /// 故探活搬进 VM 内一次性容器,经 socks5h://vpn-{id}:1080 打 probe_url)。create→start→wait→读 stdout→rm。
-/// 幂等:先力删同名。
+/// 调用方传唯一 name；后续一律用 create 返回的容器 ID，执行 10s 未收敛或任意错误也强删。
 pub async fn run_oneshot_capture(docker: &Docker, name: &str, image: &str, cmd: Vec<&str>, network: &str) -> Result<String> {
     use bollard::container::{Config, WaitContainerOptions};
     use bollard::models::HostConfig;
-    let _ = rm_force(docker, name).await;
     let config = Config {
         image: Some(image.to_string()),
         // 用 entrypoint 覆盖直接跑命令:oss 镜像自带 entrypoint(要 VPN_PROTOCOL),
@@ -480,26 +513,51 @@ pub async fn run_oneshot_capture(docker: &Docker, name: &str, image: &str, cmd: 
         }),
         ..Default::default()
     };
-    docker
+    let created = docker
         .create_container(Some(CreateContainerOptions { name, platform: None }), config)
         .await
         .map_err(|e| anyhow!("create {name}: {e}"))?;
-    docker.start_container(name, None::<StartContainerOptions<String>>).await
-        .map_err(|e| anyhow!("start {name}: {e}"))?;
-    let mut wait = docker.wait_container(name, None::<WaitContainerOptions<String>>);
-    while wait.next().await.is_some() {}
-    // 只取 stdout(curl -w 写 stdout;-s 静默 stderr)
-    let mut stream = docker.logs(name, Some(LogsOptions::<String> {
-        stdout: true, stderr: false, ..Default::default()
-    }));
-    let mut buf = String::new();
-    while let Some(item) = stream.next().await {
-        if let Ok(o) = item {
-            buf.push_str(&String::from_utf8_lossy(o.into_bytes().as_ref()));
+    let id = created.id;
+    let mut cleanup = OneshotCleanup::new(docker, id.clone());
+    let execution = match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        docker.start_container(&id, None::<StartContainerOptions<String>>).await
+            .map_err(|e| anyhow!("start {name}: {e}"))?;
+        let mut wait = docker.wait_container(&id, None::<WaitContainerOptions<String>>);
+        while let Some(item) = wait.next().await {
+            match item {
+                Ok(_) => {}
+                // 容器非零退出(如 curl 半途超时/连接重置)不是错误:curl -w 仍把
+                // http_code 写进 stdout,通没通交给 parse_probe_output 判(命门 #1)。
+                Err(bollard::errors::Error::DockerContainerWaitError { .. }) => {}
+                Err(e) => return Err(anyhow!("wait {name}: {e}")),
+            }
         }
+        // 只取 stdout(curl -w 写 stdout;-s 静默 stderr)
+        let mut stream = docker.logs(&id, Some(LogsOptions::<String> {
+            stdout: true, stderr: false, ..Default::default()
+        }));
+        let mut buf = String::new();
+        while let Some(item) = stream.next().await {
+            let out = item.map_err(|e| anyhow!("logs {name}: {e}"))?;
+            buf.push_str(&String::from_utf8_lossy(out.into_bytes().as_ref()));
+        }
+        Ok::<String, anyhow::Error>(buf)
+    }).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("oneshot {name} timed out after 10s")),
+    };
+
+    // Docker API 默认超时较长；删除自身不能反向拖住探活轮询。
+    // 清理失败/超时只记日志、不影响执行结果(成功探活绝不因 rm 失败翻成离线);
+    // 失败/超时时 guard 保留 id，Drop 会在后台再尝试强删。
+    if let Err(rm) = match tokio::time::timeout(
+        std::time::Duration::from_secs(2), cleanup.cleanup()).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("remove timed out after 2s; retrying in background")),
+    } {
+        eprintln!("[docker] oneshot cleanup {name}: {rm}");
     }
-    let _ = rm_force(docker, name).await;
-    Ok(buf)
+    execution
 }
 
 /// 一次性容器测 /dev/net/tun(对照 check_dev_net_tun)。Ok(true)=exit0;Ok(false)=非0;Err=起不来。
@@ -538,6 +596,45 @@ pub async fn run_tun_probe(docker: &Docker, image: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    async fn fake_create() -> impl axum::response::IntoResponse {
+        (axum::http::StatusCode::CREATED,
+         axum::Json(serde_json::json!({ "Id": "probe-id", "Warnings": [] })))
+    }
+
+    async fn fake_start_failure() -> impl axum::response::IntoResponse {
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+         axum::Json(serde_json::json!({ "message": "start failed" })))
+    }
+
+    async fn fake_remove(
+        axum::extract::State(removes): axum::extract::State<Arc<AtomicUsize>>,
+    ) -> axum::http::StatusCode {
+        removes.fetch_add(1, Ordering::SeqCst);
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn fake_slow_remove(
+        axum::extract::State(removes): axum::extract::State<Arc<AtomicUsize>>,
+    ) -> axum::http::StatusCode {
+        removes.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn fake_start_ok() -> axum::http::StatusCode {
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn fake_wait_nonzero() -> impl axum::response::IntoResponse {
+        (axum::http::StatusCode::OK,
+         axum::Json(serde_json::json!({ "StatusCode": 7 })))
+    }
+
+    async fn fake_logs_empty() -> axum::http::StatusCode {
+        axum::http::StatusCode::OK
+    }
 
     #[test]
     fn not_found_classifies_404() {
@@ -602,6 +699,78 @@ mod tests {
     #[tokio::test]
     async fn uptime_none_without_docker() {
         assert_eq!(uptime(None, "deadbeef").await, None);
+    }
+
+    #[tokio::test]
+    async fn oneshot_start_failure_still_removes_created_container() {
+        use axum::routing::{delete, post};
+        let removes = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new()
+            .route("/containers/create", post(fake_create))
+            .route("/containers/probe-id/start", post(fake_start_failure))
+            .route("/containers/probe-id", delete(fake_remove))
+            .with_state(removes.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let docker = Docker::connect_with_http(
+            &format!("http://{addr}"), 5, bollard::API_DEFAULT_VERSION).unwrap();
+
+        let err = run_oneshot_capture(&docker, "probe-test", "probe-image", vec!["true"], "testnet")
+            .await.unwrap_err();
+        assert!(err.to_string().contains("start"), "{err:#}");
+        assert_eq!(removes.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oneshot_cleanup_does_not_inherit_long_docker_timeout() {
+        use axum::routing::{delete, post};
+        let removes = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new()
+            .route("/containers/create", post(fake_create))
+            .route("/containers/probe-id/start", post(fake_start_failure))
+            .route("/containers/probe-id", delete(fake_slow_remove))
+            .with_state(removes.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let docker = Docker::connect_with_http(
+            &format!("http://{addr}"), 120, bollard::API_DEFAULT_VERSION).unwrap();
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            run_oneshot_capture(&docker, "probe-test", "probe-image", vec!["true"], "testnet"),
+        ).await.expect("cleanup must respect its own timeout").unwrap_err();
+        assert!(err.to_string().contains("start"), "{err:#}");
+        assert!(removes.load(Ordering::SeqCst) >= 1);
+        server.abort();
+    }
+
+    /// 命门 #1 语义:容器非零退出(curl 连不通)≠执行错误 —— 仍读 stdout,
+    /// 通没通交给 parse_probe_output;清理失败也不得覆盖执行结果。
+    #[tokio::test]
+    async fn oneshot_nonzero_exit_still_reads_stdout() {
+        use axum::routing::{delete, get, post};
+        let removes = Arc::new(AtomicUsize::new(0));
+        let app = axum::Router::new()
+            .route("/containers/create", post(fake_create))
+            .route("/containers/probe-id/start", post(fake_start_ok))
+            .route("/containers/probe-id/wait", post(fake_wait_nonzero))
+            .route("/containers/probe-id/logs", get(fake_logs_empty))
+            .route("/containers/probe-id", delete(fake_remove))
+            .with_state(removes.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let docker = Docker::connect_with_http(
+            &format!("http://{addr}"), 5, bollard::API_DEFAULT_VERSION).unwrap();
+
+        let out = run_oneshot_capture(&docker, "probe-test", "probe-image", vec!["true"], "testnet")
+            .await.expect("non-zero container exit must not become an error");
+        assert_eq!(out, "");
+        assert_eq!(removes.load(Ordering::SeqCst), 1);
+        server.abort();
     }
 
     #[tokio::test]
