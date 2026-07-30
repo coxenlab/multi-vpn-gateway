@@ -368,11 +368,19 @@ pub fn uninstall_script() -> String {
     )
 }
 
+/// mihomo#2 system 栈的 NAT 回程网段:tun 地址 198.19.0.1/30 的对端 198.19.0.2 是 tun2socket
+/// 改写后的注入源,内核回 SYN-ACK 须有此路由才能送回 utun。macOS 点对点 utun 只自带
+/// 198.19.0.1 主机路由,不生成 /30 连接路由;网络切换还会刷掉手工路由——所以必须由
+/// helper 一并对账持有,否则症状 = 「探活绿但页面打不开」(SYN_SENT,output no route)。
+const NAT_RETURN_V4: &str = "198.19.0.0/30";
+
 /// 从 rules 提取启用的 IP 规则 → 去重排序的 (v4, v6) CIDR 集(跨通道去重:同网段可挂多通道,
 /// 路由表按目的网段唯一)。域名规则不参与(Phase 2 拆分 DNS)。
+/// v4 恒含 [`NAT_RETURN_V4`]:引擎自身的回程路由与规则路由同生命周期对账。
 pub fn route_sets(rules: &[crate::store::Rule]) -> (Vec<String>, Vec<String>) {
     // BTreeSet 一次到位:跨通道去重 + 排序(路由表按目的网段唯一,顺序稳定便于对账/测试)。
     let mut v4 = std::collections::BTreeSet::new();
+    v4.insert(NAT_RETURN_V4.to_string());
     let mut v6 = std::collections::BTreeSet::new();
     for r in rules {
         if r.enabled == 0 || r.kind != "ip" {
@@ -748,7 +756,7 @@ mod tests {
             r("ip", "172.16.0.0/12", 1, "c"),
         ];
         let (v4, v6) = route_sets(&rules);
-        assert_eq!(v4, vec!["10.0.0.0/8", "172.16.0.0/12"]);
+        assert_eq!(v4, vec!["10.0.0.0/8", "172.16.0.0/12", "198.19.0.0/30"]);
         assert_eq!(v6, vec!["fd12::/32"]);
     }
 
