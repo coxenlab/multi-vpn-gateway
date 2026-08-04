@@ -22,12 +22,18 @@
     return e;
   }
 
+  /* 请求兜底超时:后端某条链路半死时(如探分流口卡住),fetch 默认会无限等,
+   * 调用方的 loading/骨架屏就永远停住(2026-08-04 事故现象之一)。宁可报错让上层
+   * 走重试,也不要静默挂死。25s 足够覆盖起容器/拉镜像这类慢接口的正常耗时。 */
+  const TIMEOUT_MS = 25000;
+
   async function req(method, url, body) {
     const opt = { method, headers: {} };
     if (body !== undefined) {
       opt.headers["Content-Type"] = "application/json";
       opt.body = JSON.stringify(body);
     }
+    if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opt.signal = AbortSignal.timeout(TIMEOUT_MS);
     const r = await fetch(url, opt);
     if (!r.ok) {
       const t = await r.text().catch(() => "");

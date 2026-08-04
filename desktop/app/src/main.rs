@@ -392,6 +392,13 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     infra::ensure_mihomo(&docker, &state.cfg)
         .await
         .map_err(|e| BootFailure::new(BootStep::Service, e, &service_log))?;
+    // 宿主分流口/控制口由 app 自持的 SSH 转发伺服(不经 lima,见 vpnmgr_core::tunnel)。
+    // 必须早于 rebuild:后者要打控制口下发规则。失败不锁死启动——看门狗会持续重试,
+    // 横幅如实报「分流链路中断」,总比把用户卡在 loading 页强。
+    if let Err(e) = vpnmgr_core::tunnel::ensure(&state).await {
+        service_log.push(format!("分流口转发未就绪: {e}"));
+        eprintln!("[boot] 分流口 SSH 转发未就绪(看门狗将重试): {e}");
+    }
     let rebuild_status = manager::rebuild(&state.cfg, Some(&docker), &state.cfg.db_path()).await;
     service_log.push(format!("规则载入结果: {rebuild_status}"));
     // rebuild 失败多为配置/数据问题(如 config parse error),重试修不好;删坏通道、

@@ -35,6 +35,7 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
         docker: Arc::new(std::sync::RwLock::new(docker)),
         mihomo,
         health: crate::health::shared(),
+        tunnel: crate::tunnel::handle(),
     };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ui_port)); // 命门 #4

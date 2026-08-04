@@ -438,7 +438,7 @@
       // 看门狗盲区:容器/转发口探测全绿(gateway_health=healthy),但 mihomo 控制口无应答
       // (转发器半僵死:TCP 能连、无响应)。芯片会红,横幅若不接手就无处可点(2026-07-16)。
       const ctrlDown = gh === "healthy" && sys && sys.mihomo_status !== "running";
-      currentKey = (gh || "healthy") + "|" + (sys && sys.tunnel_fallback ? 1 : 0) + "|" + (ctrlDown ? 1 : 0);
+      currentKey = (gh || "healthy") + "|" + (ctrlDown ? 1 : 0);
       if (dismissedKey !== null && dismissedKey !== currentKey) dismissedKey = null; // 状态变化 → 复位收起记忆
       const dismissed = dismissedKey === currentKey;
       // 后端无此字段(老版本)或健康 → 收横幅;若刚从坏态恢复,提示一声。
@@ -453,14 +453,6 @@
         }
         if (wasBroken) window.toast("分流链路已恢复");
         wasBroken = false; healing = false;
-        if (sys && sys.tunnel_fallback && !dismissed) {
-          // 降级态:分流口已由备援 SSH 隧道接管(底座转发服务僵死)。现有口可用,
-          // 但新端口(如新建通道的登录窗)不会再被转发——持续提示,别让用户撞墙。
-          banner("warn", SVG.check, "分流口已由备援隧道接管",
-            "底座(VM)端口转发服务异常,已自动改走 SSH 隧道。现有通道不受影响;" +
-            "新建通道的登录窗可能打不开。方便时重启电脑(重建底座 VM)可彻底修复。");
-          return;
-        }
         clear();
         return;
       }
@@ -474,7 +466,8 @@
       } else if (sys.gave_up) {
         healing = false;
         banner("danger", SVG.cross, "分流口反复不可达,已暂停自动修复",
-          "容器正常但浏览器/Clash 连不到分流口,通道当前都打不开。点「手动修复」重试,或查看诊断。", healBtn());
+          "容器正常但浏览器/Clash 连不到分流口,通道当前都打不开。点「手动修复」重试;" +
+          "仍不行请从托盘退出并重新打开 app(重开会重建转发链路)。", healBtn());
         bindHeal();
       } else if (gh === "container_down") {
         healing = false;
@@ -485,17 +478,18 @@
         // 自愈进行中:只报进度、不给按钮(避免与看门狗重复重启)。
         healing = true;
         banner("warn", SVG.spin, "分流链路中断,正在自动修复…",
-          "容器正常,但宿主分流口暂不可达(通常睡醒/网络抖动所致)。约 1 分钟内自动恢复,稍候。");
+          "容器正常,但宿主分流口暂时不过数据(通常睡醒/网络抖动所致)。正在重建转发," +
+          "约 1 分钟内自动恢复,通道无需重新登录。");
       } else if (gh === "transport_dead") {
         // 传输层(mux)坏死:VM/容器都正常,看门狗正在直上备援隧道(盲区 #3)。
         healing = true;
-        banner("warn", SVG.spin, "底座传输中断,正在切换备援隧道…",
-          "VM 与容器正常,但宿主到 VM 的连接通道断了(通常睡醒/网络切换所致)。正在自动改走备援隧道恢复分流,稍候。");
+        banner("warn", SVG.spin, "底座传输中断,正在重建转发…",
+          "VM 与容器正常,但宿主到 VM 的连接断了(通常睡醒/网络切换所致)。正在自动重建,通道无需重新登录。");
       } else if (gh === "transport_degraded") {
         // 降级稳态:分流口活着(备援隧道),容器管理不可用。重开 app 由 boot 自愈重建底座。
         healing = false;
-        banner("warn", SVG.check, "分流已由备援隧道接管(降级运行)",
-          "现有通道可正常使用;容器管理(新建/启停通道、登录窗)暂不可用。重新打开 app 将自动修复底座。");
+        banner("warn", SVG.check, "分流可用,容器管理暂不可用(降级运行)",
+          "现有通道可正常上网;新建/启停通道、登录窗暂不可用。从托盘退出并重新打开 app 将自动修复。");
       }
     }
 

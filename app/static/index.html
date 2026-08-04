@@ -144,8 +144,14 @@
     const ruleCount = (c) => c.domains.length + (c.ips ? c.ips.length : 0);
 
     // 静默拉数据(供轮询 / 各动作成功后刷新复用);抛错由调用方处理。
+    // ⚠️ 通道列表与系统状态**不绑死**:/api/system 要探分流口,链路故障时它慢/失败,
+    // 而通道列表是本屏的主体、拿到就该显示。2026-08-04 事故里二者用 Promise.all 捆着,
+    // system 一挂住整页永远停在骨架屏,用户看到的是「通道全没了」。
     async function fetchAll() {
-      [chs, sys] = await Promise.all([api.channels(), api.system()]);
+      const [chRes, sysRes] = await Promise.allSettled([api.channels(), api.system()]);
+      if (chRes.status === "fulfilled") chs = chRes.value;
+      sys = sysRes.status === "fulfilled" ? sysRes.value : {}; // 系统状态失败:概览统计留空,不拦通道
+      if (chRes.status === "rejected") throw chRes.reason;     // 通道拿不到才算本屏加载失败
       paint();
       loaded = true;
     }

@@ -99,6 +99,7 @@ mod tests {
             docker: Arc::new(std::sync::RwLock::new(None)),
             mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
             health: crate::health::shared(),
+            tunnel: crate::tunnel::handle(),
         }
     }
 

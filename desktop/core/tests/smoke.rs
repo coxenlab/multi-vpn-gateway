@@ -21,6 +21,7 @@ async fn boots_and_serves_system_and_index() {
         docker: Arc::new(std::sync::RwLock::new(None)),
         mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
         health: vpnmgr_core::health::shared(),
+        tunnel: vpnmgr_core::tunnel::handle(),
     };
 
     // 命门 #4: bind 127.0.0.1 only

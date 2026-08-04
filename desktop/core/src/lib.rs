@@ -18,6 +18,7 @@ pub mod containers;
 pub mod dockerhub;
 pub mod preflight;
 pub mod health;
+pub mod tunnel;
 
 use std::sync::Arc;
 
@@ -31,6 +32,8 @@ pub struct AppState {
     pub mihomo: mihomo::Controller,
     /// 分流口健康快照(看门狗写、/api/system 读)。
     pub health: health::SharedHealth,
+    /// app 自持的 SSH 端口转发子进程(伺服宿主分流口/控制口;见 [`tunnel`])。
+    pub tunnel: tunnel::Handle,
 }
 
 impl AppState {

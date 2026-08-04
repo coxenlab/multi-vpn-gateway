@@ -201,6 +201,19 @@ pub async fn restart(docker: &Docker, name: &str) -> Result<()> {
         .map_err(|e| anyhow!("restart {name}: {e}"))
 }
 
+/// 容器在 docker 网络里的 IP(多网络时取第一个有 IP 的)。缺失/未运行 → None。
+/// app 自持的 SSH 转发据此直连容器(mihomo#1 不再 publish 端口,见 [`crate::tunnel`])。
+pub async fn container_ip(docker: &Docker, name: &str) -> Option<String> {
+    docker
+        .inspect_container(name, None)
+        .await
+        .ok()?
+        .network_settings?
+        .networks?
+        .into_values()
+        .find_map(|n| n.ip_address.filter(|ip| !ip.is_empty()))
+}
+
 /// 容器是否在运行(缺失/任何错误 → false)。
 pub async fn is_running(docker: &Docker, name: &str) -> bool {
     docker

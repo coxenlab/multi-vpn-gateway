@@ -20,53 +20,40 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "proxy_port_reachable": h.proxy_port_reachable,
         "healing": h.healing,
         "gave_up": h.gave_up,
-        "tunnel_fallback": h.tunnel_fallback,
     }))
 }
 
 /// 手动修复分流口,与看门狗同一两级梯子(横幅按钮 / env-check 用):
-/// 1. `docker restart mihomo` 重建 lima 转发,轮询恢复;
-/// 2. 仍不通(hostagent 僵死,端口事件没人听)→ 拉备援 SSH 隧道直转分流口 + 控制口。
+/// 1. 重建 app 自持的 SSH 转发(秒级,不动容器、不需重登通道);
+/// 2. 仍不过数据 → 重启 mihomo 容器,再按新 IP 重建转发。
 ///
+/// 成功判据是端到端握手([`crate::health::proxy_serves`]),不是「端口能 connect」——
+/// 后者在转发僵死时恒真,旧版据此反复回「已修复」而链路其实是死的(2026-08-04 事故)。
 /// 不破命门 #1:不碰登录态;只修宿主→分流口这条转发链。
 pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
-    // 一级 restart 需要 docker;句柄缺失(bin 无 VM)或传输层死(盲区 #3)时它会失败——
-    // 失败不再直接放弃,落到二级隧道自愈(那正是隧道该救的场景,顺带救回 docker.sock)。
-    let restart_err = match st.docker() {
-        Some(d) => crate::docker::restart(&d, crate::infra::MIHOMO_CONTAINER).await.err(),
-        None => Some(anyhow::anyhow!("docker 连接不可用")),
-    };
-    let mut reachable = false;
-    match &restart_err {
-        None => {
-            // 等分流口恢复(lima 重建转发 ~秒级),最多 ~15s。
-            for _ in 0..30 {
-                if crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
-                    reachable = true;
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        }
-        Some(e) => eprintln!("[heal] restart 失败(将尝试备援隧道):{e}"),
-    }
-    let mut method = "restart";
+    let tunnel_err = crate::health::heal_transport(&st).await.err();
+    let mut reachable = tunnel_err.is_none();
+    let mut method = "tunnel";
     if !reachable {
-        // 二级:restart 没救回/不可用 → 备援隧道(同看门狗;heal_transport 已容忍
-        // 「spawn 失败但旧隧道占口、链路其实已通」,并顺带经隧道 sock 救回 docker)。
-        if let Err(e) = crate::health::heal_transport(&st).await {
-            let pre = restart_err.map(|e| format!("重启失败:{e};")).unwrap_or_default();
+        if let Some(e) = &tunnel_err {
+            eprintln!("[heal] 重建 SSH 转发失败(将尝试重启 mihomo):{e}");
+        }
+        // 二级:转发重建救不回 → 多半是 mihomo 容器自身异常,重启后按新 IP 重挂转发。
+        let restart_err = match st.docker() {
+            Some(d) => crate::docker::restart(&d, crate::infra::MIHOMO_CONTAINER).await.err(),
+            None => Some(anyhow::anyhow!("docker 连接不可用")),
+        };
+        if let Some(e) = restart_err {
+            let pre = tunnel_err.map(|e| format!("重建转发失败:{e};")).unwrap_or_default();
             return Json(json!({"ok": false, "reachable": false,
-                "error": format!("{pre}备援隧道未生效:{e}。建议重开 app(将自动修复底座)")}));
+                "error": format!("{pre}重启分流路由失败:{e}。建议退出并重新打开 app(将自动重建底座)")}));
         }
-        method = "tunnel";
-        for _ in 0..10 {
-            if crate::health::proxy_port_reachable(&st.cfg.mihomo_host_port).await {
-                reachable = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        method = "restart";
+        if let Err(e) = crate::tunnel::ensure(&st).await {
+            return Json(json!({"ok": false, "reachable": false,
+                "error": format!("分流路由已重启,但转发仍未恢复:{e}。建议退出并重新打开 app")}));
         }
+        reachable = crate::health::proxy_serves(&st.cfg.mihomo_host_port).await;
     }
     if reachable {
         // 立即回写快照:横幅/芯片不用再等看门狗下一拍(≤20s)才消失;看门狗下拍会复核。
@@ -75,9 +62,6 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
             snap.proxy_port_reachable = true;
             snap.healing = false;
             snap.gave_up = false;
-            if method == "tunnel" {
-                snap.tunnel_fallback = true;
-            }
         }
     }
     Json(json!({"ok": true, "reachable": reachable, "method": method}))

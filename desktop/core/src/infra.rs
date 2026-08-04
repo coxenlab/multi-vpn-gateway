@@ -6,7 +6,8 @@
 //! 故配置经 **named volume `vpnmgr_mihomo_cfg` + put_archive** 投递(绕开 colima 挂载读写/路径限制),
 //! 不再依赖共享文件。端口/密钥首启随机生成、持久化到 `infra.json`(对照 gen_env.py),经 env 注入 Config。
 //!
-//! 命门 #4:7899(分流)/9090(控制)只映射到宿主 127.0.0.1 高位端口(与 compose 一致)。
+//! 命门 #4:7899(分流)/9090(控制)只到宿主 127.0.0.1 高位端口——但**不经 docker publish**,
+//! 而由 app 自持的 SSH 转发伺服(见 [`crate::tunnel`]:lima 的自动转发会僵死且永不重建)。
 //! 命门 #7:容器名 `mihomo`(docker 内嵌 DNS 别名),oss 容器据此当解析器、rebuild 据此投递配置。
 
 use std::collections::HashMap;
@@ -14,7 +15,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use bollard::container::{Config as ContainerConfig, CreateContainerOptions, StartContainerOptions};
-use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{HostConfig, RestartPolicy, RestartPolicyNameEnum};
 use bollard::Docker;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,10 @@ pub const MIHOMO_CFG_PATH: &str = "/cfg/config.yaml";
 pub const MIHOMO_VOLUME: &str = "vpnmgr_mihomo_cfg";
 /// mihomo 分流底座镜像(对照 docker-compose 的 mihomo 服务)。
 pub const MIHOMO_IMAGE: &str = "metacubex/mihomo:latest";
+/// 容器内分流端口(mixed)。宿主侧由 [`crate::tunnel`] 的 SSH 转发伺服,不 publish。
+pub const MIHOMO_PROXY_PORT: u16 = 7899;
+/// 容器内控制端口(external-controller)。同上,不 publish。
+pub const MIHOMO_CTRL_PORT_IN: u16 = 9090;
 
 /// 编译期嵌入的 mihomo 基础配置模板(含 `__SECRET__` 占位、DNS/sniffer)。
 /// 嵌入而非运行时读盘 → 打包后二进制自带,无外部文件依赖(7d 友好)。
@@ -153,6 +158,17 @@ fn write_0600(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// 容器是否还带着宿主端口映射(旧形态标记)。任何错误 → false(不误触发重建)。
+async fn container_publishes_ports(docker: &Docker, name: &str) -> bool {
+    docker
+        .inspect_container(name, None)
+        .await
+        .ok()
+        .and_then(|i| i.host_config)
+        .and_then(|h| h.port_bindings)
+        .is_some_and(|pb| pb.values().any(|v| v.as_ref().is_some_and(|b| !b.is_empty())))
+}
+
 /// mihomo#1 容器是否在运行。
 async fn container_running(docker: &Docker, name: &str) -> bool {
     docker
@@ -164,21 +180,15 @@ async fn container_running(docker: &Docker, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 组 mihomo#1 的 bollard 容器配置:`-d /cfg`、卷 `/cfg`、7899/9090 → 127.0.0.1 高位、vpn_net、unless-stopped。
-fn mihomo_container_config(cfg: &Config, host_port: &str, ctrl_port: &str) -> ContainerConfig<String> {
-    let pb = |hp: &str| -> Option<Vec<PortBinding>> {
-        Some(vec![PortBinding {
-            host_ip: Some("127.0.0.1".to_string()), // 命门 #4
-            host_port: Some(hp.to_string()),
-        }])
-    };
-    let mut port_bindings = HashMap::new();
-    port_bindings.insert("7899/tcp".to_string(), pb(host_port));
-    port_bindings.insert("9090/tcp".to_string(), pb(ctrl_port));
-
+/// 组 mihomo#1 的 bollard 容器配置:`-d /cfg`、卷 `/cfg`、vpn_net、unless-stopped。
+///
+/// **不 publish 端口**:一旦 publish,VM 里就出现 listener,lima 会自动把同号宿主端口
+/// 抢过去转发——而那条转发会僵死且永不重建(见 [`crate::tunnel`] 模块注释)。宿主分流口/
+/// 控制口改由 app 自持的 SSH 转发直连容器 IP 伺服,lima 全程不参与。
+fn mihomo_container_config(cfg: &Config) -> ContainerConfig<String> {
     let mut exposed = HashMap::new();
-    exposed.insert("7899/tcp".to_string(), HashMap::new());
-    exposed.insert("9090/tcp".to_string(), HashMap::new());
+    exposed.insert(format!("{MIHOMO_PROXY_PORT}/tcp"), HashMap::new());
+    exposed.insert(format!("{MIHOMO_CTRL_PORT_IN}/tcp"), HashMap::new());
 
     ContainerConfig {
         image: Some(MIHOMO_IMAGE.to_string()),
@@ -186,7 +196,6 @@ fn mihomo_container_config(cfg: &Config, host_port: &str, ctrl_port: &str) -> Co
         exposed_ports: Some(exposed),
         host_config: Some(HostConfig {
             binds: Some(vec![format!("{MIHOMO_VOLUME}:{MIHOMO_CFG_DIR}")]),
-            port_bindings: Some(port_bindings),
             network_mode: Some(cfg.vpn_net.clone()),
             restart_policy: Some(RestartPolicy {
                 name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
@@ -281,18 +290,21 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
     docker::create_bridge_network(docker, &cfg.vpn_net).await?;
     ensure_mihomo_image_with_progress(docker, cfg, |_| {}).await?;
 
+    // 旧版遗留的「publish 端口」容器必须重建:只要它还 publish,lima 就一直霸占宿主
+    // 分流口,app 自持的 SSH 转发绑不上(见 [`crate::tunnel`])。升级后首启走这一次重建。
     if container_running(docker, MIHOMO_CONTAINER).await {
-        return Ok(()); // 已在跑,别打扰(保活既有连接;rebuild 仍会刷新规则)
+        if !container_publishes_ports(docker, MIHOMO_CONTAINER).await {
+            return Ok(()); // 已在跑且形态正确,别打扰(保活既有连接;rebuild 仍会刷新规则)
+        }
+        eprintln!("[infra] mihomo 仍是旧的 publish 端口形态,重建以交还宿主端口给 SSH 转发");
     }
-    docker::rm_force(docker, MIHOMO_CONTAINER).await?; // 清理停止态残留
+    docker::rm_force(docker, MIHOMO_CONTAINER).await?; // 清理停止态残留 / 旧形态
 
-    let host_port = cfg.mihomo_host_port.clone();
-    let ctrl_port = cfg
-        .mihomo_ctrl_port
-        .clone()
-        .ok_or_else(|| anyhow!("MIHOMO_CTRL_PORT 未设置(ensure_params 应已注入)"))?;
-    if host_port.is_empty() {
+    if cfg.mihomo_host_port.is_empty() {
         return Err(anyhow!("MIHOMO_HOST_PORT 未设置(ensure_params 应已注入)"));
+    }
+    if cfg.mihomo_ctrl_port.is_none() {
+        return Err(anyhow!("MIHOMO_CTRL_PORT 未设置(ensure_params 应已注入)"));
     }
 
     // 宿主侧工作副本(= start.sh 渲染 ./mihomo/config.yaml 的等价):缺失才种入基础模板,
@@ -310,7 +322,7 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
     let delivered = std::fs::read_to_string(host_path)
         .unwrap_or_else(|_| render_base_config(&cfg.mihomo_secret));
 
-    let config = mihomo_container_config(cfg, &host_port, &ctrl_port);
+    let config = mihomo_container_config(cfg);
     docker
         .create_container(
             Some(CreateContainerOptions { name: MIHOMO_CONTAINER.to_string(), platform: None }),
@@ -458,18 +470,17 @@ mod tests {
     }
 
     #[test]
-    fn container_config_binds_127_only_and_volume() {
+    fn container_publishes_nothing_and_keeps_volume() {
         let cfg = Config::from_getter(|_| None);
-        let c = mihomo_container_config(&cfg, "21000", "29090");
+        let c = mihomo_container_config(&cfg);
         let h = c.host_config.as_ref().unwrap();
         assert_eq!(h.binds, Some(vec!["vpnmgr_mihomo_cfg:/cfg".to_string()]));
         assert_eq!(h.network_mode.as_deref(), Some("vpnmgr_vpnnet"));
-        let pb = h.port_bindings.as_ref().unwrap();
-        for (port, hp) in [("7899/tcp", "21000"), ("9090/tcp", "29090")] {
-            let b = &pb.get(port).unwrap().as_ref().unwrap()[0];
-            assert_eq!(b.host_ip.as_deref(), Some("127.0.0.1"), "命门 #4");
-            assert_eq!(b.host_port.as_deref(), Some(hp));
-        }
+        // 一旦 publish,lima 就会抢走同号宿主端口,而它的转发会僵死且永不重建
+        // (2026-08-04 事故)。宿主口改由 crate::tunnel 的 SSH 转发独占伺服。
+        assert!(h.port_bindings.is_none(), "mihomo 不得 publish 宿主端口");
+        let exposed = c.exposed_ports.as_ref().unwrap();
+        assert!(exposed.contains_key("7899/tcp") && exposed.contains_key("9090/tcp"));
         assert_eq!(c.cmd, Some(vec!["-d".to_string(), "/cfg".to_string()]));
     }
 }
