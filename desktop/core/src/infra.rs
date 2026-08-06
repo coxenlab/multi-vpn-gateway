@@ -218,7 +218,7 @@ fn mihomo_container_config(cfg: &Config) -> ContainerConfig<String> {
 pub async fn ensure_bundled_images(docker: &Docker, images_dir: &Path) -> Result<()> {
     let oss = images_dir.join("oss-vpn.tar.gz");
     if oss.exists() && docker::load_image_if_absent(docker, "vpnmgr/oss-vpn:latest", &oss).await? {
-        eprintln!("已载入内置镜像 vpnmgr/oss-vpn:latest");
+        crate::ev!(info, "boot", "bundled_image_loaded", "内置 VPN 镜像已载入", { "image": "vpnmgr/oss-vpn:latest" });
     }
     Ok(())
 }
@@ -292,12 +292,12 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
 
     // 旧版遗留的「publish 端口」容器必须重建:只要它还 publish,lima 就一直霸占宿主
     // 分流口,app 自持的 SSH 转发绑不上(见 [`crate::tunnel`])。升级后首启走这一次重建。
-    if container_running(docker, MIHOMO_CONTAINER).await {
+    let recreated_old_publish = if container_running(docker, MIHOMO_CONTAINER).await {
         if !container_publishes_ports(docker, MIHOMO_CONTAINER).await {
             return Ok(()); // 已在跑且形态正确,别打扰(保活既有连接;rebuild 仍会刷新规则)
         }
-        eprintln!("[infra] mihomo 仍是旧的 publish 端口形态,重建以交还宿主端口给 SSH 转发");
-    }
+        true
+    } else { false };
     docker::rm_force(docker, MIHOMO_CONTAINER).await?; // 清理停止态残留 / 旧形态
 
     if cfg.mihomo_host_port.is_empty() {
@@ -344,6 +344,9 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
     let ctrl = Controller::new(cfg.mihomo_ctrl_url.clone(), cfg.mihomo_secret.clone());
     for _ in 0..30 {
         if ctrl.alive().await {
+            if recreated_old_publish {
+                crate::ev!(info, "infra", "mihomo_recreated", "旧端口发布形态的 mihomo 已重建", { "container": MIHOMO_CONTAINER });
+            }
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;

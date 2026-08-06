@@ -163,7 +163,8 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
             )
             .await
             {
-                eprintln!("[manager] put_file 投递配置进容器失败(判整体重载失败): {e}");
+                crate::ev!(error, "manager", "put_file_failed", "mihomo 配置投递失败",
+                    { "container": crate::infra::MIHOMO_CONTAINER, "error": e.to_string() });
                 return Ok::<String, anyhow::Error>(format!("put_file failed: {e}"));
             }
         }
@@ -542,7 +543,8 @@ pub async fn ensure_novnc_bridge(docker: &bollard::Docker, cid: &str) {
                   websockify --daemon 127.0.0.1:8082 127.0.0.1:5901 >/tmp/novnc-bridge.log 2>&1";
     // best-effort:登录页有自身重试 UX,不阻塞调用方;仅告警,不上抛。
     if let Err(e) = crate::docker::exec_detach(docker, &name, vec!["sh", "-c", script]).await {
-        eprintln!("[manager] ensure_novnc_bridge 起 websockify 桥失败(登录页会自重试): {e}");
+        crate::ev!(warn, "manager", "novnc_bridge_failed", "noVNC 桥拉起失败,登录页将自重试",
+            { "cid": cid, "error": e.to_string() });
     }
 }
 

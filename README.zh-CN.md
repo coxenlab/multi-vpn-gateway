@@ -116,7 +116,7 @@ pytest
 
 ## HTTP API
 
-以 `app/main.py` 为准。
+Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/src/server.rs` 注册的运行事件接口。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -140,6 +140,8 @@ pytest
 | GET | `/api/clash-snippet` | 给用户 Clash 粘的节点 + 规则(`text/plain`) |
 | GET | `/entry/proxy.pac` | 无 Clash 时入口接入的 PAC 文件 |
 | GET | `/api/entry/setup-commands` | 各平台代理开 / 关一键命令 |
+| GET | `/api/events` | 桌面运行事件查询，支持 `since_seq` / `level` / `src` / `event` / `q` / `limit` |
+| GET | `/api/events/export?days=2` | 导出桌面最近 1–14 天的 JSONL 运行事件 |
 
 > 另有 `GET /` 与一个 catch-all 静态挂载,服务单页前端。
 

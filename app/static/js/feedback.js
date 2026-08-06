@@ -370,7 +370,17 @@
       return `<div class="fb-eb-acts" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                 <button class="btn btn-secondary btn-sm fb-gw-heal" type="button">${esc(label || "手动修复")}</button>
                 <a class="btn btn-ghost btn-sm" href="clash-config.html?tab=diag" style="text-decoration:none;">查看诊断</a>
+                ${logLink()}
               </div>`;
+    }
+    function logLink() {
+      return window.fb.runtimeEventsAvailable
+        ? '<a class="btn btn-ghost btn-sm" href="clash-config.html#logs" style="text-decoration:none;">查看日志</a>'
+        : "";
+    }
+    function logOnly() {
+      const link = logLink();
+      return link ? `<div class="fb-eb-acts" style="margin-top:8px;display:flex;gap:8px;align-items:center;">${link}</div>` : "";
     }
     let healInFlight = false; // 修复进行中:挡住 10s 轮询重渲染(会把禁用按钮重置成可点 → 双发)
 
@@ -451,7 +461,10 @@
           bindHeal();
           return;
         }
-        if (wasBroken) window.toast("分流链路已恢复");
+        if (wasBroken) window.toast("分流链路已恢复", window.fb.runtimeEventsAvailable ? {
+          variant: "success",
+          action: { label: "查看日志", onClick: () => { location.href = "clash-config.html#logs"; } },
+        } : { variant: "success" });
         wasBroken = false; healing = false;
         clear();
         return;
@@ -479,12 +492,12 @@
         healing = true;
         banner("warn", SVG.spin, "分流链路中断,正在自动修复…",
           "容器正常,但宿主分流口暂时不过数据(通常睡醒/网络抖动所致)。正在重建转发," +
-          "约 1 分钟内自动恢复,通道无需重新登录。");
+          "约 1 分钟内自动恢复,通道无需重新登录。", logOnly());
       } else if (gh === "transport_dead") {
         // 传输层(mux)坏死:VM/容器都正常,看门狗正在直上备援隧道(盲区 #3)。
         healing = true;
         banner("warn", SVG.spin, "底座传输中断,正在重建转发…",
-          "VM 与容器正常,但宿主到 VM 的连接断了(通常睡醒/网络切换所致)。正在自动重建,通道无需重新登录。");
+          "VM 与容器正常,但宿主到 VM 的连接断了(通常睡醒/网络切换所致)。正在自动重建,通道无需重新登录。", logOnly());
       } else if (gh === "transport_degraded") {
         // 降级稳态:分流口活着(备援隧道),容器管理不可用。重开 app 由 boot 自愈重建底座。
         healing = false;
@@ -508,7 +521,18 @@
       }
     }
 
-    const start = () => { poll(); setInterval(poll, 10000); };
+    async function detectRuntimeEvents() {
+      if (!window.api.runtimeEvents) return;
+      try {
+        await window.api.runtimeEvents({ limit: 1 });
+        window.fb.runtimeEventsAvailable = true;
+        poll(); // 已有横幅时补上「查看日志」入口
+      } catch (_) {
+        window.fb.runtimeEventsAvailable = false; // web/旧桌面版 404 或后端不可达均不展示死链接
+      }
+    }
+
+    const start = () => { poll(); detectRuntimeEvents(); setInterval(poll, 10000); };
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
     else start();
     window.fb.checkGateway = poll; // 供手动触发(如修复后)

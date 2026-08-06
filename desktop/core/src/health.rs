@@ -51,6 +51,19 @@ pub enum GatewayHealth {
     VmDown,
 }
 
+impl GatewayHealth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::ForwardDead => "forward_dead",
+            Self::ContainerDown => "container_down",
+            Self::TransportDead => "transport_dead",
+            Self::TransportDegraded => "transport_degraded",
+            Self::VmDown => "vm_down",
+        }
+    }
+}
+
 /// 吐给 /api/system 的快照(看门狗每 tick 刷新)。
 #[derive(Debug, Clone, Serialize)]
 pub struct HealthSnapshot {
@@ -98,6 +111,10 @@ pub struct Watchdog {
     /// 已升级到二级(重启 mihomo 容器)。再失败即放弃。
     restarted: bool,
     gave_up: bool,
+    outage_started_ms: Option<u64>,
+    outage_heal_count: u32,
+    outage_final_action: Option<Action>,
+    recovery: Option<Recovery>,
 }
 
 /// 一次决策的动作。
@@ -110,46 +127,77 @@ pub enum Action {
     Restart,
 }
 
+impl Action {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Tunnel => "tunnel",
+            Self::Restart => "restart",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Recovery {
+    pub outage_ms: u64,
+    pub heal_count: u32,
+    pub final_action: Option<Action>,
+}
+
 impl Watchdog {
     /// 纯决策:吃当前 health + 单调毫秒时钟,推进内部状态,返回动作。
     pub fn decide(&mut self, health: GatewayHealth, now_ms: u64) -> Action {
-        match health {
+        self.recovery = None;
+        if health != GatewayHealth::Healthy && self.outage_started_ms.is_none() {
+            self.outage_started_ms = Some(now_ms);
+            self.outage_heal_count = 0;
+            self.outage_final_action = None;
+        }
+        let action = match health {
             GatewayHealth::Healthy => {
+                if let Some(started_ms) = self.outage_started_ms.take() {
+                    self.recovery = Some(Recovery {
+                        outage_ms: now_ms.saturating_sub(started_ms),
+                        heal_count: self.outage_heal_count,
+                        final_action: self.outage_final_action,
+                    });
+                }
                 // 恢复:清零,允许将来再自愈(梯子从一级重新开始)。
                 self.fail_streak = 0;
                 self.gave_up = false;
                 self.restarted = false;
                 self.heal_times_ms.clear();
+                self.outage_heal_count = 0;
+                self.outage_final_action = None;
                 Action::None
             }
             // 分流口不过数据:先重建自持隧道(廉价、不动容器);连续无效才升级重启 mihomo。
             GatewayHealth::ForwardDead | GatewayHealth::TransportDead => {
                 self.fail_streak += 1;
                 if self.gave_up {
-                    return Action::None;
-                }
-                if self.fail_streak < FAIL_STREAK_BEFORE_HEAL {
-                    return Action::None; // 防抖:再观察一拍
-                }
-                if let Some(t) = self.last_heal_ms {
-                    if now_ms.saturating_sub(t) < HEAL_COOLDOWN_MS {
-                        return Action::None; // 冷却中
+                    Action::None
+                } else if self.fail_streak < FAIL_STREAK_BEFORE_HEAL {
+                    Action::None // 防抖:再观察一拍
+                } else if self.last_heal_ms.is_some_and(|t| now_ms.saturating_sub(t) < HEAL_COOLDOWN_MS) {
+                    Action::None // 冷却中
+                } else {
+                    self.heal_times_ms.retain(|&t| now_ms.saturating_sub(t) < FLAP_WINDOW_MS);
+                    if self.heal_times_ms.len() >= FLAP_GIVEUP_COUNT {
+                        // 隧道反复重建仍不过数据 = 问题不在转发链,升级重启 mihomo 容器(只试一次)。
+                        if self.restarted {
+                            self.gave_up = true;
+                            Action::None
+                        } else {
+                            self.restarted = true;
+                            self.last_heal_ms = Some(now_ms);
+                            Action::Restart
+                        }
+                    } else {
+                        self.heal_times_ms.push(now_ms);
+                        self.last_heal_ms = Some(now_ms);
+                        Action::Tunnel
                     }
                 }
-                self.heal_times_ms.retain(|&t| now_ms.saturating_sub(t) < FLAP_WINDOW_MS);
-                if self.heal_times_ms.len() >= FLAP_GIVEUP_COUNT {
-                    // 隧道反复重建仍不过数据 = 问题不在转发链,升级重启 mihomo 容器(只试一次)。
-                    if self.restarted {
-                        self.gave_up = true;
-                        return Action::None;
-                    }
-                    self.restarted = true;
-                    self.last_heal_ms = Some(now_ms);
-                    return Action::Restart;
-                }
-                self.heal_times_ms.push(now_ms);
-                self.last_heal_ms = Some(now_ms);
-                Action::Tunnel
             }
             GatewayHealth::TransportDegraded => {
                 // 降级稳态:分流口活着、docker 不可达 = 分流可用,容器管理不可用。
@@ -160,12 +208,23 @@ impl Watchdog {
             }
             // VM/容器层面的问题不在本模块自愈范围。
             GatewayHealth::ContainerDown | GatewayHealth::VmDown => Action::None,
+        };
+        if action != Action::None {
+            self.outage_heal_count = self.outage_heal_count.saturating_add(1);
+            self.outage_final_action = Some(action);
         }
+        action
     }
 
     pub fn gave_up(&self) -> bool {
         self.gave_up
     }
+
+    pub fn fail_streak(&self) -> u32 { self.fail_streak }
+
+    pub fn heal_count(&self) -> u32 { self.outage_heal_count }
+
+    pub fn take_recovery(&mut self) -> Option<Recovery> { self.recovery.take() }
 
     /// 已知外因(睡眠唤醒)导致的必然断链:免掉防抖与冷却,下一拍就动手。
     /// 同时清 `gave_up`——上一轮放弃是针对醒来前那个世界的判断,不该压住这次自愈。
@@ -228,6 +287,7 @@ pub async fn check(state: &AppState) -> GatewayHealth {
         if let Ok(Ok(d)) = tokio::time::timeout(Duration::from_secs(5), docker::connect()).await {
             state.set_docker(Some(d.clone()));
             docker = Some(d);
+            crate::ev!(info, "watchdog", "docker_reconnect", "Docker 原生连接已恢复", { "via": "native" });
         }
     }
     let Some(docker) = docker else {
@@ -266,11 +326,11 @@ pub async fn heal_transport(state: &AppState) -> anyhow::Result<()> {
         Ok(()) => match crate::docker::connect_at(&sock.display().to_string()).await {
             Ok(d) => {
                 state.set_docker(Some(d));
-                eprintln!("[watchdog] docker 已经隧道 sock 重连,容器管理恢复");
+                crate::ev!(info, "watchdog", "docker_reconnect", "Docker 已经隧道连接恢复", { "via": "tunnel_sock" });
             }
-            Err(e) => eprintln!("[watchdog] 隧道 sock 连接失败: {e}"),
+            Err(e) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker 隧道连接失败", { "via": "tunnel_sock", "error": e.to_string() }); }
         },
-        Err(e) => eprintln!("[watchdog] docker.sock 隧道失败: {e}"),
+        Err(e) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker socket 隧道建立失败", { "via": "tunnel_sock", "error": e.to_string() }); }
     }
     Ok(())
 }
@@ -292,6 +352,7 @@ pub fn spawn(state: AppState) {
         let started = std::time::Instant::now();
         let mut tick = tokio::time::interval(Duration::from_secs(TICK_SECS));
         let mut last_wall = std::time::SystemTime::now();
+        let mut last_health: Option<GatewayHealth> = None;
         loop {
             tick.tick().await;
             let wall_gap = std::time::SystemTime::now()
@@ -299,13 +360,38 @@ pub fn spawn(state: AppState) {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             last_wall = std::time::SystemTime::now();
-            if wall_gap >= WAKE_GAP_SECS {
-                eprintln!("[watchdog] 墙钟跳变 {wall_gap}s(疑似刚从睡眠唤醒),立即体检自愈");
+            let woke = wall_gap >= WAKE_GAP_SECS;
+            if woke {
+                crate::ev!(warn, "watchdog", "wake_detected", "检测到睡眠唤醒,立即体检自愈", { "wall_gap_s": wall_gap });
                 wd.force_heal();
             }
+
+            match crate::tunnel::take_exited(&state).await {
+                Ok(Some(status)) => { crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程非预期退出", { "exit_code": status.code() }); }
+                Ok(None) => {}
+                Err(e) => { crate::ev!(warn, "tunnel", "tunnel_check_failed", "SSH 转发进程状态检查失败", { "error": e.to_string() }); }
+            }
+
             let now_ms = started.elapsed().as_millis() as u64;
+            let probe_started = std::time::Instant::now();
             let health = check(&state).await;
+            let probe_ms = probe_started.elapsed().as_millis() as u64;
+            crate::ev!(debug, "watchdog", "health_tick", "分流链路体检完成", { "health": health.as_str(), "probe_ms": probe_ms });
+            if last_health.is_some_and(|previous| previous != health) {
+                let previous = last_health.unwrap();
+                if health == GatewayHealth::Healthy {
+                    crate::ev!(info, "watchdog", "health_changed", "分流链路健康态已变化", { "from": previous.as_str(), "to": health.as_str() });
+                } else {
+                    crate::ev!(warn, "watchdog", "health_changed", "分流链路健康态已变化", { "from": previous.as_str(), "to": health.as_str() });
+                }
+            } else if last_health.is_none() && health != GatewayHealth::Healthy {
+                crate::ev!(warn, "watchdog", "health_changed", "首次体检发现分流链路异常", { "from": "unknown", "to": health.as_str() });
+            }
+            last_health = Some(health);
+
+            let gave_up_before = wd.gave_up();
             let action = wd.decide(health, now_ms);
+            let recovery = wd.take_recovery();
             if let Ok(mut snap) = state.health.lock() {
                 snap.gateway_health = health;
                 snap.proxy_port_reachable =
@@ -313,23 +399,43 @@ pub fn spawn(state: AppState) {
                 snap.healing = wd.healing(health);
                 snap.gave_up = wd.gave_up();
             }
+            if !gave_up_before && wd.gave_up() {
+                crate::ev!(error, "watchdog", "giveup", "自动修复已用尽,等待手动处理", { "heal_count": wd.heal_count(), "window_min": FLAP_WINDOW_MS / 60_000 });
+            }
+            if let Some(recovery) = recovery {
+                crate::ev!(info, "watchdog", "recovered", "分流链路已恢复", {
+                    "outage_ms": recovery.outage_ms,
+                    "heal_count": recovery.heal_count,
+                    "final_action": recovery.final_action.map(Action::as_str).unwrap_or("none")
+                });
+            }
             match action {
                 Action::Tunnel => {
-                    eprintln!("[watchdog] 分流口不过数据,重建 SSH 转发");
-                    if let Err(e) = heal_transport(&state).await {
-                        eprintln!("[watchdog] 重建 SSH 转发失败: {e}");
+                    crate::ev!(warn, "watchdog", "heal_start", "分流口不过数据,重建 SSH 转发", {
+                        "action": action.as_str(), "fail_streak": wd.fail_streak(),
+                        "reason": if woke { "wake_gap" } else { "health_check" }
+                    });
+                    let action_started = std::time::Instant::now();
+                    match heal_transport(&state).await {
+                        Ok(()) => { crate::ev!(info, "watchdog", "heal_done", "SSH 转发重建动作完成", { "action": action.as_str(), "duration_ms": action_started.elapsed().as_millis() as u64 }); }
+                        Err(e) => { crate::ev!(error, "watchdog", "heal_failed", "SSH 转发重建失败", { "action": action.as_str(), "error": e.to_string() }); }
                     }
                 }
                 Action::Restart => {
-                    if let Some(d) = state.docker().as_ref() {
-                        eprintln!("[watchdog] 重建转发无效,升级 restart {}", infra::MIHOMO_CONTAINER);
-                        if let Err(e) = docker::restart(d, infra::MIHOMO_CONTAINER).await {
-                            eprintln!("[watchdog] restart {} 失败: {e}", infra::MIHOMO_CONTAINER);
-                        }
+                    crate::ev!(warn, "watchdog", "heal_start", "重建转发无效,升级重启分流路由", {
+                        "action": action.as_str(), "fail_streak": wd.fail_streak(),
+                        "reason": if woke { "wake_gap" } else { "health_check" }
+                    });
+                    let action_started = std::time::Instant::now();
+                    let result = async {
+                        let d = state.docker().ok_or_else(|| anyhow::anyhow!("docker 连接不可用"))?;
+                        docker::restart(&d, infra::MIHOMO_CONTAINER).await?;
                         // 容器换了 IP,转发目标随之失效 → 立刻按新 IP 重建。
-                        if let Err(e) = crate::tunnel::ensure(&state).await {
-                            eprintln!("[watchdog] restart 后重建 SSH 转发失败: {e}");
-                        }
+                        crate::tunnel::ensure(&state).await
+                    }.await;
+                    match result {
+                        Ok(()) => { crate::ev!(info, "watchdog", "heal_done", "分流路由重启动作完成", { "action": action.as_str(), "duration_ms": action_started.elapsed().as_millis() as u64 }); }
+                        Err(e) => { crate::ev!(error, "watchdog", "heal_failed", "分流路由重启失败", { "action": action.as_str(), "error": e.to_string() }); }
                     }
                 }
                 Action::None => {}
@@ -478,6 +584,31 @@ mod tests {
         wd.force_heal();
         assert!(!wd.gave_up(), "醒来是新世界,旧的放弃不该压住这次自愈");
         assert_eq!(wd.decide(GatewayHealth::ForwardDead, 1_000), Action::Tunnel);
+    }
+
+    #[test]
+    fn outage_recovery_reports_duration_heals_and_final_action() {
+        let mut wd = Watchdog::default();
+        assert_eq!(wd.decide(GatewayHealth::ForwardDead, 1_000), Action::None);
+        assert_eq!(wd.decide(GatewayHealth::ForwardDead, 21_000), Action::Tunnel);
+        assert_eq!(wd.decide(GatewayHealth::Healthy, 51_000), Action::None);
+        assert_eq!(wd.take_recovery(), Some(Recovery {
+            outage_ms: 50_000, heal_count: 1, final_action: Some(Action::Tunnel),
+        }));
+        assert_eq!(wd.take_recovery(), None, "恢复记录只消费一次");
+    }
+
+    #[test]
+    fn recovery_after_giveup_keeps_the_whole_outage() {
+        let mut wd = Watchdog::default();
+        let (tunnels, restarts) = exhaust_ladder(&mut wd, GatewayHealth::ForwardDead);
+        assert!(wd.gave_up());
+        assert_eq!((tunnels, restarts), (3, 1));
+        assert_eq!(wd.decide(GatewayHealth::Healthy, 10_000_000), Action::None);
+        let recovery = wd.take_recovery().unwrap();
+        assert_eq!(recovery.outage_ms, 10_000_000);
+        assert_eq!(recovery.heal_count, 4);
+        assert_eq!(recovery.final_action, Some(Action::Restart));
     }
 
     #[tokio::test]

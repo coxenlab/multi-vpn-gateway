@@ -143,7 +143,7 @@ Adapters are declarative (`app/adapters.yaml`) and grouped into three families:
 
 ## HTTP API
 
-Source of truth is `app/main.py`.
+Web mode's source of truth is `app/main.py`; desktop mode additionally exposes runtime-event routes registered in `desktop/core/src/server.rs`.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -167,6 +167,8 @@ Source of truth is `app/main.py`.
 | GET | `/api/clash-snippet` | node + rules to paste into your Clash (`text/plain`) |
 | GET | `/entry/proxy.pac` | PAC file for the no-Clash entry mode |
 | GET | `/api/entry/setup-commands` | per-platform proxy on/off commands |
+| GET | `/api/events` | desktop runtime events; filters include `since_seq`, `level`, `src`, `event`, `q`, and `limit` |
+| GET | `/api/events/export?days=2` | export the desktop's last 1–14 days of runtime events as JSONL |
 
 > Plus `GET /` and a catch-all static mount that serve the single-page frontend.
 

@@ -44,6 +44,17 @@ impl BootStep {
     }
 }
 
+fn boot_step_start(step: BootStep) -> Instant {
+    vpnmgr_core::ev!(info, "boot", "boot_step_start", format!("启动步骤开始:{}", step.id()), { "step": step.id() });
+    Instant::now()
+}
+
+fn boot_step_done(step: BootStep, started: Instant, result: &str) {
+    vpnmgr_core::ev!(info, "boot", "boot_step_done", format!("启动步骤完成:{}", step.id()), {
+        "step": step.id(), "duration_ms": started.elapsed().as_millis() as u64, "result": result
+    });
+}
+
 #[derive(Clone, Copy)]
 enum BootStatus {
     Active,
@@ -239,9 +250,11 @@ fn prepare_runtime(handle: &tauri::AppHandle) -> anyhow::Result<()> {
 
 /// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 导航真 UI。
 async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
+    vpnmgr_core::events::init(&Config::load().data_dir);
     let reporter = BootReporter::new(handle);
 
     let mut runtime_log = StepLog::default();
+    let runtime_started = boot_step_start(BootStep::Runtime);
     reporter.update(
         BootStep::Runtime,
         BootStatus::Active,
@@ -250,8 +263,10 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     prepare_runtime(handle).map_err(|e| BootFailure::new(BootStep::Runtime, e, &runtime_log))?;
     runtime_log.push("运行组件与基础参数已就绪");
     reporter.update(BootStep::Runtime, BootStatus::Done, "运行组件已就绪");
+    boot_step_done(BootStep::Runtime, runtime_started, "done");
 
     let mut vm_log = StepLog::default();
+    let vm_started = boot_step_start(BootStep::Vm);
     reporter.update(BootStep::Vm, BootStatus::Active, "检查虚拟机状态…");
     let mut rosetta_enabled = vm::rosetta_available().await;
     let mut rosetta_skipped = false;
@@ -279,6 +294,7 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         }
         if rosetta_skipped {
             vm_log.push("用户已跳过 Rosetta 2；启动 VM 时不传 --vz-rosetta");
+            vpnmgr_core::ev!(warn, "boot", "rosetta_skipped", "用户已跳过 Rosetta 2", { "skipped": true });
         }
     }
 
@@ -306,8 +322,10 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     } else {
         reporter.update(BootStep::Vm, BootStatus::Done, "虚拟机已就绪");
     }
+    boot_step_done(BootStep::Vm, vm_started, if rosetta_skipped { "warning" } else { "done" });
 
     let mut docker_log = StepLog::default();
+    let docker_started = boot_step_start(BootStep::Docker);
     reporter.update(BootStep::Docker, BootStatus::Active, "等待容器引擎响应…");
     if let Err(first_error) = vm::wait_docker_ready(vm::PROFILE, 40).await {
         docker_log.push(format!("首次等待失败: {first_error}"));
@@ -344,8 +362,10 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         .docker()
         .ok_or_else(|| BootFailure::new(BootStep::Docker, "容器引擎连接未建立", &docker_log))?;
     reporter.update(BootStep::Docker, BootStatus::Done, "容器引擎已就绪");
+    boot_step_done(BootStep::Docker, docker_started, "done");
 
     let mut bundled_log = StepLog::default();
+    let bundled_started = boot_step_start(BootStep::Bundled);
     reporter.update(BootStep::Bundled, BootStatus::Active, "检查内置 VPN 镜像…");
     // 坏 tarball 重试修不好,标黄放行:oss 镜像只在建 oss 通道/探活时才用得上,
     // 缺了可去 Docker 诊断屏拉取/构建,不能把管理 UI 挡在 loading 页外。
@@ -366,9 +386,11 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         Some(msg) => reporter.update(BootStep::Bundled, BootStatus::Warning, msg),
         None => reporter.update(BootStep::Bundled, BootStatus::Done, "内置 VPN 镜像已就绪"),
     }
+    boot_step_done(BootStep::Bundled, bundled_started, if bundled_warning.is_some() { "warning" } else { "done" });
 
     let mut image_log = StepLog::default();
     let mut image_last_ui = None;
+    let mihomo_started = boot_step_start(BootStep::Mihomo);
     reporter.update(BootStep::Mihomo, BootStatus::Active, "检查分流内核镜像…");
     infra::ensure_mihomo_image_with_progress(&docker, &state.cfg, |detail| {
         forward_progress(
@@ -382,8 +404,10 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     .await
     .map_err(|e| BootFailure::new(BootStep::Mihomo, e, &image_log))?;
     reporter.update(BootStep::Mihomo, BootStatus::Done, "分流内核已就绪");
+    boot_step_done(BootStep::Mihomo, mihomo_started, "done");
 
     let mut service_log = StepLog::default();
+    let service_started = boot_step_start(BootStep::Service);
     reporter.update(
         BootStep::Service,
         BootStatus::Active,
@@ -407,6 +431,11 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         .parse::<u16>()
         .ok()
         .is_some_and(|status| (200..300).contains(&status));
+    if rules_ok {
+        vpnmgr_core::ev!(info, "boot", "rules_reload", "启动规则载入完成", { "status": rebuild_status.as_str() });
+    } else {
+        vpnmgr_core::ev!(warn, "boot", "rules_reload", "启动规则载入未完成", { "status": "failed", "error": rebuild_status.as_str() });
+    }
 
     let port = listener
         .local_addr()
@@ -414,7 +443,7 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         .port();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = app::serve(listener, state).await {
-            eprintln!("axum serve exited: {e}");
+            vpnmgr_core::ev!(error, "boot", "service_exited", "本地服务异常退出", { "error": e.to_string() });
         }
     });
     if rules_ok {
@@ -438,6 +467,7 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
             .navigate(url)
             .map_err(|e| BootFailure::new(BootStep::Service, e, &service_log))?;
     }
+    boot_step_done(BootStep::Service, service_started, if rules_ok { "done" } else { "warning" });
     Ok(())
 }
 
@@ -459,7 +489,10 @@ fn start_boot(handle: tauri::AppHandle, running: Arc<Mutex<bool>>) -> Result<(),
     reporter.reset();
     tauri::async_runtime::spawn(async move {
         if let Err(failure) = boot(&handle).await {
-            eprintln!("启动失败: {}", failure.message);
+            let log_tail = failure.log_tail.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join(" | ");
+            vpnmgr_core::ev!(error, "boot", "boot_step_failed", format!("启动步骤失败:{}", failure.step.id()), {
+                "step": failure.step.id(), "error": failure.message.as_str(), "log_tail": log_tail
+            });
             BootReporter::new(&handle).fail(&failure);
         }
         if let Ok(mut guard) = running.lock() {

@@ -250,7 +250,11 @@ pub async fn system_proxy_apply(ui_port: &str, enable: bool) -> anyhow::Result<S
     } else {
         run("networksetup", &["-setautoproxystate", &svc, "off"]).await?;
     }
-    Ok(system_proxy_status(ui_port).await)
+    let state = system_proxy_status(ui_port).await;
+    crate::ev!(info, "entry", "system_proxy_changed",
+        if enable { "系统自动代理已启用" } else { "系统自动代理已关闭" },
+        { "enabled": state.enabled, "service": state.service.as_deref().unwrap_or("") });
+    Ok(state)
 }
 
 // ── 层3:TUN 入口(root helper + 宿主 mihomo#2)───────────────────────────────
@@ -396,7 +400,8 @@ pub fn route_sets(rules: &[crate::store::Rule]) -> (Vec<String>, Vec<String>) {
                 v6.insert(r.pattern.clone());
             }
             Err(e) => {
-                eprintln!("[entry] route_sets 跳过畸形 CIDR {}: {e}", r.pattern);
+                crate::ev!(warn, "entry", "route_cidr_skipped", "已跳过畸形 CIDR 规则",
+                    { "rule_id": r.id, "reason": "invalid_cidr", "error": e.to_string() });
             }
         }
     }
@@ -487,21 +492,34 @@ pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Res
     if enable {
         let rules = crate::store::all_rules(&cfg.db_path()).unwrap_or_default();
         let (v4, v6) = route_sets(&rules);
-        helper_call(serde_json::json!({
+        let desired_total = v4.len() + v6.len();
+        let response = helper_call(serde_json::json!({
             "cmd": "ensure",
             "config": tun_mihomo_config(&cfg.mihomo_host_port),
             "v4": v4,
             "v6": v6,
         }))
         .await
-        .map_err(|e| anyhow::anyhow!("helper 不可达(未安装或未运行):{e}"))?;
+        .map_err(|e| {
+            crate::ev!(error, "entry", "tun_helper_unreachable", "TUN 助手不可达",
+                { "operation": "enable", "error": e.to_string() });
+            anyhow::anyhow!("helper 不可达(未安装或未运行):{e}")
+        })?;
         set_tun_enabled(&cfg.data_dir, true)?;
+        crate::ev!(info, "entry", "tun_ensure", "TUN 路由目标已下发", {
+            "operation": "enable", "total": desired_total,
+            "applied": response.get("applied").and_then(|v| v.as_u64()).unwrap_or(0),
+            "shadowed": response.get("shadowed").and_then(|v| v.as_u64()).unwrap_or(0)
+        });
         Ok(tun_status(cfg).await)
     } else {
         set_tun_enabled(&cfg.data_dir, false)?;
         let stop_err = helper_call(serde_json::json!({ "cmd": "stop" })).await.err();
         let mut st = tun_status(cfg).await;
         if let Some(e) = stop_err {
+            crate::ev!(error, "entry", "tun_helper_unreachable", "TUN 停用标记已清除,但助手停止失败", {
+                "operation": "disable", "error": e.to_string()
+            });
             if let Some(m) = st.as_object_mut() {
                 m.insert(
                     "warning".into(),
@@ -524,7 +542,8 @@ pub async fn tun_sync(cfg: &crate::config::Config) {
         Err(_) => return,
     };
     let (v4, v6) = route_sets(&rules);
-    if let Err(e) = helper_call(serde_json::json!({
+    let desired_total = v4.len() + v6.len();
+    match helper_call(serde_json::json!({
         "cmd": "ensure",
         "config": tun_mihomo_config(&cfg.mihomo_host_port),
         "v4": v4,
@@ -532,7 +551,17 @@ pub async fn tun_sync(cfg: &crate::config::Config) {
     }))
     .await
     {
-        eprintln!("[entry] TUN 路由对账失败(helper 不可达?): {e}");
+        Ok(response) => {
+            crate::ev!(info, "entry", "tun_ensure", "TUN 路由目标已对账", {
+                "operation": "sync", "total": desired_total,
+                "applied": response.get("applied").and_then(|v| v.as_u64()).unwrap_or(0),
+                "shadowed": response.get("shadowed").and_then(|v| v.as_u64()).unwrap_or(0)
+            });
+        }
+        Err(e) => {
+            crate::ev!(error, "entry", "tun_helper_unreachable", "TUN 路由对账失败,助手不可达",
+                { "operation": "sync", "error": e.to_string() });
+        }
     }
 }
 

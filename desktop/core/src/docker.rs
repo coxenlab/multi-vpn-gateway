@@ -502,7 +502,8 @@ impl Drop for OneshotCleanup {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 if let Err(e) = rm_force(&docker, &id).await {
-                    eprintln!("[docker] cancelled oneshot cleanup {id}: {e}");
+                    crate::ev!(warn, "docker", "oneshot_cleanup_failed", "被取消的一次性容器清理失败",
+                        { "container_id": id.as_str(), "reason": "cancelled", "error": e.to_string() });
                 }
             });
         }
@@ -568,7 +569,8 @@ pub async fn run_oneshot_capture(docker: &Docker, name: &str, image: &str, cmd: 
         Ok(result) => result,
         Err(_) => Err(anyhow!("remove timed out after 2s; retrying in background")),
     } {
-        eprintln!("[docker] oneshot cleanup {name}: {rm}");
+        crate::ev!(warn, "docker", "oneshot_cleanup_failed", "一次性容器清理失败",
+            { "container": name, "reason": "cleanup", "error": rm.to_string() });
     }
     execution
 }

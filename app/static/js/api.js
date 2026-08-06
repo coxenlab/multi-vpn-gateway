@@ -69,6 +69,16 @@
     status: (id) => req("GET", `/api/channels/${id}/status`),
     // 通道诊断(桌面版 host-only;web 版 404 → 前端 feature-detect 降级)
     diag: () => req("GET", "/api/diag"),
+    // 运行事件日志(桌面版 host-only;web/旧桌面版 404 → 调用方隐藏入口)
+    runtimeEvents: (params = {}) => {
+      const query = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+      });
+      const suffix = query.toString();
+      return req("GET", `/api/events${suffix ? "?" + suffix : ""}`);
+    },
+    runtimeEventsExport: (days = 1) => req("GET", `/api/events/export?days=${encodeURIComponent(days)}`),
     // 容器管理(桌面版 host-only;web 版 404 → 前端 feature-detect 降级)
     containers: () => req("GET", "/api/containers"),
     containerLogs: (name, tail = 200) => req("GET", `/api/containers/${name}/logs?tail=${tail}`),

@@ -108,18 +108,21 @@ pub async fn ensure(state: &AppState) -> Result<()> {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if attempt < 3 {
-                    eprintln!("[tunnel] 第 {} 次拉起失败,2s 后重试:{e}", attempt + 1);
+                    crate::ev!(warn, "tunnel", "tunnel_retry", "SSH 转发拉起失败,2 秒后重试", { "attempt": attempt + 1, "error": e.to_string() });
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
                 last = Some(e);
             }
         }
     }
-    Err(last.unwrap_or_else(|| anyhow!("SSH 转发未能建立")))
+    let error = last.unwrap_or_else(|| anyhow!("SSH 转发未能建立"));
+    crate::ev!(error, "tunnel", "tunnel_failed", "SSH 转发未能建立", { "error": error.to_string() });
+    Err(error)
 }
 
 async fn try_ensure(state: &AppState) -> Result<()> {
     if crate::health::proxy_serves(&state.cfg.mihomo_host_port).await {
+        crate::ev!(debug, "tunnel", "tunnel_ensure_skip", "SSH 转发已可用,无需重建", {});
         return Ok(());
     }
     let fwds = fwds(state).await?;
@@ -129,27 +132,42 @@ async fn try_ensure(state: &AppState) -> Result<()> {
     }
     kill(state).await; // 先回收旧进程,否则新 ssh 绑不上同一个宿主端口
     let mut cmd = Command::new("ssh");
+    let forward_summary = fwds.iter()
+        .map(|f| format!("127.0.0.1:{}->{}", f.host_port, f.guest))
+        .collect::<Vec<_>>().join(",");
+    let started = std::time::Instant::now();
     cmd.args(forward_args(&cfg.display().to_string(), crate::vm::PROFILE, &fwds))
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null());
     let child = cmd.spawn().map_err(|e| anyhow!("拉起 SSH 转发失败: {e}"))?;
     *state.tunnel.lock().await = Some(child);
+    crate::ev!(info, "tunnel", "tunnel_spawn", "SSH 转发进程已拉起", { "forwards": forward_summary });
 
     // 等端到端真通(ssh 建连 + 转发就绪,通常 <1s;VM 忙时给到 15s)。
     for _ in 0..30 {
         if crate::health::proxy_serves(&state.cfg.mihomo_host_port).await {
-            eprintln!("[tunnel] SSH 转发已就绪:{fwds:?}");
+            crate::ev!(info, "tunnel", "tunnel_ready", "SSH 转发已就绪", { "duration_ms": started.elapsed().as_millis() as u64 });
             return Ok(());
         }
         // 进程当场退出(多为端口被占)→ 立刻报错,不空等满 15s。
-        if let Some(child) = state.tunnel.lock().await.as_mut() {
-            if let Ok(Some(st)) = child.try_wait() {
-                return Err(anyhow!("SSH 转发进程退出(exit {:?});宿主端口可能被占用", st.code()));
-            }
+        if let Some(st) = take_exited(state).await? {
+            crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程在就绪前退出", { "exit_code": st.code() });
+            return Err(anyhow!("SSH 转发进程退出(exit {:?});宿主端口可能被占用", st.code()));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     Err(anyhow!("SSH 转发已拉起但分流口仍不过数据(VM 内 mihomo 异常?)"))
+}
+
+/// 每拍检查已就绪隧道是否意外退出；退出时顺带清掉失效句柄。
+pub async fn take_exited(state: &AppState) -> Result<Option<std::process::ExitStatus>> {
+    let mut guard = state.tunnel.lock().await;
+    let status = match guard.as_mut() {
+        Some(child) => child.try_wait()?,
+        None => None,
+    };
+    if status.is_some() { guard.take(); }
+    Ok(status)
 }
 
 /// 回收隧道子进程(重建前 / app 退出前)。已退出或从未拉起都安全。

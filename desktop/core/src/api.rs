@@ -257,6 +257,7 @@ async fn provision_with_docker(
 }
 
 pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    let started = std::time::Instant::now();
     let db = st.cfg.db_path();
     let key = match store::master_key(&st.cfg.data_dir) {
         Ok(k) => k,
@@ -306,24 +307,63 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
     };
     let sk = secret_keys_of(&vtype);
     if let Err(e) = store::add_channel(&db, &key, &nc, &cfg_in, &sk) {
+        crate::ev!(error, "api", "channel_create", "通道创建失败", {
+            "cid": cid.as_str(), "name": nc.name.as_str(), "vpn_type": vtype.as_str(),
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+        });
         return err500(&format!("add_channel: {e}"));
     }
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(c)) => c,
-        _ => return err500("get_channel after add"),
+        Ok(None) => {
+            crate::ev!(error, "api", "channel_create", "通道创建后未能读回", {
+                "cid": cid.as_str(), "name": nc.name.as_str(), "vpn_type": vtype.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error",
+                "error": "missing after insert"
+            });
+            return err500("get_channel after add");
+        }
+        Err(e) => {
+            crate::ev!(error, "api", "channel_create", "通道创建后读回失败", {
+                "cid": cid.as_str(), "name": nc.name.as_str(), "vpn_type": vtype.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error",
+                "error": e.to_string()
+            });
+            return err500(&format!("get_channel after add: {e}"));
+        }
     };
     match provision(&st, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
-            let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
+            let state_persisted = match store::set_container(&db, &cid, &container_id, novnc, "running") {
+                Ok(()) => true,
+                Err(e) => {
+                    crate::ev!(error, "api", "channel_create", "通道容器已创建但状态落库失败", {
+                        "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                        "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+                    });
+                    false
+                }
+            };
             // 对照 Python create:响应回通道(不含 reload_status);重载未达成仅记日志,不阻断建通道。
             let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
             if !reload_ok(&reload) {
-                eprintln!("[api] create rebuild 重载未达成 (cid={cid}): {reload}");
+                crate::ev!(error, "api", "mihomo_reload_failed", "创建通道后 mihomo 重载未达成",
+                    { "operation": "create", "cid": cid.as_str(), "error": reload.as_str() });
+            }
+            if state_persisted {
+                crate::ev!(info, "api", "channel_create", "通道创建完成", {
+                    "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                    "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
+                });
             }
             channel_json(&db, &cid)
         }
         Err(e) => {
             let _ = store::set_status(&db, &cid, "error");
+            crate::ev!(error, "api", "channel_create", "通道创建失败", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+            });
             err500(&format!("{e}"))
         }
     }
@@ -358,7 +398,8 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
                 // 对照 Python update:响应回通道(不含 reload_status);重载未达成仅记日志。
                 let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
                 if !reload_ok(&reload) {
-                    eprintln!("[api] update rebuild 重载未达成 (cid={cid}): {reload}");
+                    crate::ev!(error, "api", "mihomo_reload_failed", "更新通道后 mihomo 重载未达成",
+                        { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
                 }
             }
             Err(e) => {
@@ -424,6 +465,8 @@ pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp:
     };
     // 命门 #5:二进制经 put_archive 落数据卷,绝不入 SQLite/回传
     if let Err(e) = crate::docker::put_file(&docker, &format!("vpn-{cid}"), "/root", &filename, blob.as_ref()).await {
+        crate::ev!(error, "api", "put_file_failed", "通道安装文件投递失败",
+            { "cid": cid.as_str(), "error": e.to_string() });
         return err500(&format!("{e}"));
     }
     let _ = store::set_config_field(&db, &key, &cid, "package", &filename, false);
@@ -438,6 +481,8 @@ pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum
         Err(e) => return err500(&format!("{e}")),
     };
     let (ok, ms) = manager::probe(st.docker().as_ref(), &st.cfg, &ch).await; // 命门 #1
+    crate::ev!(debug, "manager", "probe", "通道探活完成",
+        { "cid": cid.as_str(), "ok": ok, "latency_ms": ms });
     let new = if ok {
         "logged_in"
     } else if ch.status == "logged_in" {
@@ -462,19 +507,38 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
         Ok(None) => return err404("not found"),
         Err(e) => return err500(&format!("{e}")),
     };
+    let started = std::time::Instant::now();
     let docker = match st.docker() {
         Some(d) => d,
-        None => return err503("docker unavailable"),
+        None => {
+            crate::ev!(error, "api", "channel_start", "通道启动失败", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": "docker unavailable"
+            });
+            return err503("docker unavailable");
+        }
     };
     let runtime = registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
     if runtime == "byo" {
         // byo 客户端装在可写层,扛得住原地重启 → 不重建
         if let Err(e) = manager::start(&docker, &cid).await {
+            crate::ev!(error, "api", "channel_start", "通道启动失败", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+            });
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("start: {e}"));
         }
         if let Err(e) = store::set_status(&db, &cid, "running") {
+            crate::ev!(error, "api", "channel_start", "通道已启动但状态落库失败", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+            });
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
         }
+        crate::ev!(info, "api", "channel_start", "通道启动完成", {
+            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
+        });
         return Json(json!({ "ok": true })).into_response();
     }
     // hagb/oss:原地 start 扛不住 → 重建。Docker outcome 确认前不改 DB。
@@ -482,61 +546,115 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     match provision_with_docker(&st, &docker, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
             if let Err(e) = store::set_container(&db, &cid, &container_id, novnc, "running") {
+                crate::ev!(error, "api", "channel_start", "通道容器已启动但状态落库失败", {
+                    "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                    "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+                });
                 return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_container: {e}"));
             }
             // 对照 Python start:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
             let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
             if !reload_ok(&reload) {
-                eprintln!("[api] start rebuild 重载未达成 (cid={cid}): {reload}");
+                crate::ev!(error, "api", "mihomo_reload_failed", "启动通道后 mihomo 重载未达成",
+                    { "operation": "start", "cid": cid.as_str(), "error": reload.as_str() });
             }
+            crate::ev!(info, "api", "channel_start", "通道启动完成", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
+            });
             Json(json!({ "ok": true })).into_response()
         }
-        Err(e) => err500(&format!("{e}")),
+        Err(e) => {
+            crate::ev!(error, "api", "channel_start", "通道启动失败", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+            });
+            err500(&format!("{e}"))
+        }
     }
 }
 
 pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    match store::get_channel(&db, &cid) {
-        Ok(Some(_)) => {}
+    let ch = match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) => ch,
         Ok(None) => return err404("not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
-    }
+    };
+    let started = std::time::Instant::now();
     let docker = match st.docker() {
         Some(d) => d,
-        None => return err503("docker unavailable"),
+        None => {
+            crate::ev!(error, "api", "channel_stop", "通道停止失败", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": "docker unavailable"
+            });
+            return err503("docker unavailable");
+        }
     };
     if let Err(e) = manager::stop(&docker, &cid).await {
+        crate::ev!(error, "api", "channel_stop", "通道停止失败", {
+            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+        });
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("stop: {e}"));
     }
     if let Err(e) = store::set_status(&db, &cid, "stopped") {
+        crate::ev!(error, "api", "channel_stop", "通道已停止但状态落库失败", {
+            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+        });
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
     }
+    crate::ev!(info, "api", "channel_stop", "通道已停止", {
+        "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+        "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
+    });
     Json(json!({ "ok": true })).into_response()
 }
 
 pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    match store::get_channel(&db, &cid) {
-        Ok(Some(_)) => {}
+    let ch = match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) => ch,
         Ok(None) => return err404("not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
-    }
+    };
+    let started = std::time::Instant::now();
     let docker = match st.docker() {
         Some(d) => d,
-        None => return err503("docker unavailable"),
+        None => {
+            crate::ev!(error, "api", "channel_delete", "通道删除失败", {
+                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": "docker unavailable"
+            });
+            return err503("docker unavailable");
+        }
     };
     if let Err(e) = manager::remove(&docker, &cid).await {
+        crate::ev!(error, "api", "channel_delete", "通道删除失败", {
+            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+        });
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("remove: {e}"));
     }
     if let Err(e) = store::del_channel(&db, &cid) {
+        crate::ev!(error, "api", "channel_delete", "通道容器已删除但配置落库失败", {
+            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
+        });
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_channel: {e}"));
     }
     // 对照 Python delete:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
     let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
     if !reload_ok(&reload) {
-        eprintln!("[api] delete rebuild 重载未达成 (cid={cid}): {reload}");
+        crate::ev!(error, "api", "mihomo_reload_failed", "删除通道后 mihomo 重载未达成",
+            { "operation": "delete", "cid": cid.as_str(), "error": reload.as_str() });
     }
+    crate::ev!(info, "api", "channel_delete", "通道已删除", {
+        "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+        "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
+    });
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -591,6 +709,8 @@ pub async fn clash_detect() -> Json<Value> {
 pub async fn clash_merge_profile(State(st): State<AppState>) -> axum::response::Response {
     let ui = st.cfg.ui_port.to_string();
     let body = entry::verge_merge_profile(&st.cfg.mihomo_host_port, &ui);
+    crate::ev!(info, "entry", "clash_profile_generated", "Clash Merge profile 已生成",
+        { "client": "clash_verge_rev" });
     ([(axum::http::header::CONTENT_TYPE, "text/yaml; charset=utf-8")], body).into_response()
 }
 

@@ -4,6 +4,8 @@
 
 > **历史快照**:本文是实现前的原始设计 / 落地方案,记录设计意图与权衡。部分技术选型已与最终实现不同(如前端实为原生 JS 而非 React/AntD;主密钥实为数据卷上的 `master.key` 而非 macOS 钥匙串)。当前实际架构以 [development.md](./development.md) 为准。
 
+> **当前实现增补(2026-08-06)**:macOS 桌面版的 Rust host-only core 已提供全局运行事件链路:内存环保留最近 1000 条,非 debug 事件异步写入 `<data_dir>/logs/vpnmgr-YYYY-MM-DD.jsonl`(14 天、10MB/日、敏感键脱敏),并由 `GET /api/events` 与 `GET /api/events/export` 查询 / 导出。「系统与接入 → 运行日志」消费这两个桌面专属接口；web 版收到 404 时隐藏该 tab。路由与事件契约的当前事实源分别是 `desktop/core/src/server.rs` 与 `desktop/core/src/events.rs`。
+
 ---
 
 ## 1. 一句话方案概述

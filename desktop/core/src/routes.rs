@@ -31,13 +31,12 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
 /// 后者在转发僵死时恒真,旧版据此反复回「已修复」而链路其实是死的(2026-08-04 事故)。
 /// 不破命门 #1:不碰登录态;只修宿主→分流口这条转发链。
 pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
+    let started = std::time::Instant::now();
+    crate::ev!(warn, "api", "heal_start", "开始手动修复分流链路", { "action": "manual" });
     let tunnel_err = crate::health::heal_transport(&st).await.err();
     let mut reachable = tunnel_err.is_none();
     let mut method = "tunnel";
     if !reachable {
-        if let Some(e) = &tunnel_err {
-            eprintln!("[heal] 重建 SSH 转发失败(将尝试重启 mihomo):{e}");
-        }
         // 二级:转发重建救不回 → 多半是 mihomo 容器自身异常,重启后按新 IP 重挂转发。
         let restart_err = match st.docker() {
             Some(d) => crate::docker::restart(&d, crate::infra::MIHOMO_CONTAINER).await.err(),
@@ -45,11 +44,15 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
         };
         if let Some(e) = restart_err {
             let pre = tunnel_err.map(|e| format!("重建转发失败:{e};")).unwrap_or_default();
+            crate::ev!(error, "api", "heal_failed", "手动修复分流链路失败",
+                { "action": "manual", "error": e.to_string() });
             return Json(json!({"ok": false, "reachable": false,
                 "error": format!("{pre}重启分流路由失败:{e}。建议退出并重新打开 app(将自动重建底座)")}));
         }
         method = "restart";
         if let Err(e) = crate::tunnel::ensure(&st).await {
+            crate::ev!(error, "api", "heal_failed", "手动修复后转发仍未恢复",
+                { "action": "manual", "error": e.to_string() });
             return Json(json!({"ok": false, "reachable": false,
                 "error": format!("分流路由已重启,但转发仍未恢复:{e}。建议退出并重新打开 app")}));
         }
@@ -63,6 +66,11 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
             snap.healing = false;
             snap.gave_up = false;
         }
+        crate::ev!(info, "api", "heal_done", "手动修复分流链路完成",
+            { "action": method, "duration_ms": started.elapsed().as_millis() as u64 });
+    } else {
+        crate::ev!(error, "api", "heal_failed", "手动修复动作完成但端到端探活仍失败",
+            { "action": method });
     }
     Json(json!({"ok": true, "reachable": reachable, "method": method}))
 }

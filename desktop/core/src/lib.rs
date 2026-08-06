@@ -19,6 +19,7 @@ pub mod dockerhub;
 pub mod preflight;
 pub mod health;
 pub mod tunnel;
+pub mod events;
 
 use std::sync::Arc;
 

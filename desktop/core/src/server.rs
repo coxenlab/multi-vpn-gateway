@@ -60,6 +60,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/containers/:name/logs", get(crate::containers::logs))
         .route("/api/vpn-types/:vtype/versions", get(api::vpn_versions))
         .route("/api/preflight", get(api::preflight_check))
+        // 运行事件日志(桌面版 host-only;web 版前端 feature-detect)
+        .route("/api/events", get(crate::events::list))
+        .route("/api/events/export", get(crate::events::export))
         // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法
         .route("/api/preflight/fix/:x", get(api::preflight_fix_status).post(api::preflight_fix))
         .route("/api/images", get(api::images_inventory))
