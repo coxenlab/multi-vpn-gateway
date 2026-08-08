@@ -133,7 +133,7 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
     let _guard = REBUILD_LOCK.lock().await; // 全程持锁,读-改-写-重载串行(见 REBUILD_LOCK 说明)
     let inner = async {
         let channels = crate::store::list_channels(db)?;
-        let rules = crate::store::all_rules(db)?;
+        let rules = crate::store::effective_rules(db)?;
         let cfg_path = mihomo_config_path();
         // base 读取:NotFound = 首启合法(空 Mapping);其余 IO 错误 / YAML 解析错误 → 不写盘、
         // 直接上抛(配置文件保持原样)。否则一次读失败就把 dns/listeners 等非托管键整份冲掉,

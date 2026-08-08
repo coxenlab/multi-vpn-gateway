@@ -667,7 +667,7 @@ fn text_plain(body: String) -> axum::response::Response {
 pub async fn clash_provider(State(st): State<AppState>) -> axum::response::Response {
     // ★最危险:db 读失败绝不能回空 200——那会让外层 Clash 静默丢分流、流量 DIRECT 裸奔。
     // 必须 5xx,让 Clash 保留上一份 provider(rule-provider 拉取失败时用旧副本)。
-    let rules = match store::all_rules(&st.cfg.db_path()) {
+    let rules = match store::effective_rules(&st.cfg.db_path()) {
         Ok(r) => r,
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
     };
@@ -675,7 +675,7 @@ pub async fn clash_provider(State(st): State<AppState>) -> axum::response::Respo
 }
 
 pub async fn clash_snippet(State(st): State<AppState>) -> axum::response::Response {
-    let rules = match store::all_rules(&st.cfg.db_path()) {
+    let rules = match store::effective_rules(&st.cfg.db_path()) {
         Ok(r) => r,
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
     };
@@ -684,7 +684,7 @@ pub async fn clash_snippet(State(st): State<AppState>) -> axum::response::Respon
 }
 
 pub async fn entry_pac(State(st): State<AppState>) -> axum::response::Response {
-    let rules = match store::all_rules(&st.cfg.db_path()) {
+    let rules = match store::effective_rules(&st.cfg.db_path()) {
         Ok(r) => r,
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
     };

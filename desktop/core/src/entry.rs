@@ -463,7 +463,7 @@ pub async fn tun_status(cfg: &crate::config::Config) -> serde_json::Value {
     let installed = std::path::Path::new(HELPER_PLIST).exists();
     let enabled = tun_enabled(&cfg.data_dir);
     let helper = helper_call(serde_json::json!({ "cmd": "status" })).await.ok();
-    let (v4, v6) = crate::store::all_rules(&cfg.db_path())
+    let (v4, v6) = crate::store::effective_rules(&cfg.db_path())
         .map(|r| route_sets(&r))
         .unwrap_or_default();
     let config_current = helper
@@ -490,7 +490,7 @@ pub async fn tun_status(cfg: &crate::config::Config) -> serde_json::Value {
 /// (helper 用 state.json + KeepAlive 自恢复,停不掉时它会复活,须让用户知道)。
 pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Result<serde_json::Value> {
     if enable {
-        let rules = crate::store::all_rules(&cfg.db_path()).unwrap_or_default();
+        let rules = crate::store::effective_rules(&cfg.db_path()).unwrap_or_default();
         let (v4, v6) = route_sets(&rules);
         let desired_total = v4.len() + v6.len();
         let response = helper_call(serde_json::json!({
@@ -537,7 +537,7 @@ pub async fn tun_sync(cfg: &crate::config::Config) {
     if !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
         return;
     }
-    let rules = match crate::store::all_rules(&cfg.db_path()) {
+    let rules = match crate::store::effective_rules(&cfg.db_path()) {
         Ok(r) => r,
         Err(_) => return,
     };

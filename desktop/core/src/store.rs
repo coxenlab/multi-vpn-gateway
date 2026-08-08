@@ -225,6 +225,15 @@ pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// 运行时五个规则消费面共用的有效规则集。
+///
+/// 当前仅折叠规则自身的 `enabled`，所以输出与 [`all_rules`] 逐项一致；保留所有元素与
+/// `ORDER BY id` 插入序，过滤仍由各消费面原有逻辑完成。后续开关只允许改返回项的
+/// `enabled` 值，不能过滤或重排，避免 mihomo/provider/PAC/TUN 的规则集合漂移。
+pub fn effective_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
+    all_rules(db)
+}
+
 /// 对照 add_rule:INSERT enabled=1,返回 lastrowid。
 pub fn add_rule(db: &Path, cid: &str, kind: &str, pattern: &str) -> anyhow::Result<i64> {
     let conn = Connection::open(db)?;
@@ -780,6 +789,16 @@ mod tests {
         assert_eq!(r1.len(), 2);
         let all = all_rules(&db).unwrap();
         assert_eq!(all.len(), 3);
+        let effective = effective_rules(&db).unwrap();
+        assert_eq!(
+            effective
+                .iter()
+                .map(|r| (r.id, r.channel_id.as_str(), r.enabled))
+                .collect::<Vec<_>>(),
+            all.iter()
+                .map(|r| (r.id, r.channel_id.as_str(), r.enabled))
+                .collect::<Vec<_>>()
+        );
 
         let mirrors = list_mirrors(&db).unwrap();
         assert_eq!(mirrors.len(), 2);
