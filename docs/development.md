@@ -81,13 +81,13 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 4. **所有 host 端口只绑 `127.0.0.1`**(compose + manager 均如此),永不 `0.0.0.0`。
    - **oss**:1080 不映射 host(`_build_oss` 无 `ports` 项),仅 docker 内网 `vpn-{id}:1080` 可达;egress 由 dante `external: <tun>` pin 到隧道。
-   - **byo**:1080 不映射 host(microsocks 仅 docker 内网可达),noVNC(8080)映射到 127.0.0.1 随机高位。
+   - **byo**:1080 不映射 host(microsocks 仅 docker 内网可达)。Web 栈由 Docker 把 noVNC(8080)映射到 loopback；桌面栈不 publish 8080，由 app 为每条通道自持独立 SSH 转发到 127.0.0.1 随机高位。
 
 5. **凭据安全**:密码 Fernet 加密落库(`store.py`),`_row()` 永不把 `password_enc` 与任何 secret 字段回传前端;`master.key` 权限 0600,存在数据卷里。
    - **oss**:`config_json` 列承载 per-adapter 参数,`secret:true` 字段(密码 / `.ovpn` / wg `.conf` 含私钥)字段级 Fernet 加密;凭据 / 私钥经 `manager.oss_connect` 的 `exec_run(stdin=True, socket=True)` 注入,**绝不进命令行**(`ps` 不可见)。
    - **byo**:上传安装器经 `POST /api/channels/{cid}/upload`(multipart)→ `manager.put_file` in-memory tar → `container.put_archive` 落数据卷,**绝不进 SQLite、绝不回传前端**;`config_json` 只存非密文件名引用(供前端展示已装包名)。
 
-6. **容器细节**:SOCKS5(1080)只在 Docker 内网暴露;noVNC(8080)映射到 127.0.0.1 随机高位端口。aTrust 容器需 `sysctl net.ipv4.conf.default.route_localnet=1`;`DISABLE_PKG_VERSION_XML=1` 两种 hagb 类型均需。EasyConnect 镜像 tag 由 `dockerhub.py` 实时拉取(非硬编码),`ec_ver` 存用户选定的 tag。
+6. **容器细节**:SOCKS5(1080)只在 Docker 内网暴露。桌面栈 noVNC(8080)不 publish，由 app SSH 转发提供 127.0.0.1 随机高位入口；Web 栈仍用 Docker loopback 映射。aTrust 容器需 `sysctl net.ipv4.conf.default.route_localnet=1`;`DISABLE_PKG_VERSION_XML=1` 两种 hagb 类型均需。EasyConnect 镜像 tag 由 `dockerhub.py` 实时拉取(非硬编码),`ec_ver` 存用户选定的 tag。
 
 7. **代理命名**:外层用户 Clash 里那个节点叫 `vpn-router`(= 整个 mihomo 实例的分流端口);内层 mihomo 里每条通道是 `ch-{id}` 的 socks5 代理。别混淆。
 

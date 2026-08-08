@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use crate::store::NewChannel;
 use crate::{registry, store, manager, webutil, entry, dockerhub, preflight, AppState};
 
+static ROUTING_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn vpn_types() -> Json<Value> {
     Json(json!(registry::list_adapters().unwrap_or_default()))
 }
@@ -124,21 +126,49 @@ pub async fn patch_rule(
         Ok(None) => return err404("channel not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
     }
-    let docker = match st.docker() {
-        Some(d) => d,
-        None => return err503("docker unavailable"),
+    let enabled = match b.get("enabled") {
+        None => None,
+        Some(Value::Bool(v)) => Some(*v),
+        Some(_) => return err_detail(StatusCode::BAD_REQUEST, "enabled must be boolean"),
     };
-    let enabled = b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-    match store::set_rule_enabled(&db, &cid, rid, enabled) {
+    let note = match b.get("note") {
+        None => None,
+        Some(Value::String(v)) => Some(v.as_str()),
+        Some(_) => return err_detail(StatusCode::BAD_REQUEST, "note must be string"),
+    };
+    let locked = match b.get("locked") {
+        None => None,
+        Some(Value::Bool(v)) => Some(*v),
+        Some(_) => return err_detail(StatusCode::BAD_REQUEST, "locked must be boolean"),
+    };
+    if enabled.is_none() && note.is_none() && locked.is_none() {
+        return err_detail(StatusCode::BAD_REQUEST, "one of enabled, note or locked is required");
+    }
+    let docker = if enabled.is_some() {
+        match st.docker() {
+            Some(d) => Some(d),
+            None => return err503("docker unavailable"),
+        }
+    } else {
+        None
+    };
+    match store::update_rule(&db, &cid, rid, enabled, note, locked) {
         Ok(true) => {}
         Ok(false) => return err404("rule not found"),
-        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_rule_enabled: {e}")),
+        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("update_rule: {e}")),
     }
-    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
-    if !reload_ok(&code) {
-        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+    let mut response = json!({ "ok": true });
+    if let Some(docker) = docker.as_ref() {
+        let code = manager::rebuild(&st.cfg, Some(docker), &db).await;
+        if !reload_ok(&code) {
+            return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+        }
+        response["reload_status"] = json!(code);
     }
-    Json(json!({ "ok": true, "reload_status": code })).into_response()
+    if let Ok(Some(rule)) = store::get_rule(&db, rid) {
+        response["rule"] = json!(rule);
+    }
+    Json(response).into_response()
 }
 
 pub async fn patch_rules(
@@ -166,16 +196,21 @@ pub async fn patch_rules(
         None => return err503("docker unavailable"),
     };
     let db = st.cfg.db_path();
-    match store::set_rules_enabled(&db, &ids, enabled) {
-        Ok(true) => {}
-        Ok(false) => return err404("one or more rules not found"),
+    let result = match store::set_rules_enabled(&db, &ids, enabled) {
+        Ok(Some(result)) => result,
+        Ok(None) => return err404("one or more rules not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_rules_enabled: {e}")),
-    }
+    };
     let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
     if !reload_ok(&code) {
         return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
     }
-    Json(json!({ "ok": true, "updated": ids.len(), "reload_status": code })).into_response()
+    Json(json!({
+        "ok": true,
+        "updated": result.updated,
+        "skipped_locked": result.skipped_locked,
+        "reload_status": code,
+    })).into_response()
 }
 
 // ── 通道创建/编辑(命门 #5:oss 凭据经 provision→oss_connect 注入) ──────────
@@ -245,7 +280,7 @@ async fn provision_with_docker(
     ch: &store::ChannelPublic,
     vnc_pwd: &str,
 ) -> anyhow::Result<(String, Option<i64>)> {
-    let (id, novnc) = manager::create_channel(docker, &st.cfg, ch, vnc_pwd).await?;
+    let (id, novnc) = manager::create_channel(st, docker, ch, vnc_pwd).await?;
     let spec = registry::get(&ch.vpn_type)?;
     if spec.runtime == "oss" {
         let key = store::master_key(&st.cfg.data_dir)?;
@@ -304,6 +339,7 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
         mac: rand_mac(),
         probe_url: js(&b, "probe_url"),
         status: "creating".into(),
+        routing_enabled: true,
     };
     let sk = secret_keys_of(&vtype);
     if let Err(e) = store::add_channel(&db, &key, &nc, &cfg_in, &sk) {
@@ -371,6 +407,15 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
 
 pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b): Json<Value>) -> axum::response::Response {
     let db = st.cfg.db_path();
+    let fields = b.as_object().cloned().unwrap_or_default();
+    if fields.get("routing_enabled").is_some_and(|v| !v.is_boolean()) {
+        return err_detail(StatusCode::BAD_REQUEST, "routing_enabled must be boolean");
+    }
+    let _routing_guard = if fields.contains_key("routing_enabled") {
+        Some(ROUTING_MUTATION_LOCK.lock().await)
+    } else {
+        None
+    };
     let key = match store::master_key(&st.cfg.data_dir) {
         Ok(k) => k,
         Err(e) => return err500(&format!("master_key: {e}")),
@@ -380,13 +425,19 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
         Ok(None) => return err404("not found"),
         Err(e) => return err500(&format!("{e}")),
     };
-    let fields = b.as_object().cloned().unwrap_or_default();
     let sk = secret_keys_of(&ch.vpn_type);
+    let touched = ["server", "username", "password", "ec_ver"].iter().any(|k| fields.contains_key(*k));
+    let routing_changed = fields.contains_key("routing_enabled");
+    let rollback_routing = || {
+        let mut rollback_fields = serde_json::Map::new();
+        rollback_fields.insert("routing_enabled".into(), json!(ch.routing_enabled));
+        store::update_channel(&db, &key, &cid, &rollback_fields, &sk)
+    };
     if let Err(e) = store::update_channel(&db, &key, &cid, &fields, &sk) {
         return err500(&format!("update_channel: {e}"));
     }
-    let touched = ["server", "username", "password", "ec_ver"].iter().any(|k| fields.contains_key(*k));
-    if touched && ch.container_id.is_some() {
+    let provisioned = touched && ch.container_id.is_some();
+    if provisioned {
         let ch2 = match store::get_channel(&db, &cid) {
             Ok(Some(c)) => c,
             _ => return err500("get_channel"),
@@ -395,17 +446,37 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
         match provision(&st, &ch2, &vnc).await {
             Ok((container_id, novnc)) => {
                 let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-                // 对照 Python update:响应回通道(不含 reload_status);重载未达成仅记日志。
-                let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
-                if !reload_ok(&reload) {
-                    crate::ev!(error, "api", "mihomo_reload_failed", "更新通道后 mihomo 重载未达成",
-                        { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
-                }
             }
             Err(e) => {
+                if routing_changed {
+                    if let Err(rollback_error) = rollback_routing() {
+                        crate::ev!(error, "api", "routing_toggle", "更新通道失败且分流字段回滚失败",
+                            { "cid": cid.as_str(), "error": e.to_string(), "rollback_error": rollback_error.to_string() });
+                        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("routing rollback failed: {rollback_error}"));
+                    }
+                }
                 let _ = store::set_status(&db, &cid, "error");
                 return err500(&format!("{e}"));
             }
+        }
+    }
+    if provisioned || routing_changed {
+        let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+        if !reload_ok(&reload) {
+            crate::ev!(error, "api", "mihomo_reload_failed", "更新通道后 mihomo 重载未达成",
+                { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
+            if !routing_changed {
+                return channel_json(&db, &cid);
+            }
+            if let Err(error) = rollback_routing() {
+                crate::ev!(error, "api", "routing_toggle", "切换通道分流失败且状态回滚失败",
+                    { "cid": cid.as_str(), "reload_status": reload.as_str(), "rollback_error": error.to_string() });
+                return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("routing rollback failed: {error}"));
+            }
+            let rollback = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+            crate::ev!(error, "api", "routing_toggle", "切换通道分流未生效,已回滚字段",
+                { "cid": cid.as_str(), "reload_status": reload.as_str(), "rollback_status": rollback.as_str() });
+            return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {reload}"));
         }
     }
     channel_json(&db, &cid)
@@ -427,14 +498,11 @@ pub async fn login(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
         Some(d) => d,
         None => return err500("docker unavailable"),
     };
-    let port = match manager::novnc_port(&docker, &cid).await {
-        Some(p) => p,
-        None => return err404("no novnc port"),
-    };
-    if Some(port) != ch.novnc_port {
-        let _ = store::set_novnc_port(&db, &cid, port);
-    }
     manager::ensure_novnc_bridge(&docker, &cid).await;
+    let port = match crate::novnc::ensure(&st, &cid).await {
+        Ok(port) => port,
+        Err(e) => return err_detail(StatusCode::BAD_GATEWAY, &format!("noVNC forward: {e}")),
+    };
     Json(json!({ "url": webutil::login_url(port, &ch.vnc_password.unwrap_or_default()) })).into_response()
 }
 
@@ -535,6 +603,10 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
             });
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
         }
+        manager::ensure_novnc_bridge(&docker, &cid).await;
+        if let Err(e) = crate::novnc::ensure(&st, &cid).await {
+            return err_detail(StatusCode::BAD_GATEWAY, &format!("noVNC forward: {e}"));
+        }
         crate::ev!(info, "api", "channel_start", "通道启动完成", {
             "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
             "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
@@ -599,6 +671,7 @@ pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::
         });
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("stop: {e}"));
     }
+    crate::novnc::drop_for(&st, &cid).await;
     if let Err(e) = store::set_status(&db, &cid, "stopped") {
         crate::ev!(error, "api", "channel_stop", "通道已停止但状态落库失败", {
             "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
@@ -638,6 +711,7 @@ pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum
         });
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("remove: {e}"));
     }
+    crate::novnc::drop_for(&st, &cid).await;
     if let Err(e) = store::del_channel(&db, &cid) {
         crate::ev!(error, "api", "channel_delete", "通道容器已删除但配置落库失败", {
             "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
@@ -656,6 +730,59 @@ pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum
         "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
     });
     Json(json!({ "ok": true })).into_response()
+}
+
+// ── 分流总开关 / 自愈开关 ────────────────────────────────────────────────
+
+pub async fn routing_get(State(st): State<AppState>) -> Json<Value> {
+    Json(json!({ "off": store::routing_off(&st.cfg.data_dir) }))
+}
+
+pub async fn routing_set(
+    State(st): State<AppState>,
+    Json(b): Json<Value>,
+) -> axum::response::Response {
+    let off = match b.get("off") {
+        Some(Value::Bool(value)) => *value,
+        _ => return err_detail(StatusCode::BAD_REQUEST, "off must be boolean"),
+    };
+    let _guard = ROUTING_MUTATION_LOCK.lock().await;
+    let previous = store::routing_off(&st.cfg.data_dir);
+    if let Err(e) = store::set_routing_off(&st.cfg.data_dir, off) {
+        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set routing flag: {e}"));
+    }
+    let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &st.cfg.db_path()).await;
+    let applied = reload_ok(&reload);
+    if !applied {
+        if let Err(error) = store::set_routing_off(&st.cfg.data_dir, previous) {
+            crate::ev!(error, "api", "routing_toggle", "全局分流切换失败且标记回滚失败", {
+                "requested_off": off, "reload_status": reload.as_str(), "rollback_error": error.to_string()
+            });
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("routing rollback failed: {error}"));
+        }
+        let rollback = manager::rebuild(&st.cfg, st.docker().as_ref(), &st.cfg.db_path()).await;
+        crate::ev!(error, "api", "routing_toggle", "全局分流切换未生效,已回滚标记", {
+            "requested_off": off, "reload_status": reload.as_str(), "rollback_status": rollback.as_str()
+        });
+        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {reload}"));
+    }
+    crate::ev!(info, "api", "routing_toggle", "全局分流状态已切换", {
+        "off": off, "applied": true, "reload_status": reload.as_str()
+    });
+    Json(json!({ "off": off, "applied": true, "reload_status": reload })).into_response()
+}
+
+pub async fn self_heal_set(
+    State(st): State<AppState>,
+    Json(b): Json<Value>,
+) -> axum::response::Response {
+    let enabled = match b.get("enabled") {
+        Some(Value::Bool(value)) => *value,
+        _ => return err_detail(StatusCode::BAD_REQUEST, "enabled must be boolean"),
+    };
+    st.set_self_heal_enabled(enabled);
+    crate::ev!(info, "api", "self_heal_toggle", "自动修复状态已切换", { "enabled": enabled });
+    Json(json!({ "enabled": enabled })).into_response()
 }
 
 // ── Clash 接入 / 入口接入(命门 #2:IP 带 no-resolve、域名经 bare) ────────────
@@ -959,7 +1086,13 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
         let rules: Vec<Value> = store::list_rules(&db, &ch.id)
             .unwrap_or_default()
             .into_iter()
-            .map(|r| json!({ "kind": r.kind, "pattern": r.pattern, "enabled": r.enabled }))
+            .map(|r| json!({
+                "kind": r.kind,
+                "pattern": r.pattern,
+                "enabled": r.enabled,
+                "note": r.note,
+                "locked": r.locked,
+            }))
             .collect();
         out.push(json!({
             "name": ch.name,
@@ -969,6 +1102,7 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
             "login_method": ch.login_method,
             "username": ch.username,
             "probe_url": ch.probe_url,
+            "routing_enabled": ch.routing_enabled,
             "config": Value::Object(config),
             "rules": rules,
         }));
@@ -1050,11 +1184,28 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
                     continue;
                 }
             };
+            let note = match obj.get("note") {
+                None | Some(Value::Null) => String::new(),
+                Some(Value::String(value)) => value.clone(),
+                _ => {
+                    skipped.push(json!({ "name": display_name, "reason": format!("规则 note 类型错误 {pattern}") }));
+                    continue;
+                }
+            };
+            let locked = match obj.get("locked") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(value)) => *value,
+                Some(Value::Number(value)) if value.as_i64().is_some() => value.as_i64().unwrap_or(0) != 0,
+                _ => {
+                    skipped.push(json!({ "name": display_name, "reason": format!("规则 locked 类型错误 {pattern}") }));
+                    continue;
+                }
+            };
             let Some((kind, pattern)) = webutil::normalize_stored_rule(kind, pattern) else {
                 skipped.push(json!({ "name": display_name, "reason": format!("非法规则 {pattern}") }));
                 continue;
             };
-            planned_rules.push(store::ImportRule { kind, pattern, enabled });
+            planned_rules.push(store::ImportRule { kind, pattern, enabled, note, locked });
         }
 
         type ImportTextFields = (String, String, String, String, String, String, String);
@@ -1087,6 +1238,15 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
         if !rules_shape_ok {
             continue;
         }
+        let routing_enabled = match entry.get("routing_enabled") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(value)) => *value,
+            Some(Value::Number(value)) if value.as_i64().is_some() => value.as_i64().unwrap_or(1) != 0,
+            _ => {
+                skipped.push(json!({ "name": display_name, "reason": "字段 routing_enabled 类型错误" }));
+                continue;
+            }
+        };
         let name = name.trim().to_string();
         if registry::get(&vtype).is_err() {
             skipped.push(json!({ "name": name, "reason": format!("未知类型 {vtype}") }));
@@ -1117,6 +1277,7 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
             mac: rand_mac(),
             probe_url,
             status: "stopped".into(),
+            routing_enabled,
         };
         let sk = secret_keys_of(&vtype);
         plans.push(store::ImportChannel { channel: nc, config: cfg_in, secret_keys: sk, rules: planned_rules });

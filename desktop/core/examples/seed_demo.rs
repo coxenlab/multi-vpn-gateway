@@ -29,6 +29,7 @@ fn main() -> anyhow::Result<()> {
         mac: "02:11:22:33:44:55".into(),
         probe_url: "https://intranet.example.com/".into(),
         status: "logged_in".into(),
+        routing_enabled: true,
     };
     store::add_channel(&db, &key, &ch, &config, &["password".to_string()])?;
     store::add_rule(&db, id, "domain", "example.com")?;

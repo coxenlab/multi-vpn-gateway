@@ -20,6 +20,8 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "proxy_port_reachable": h.proxy_port_reachable,
         "healing": h.healing,
         "gave_up": h.gave_up,
+        "self_heal_enabled": st.self_heal_enabled(),
+        "routing_off": store::routing_off(&st.cfg.data_dir),
     }))
 }
 
@@ -165,7 +167,7 @@ mod tests {
             server: "s".into(), ec_ver: None, login_method: "interactive".into(),
             username: "u".into(), vnc_password: None, mac: None, novnc_port: None,
             probe_url: "".into(), status: status.into(), container_id: None,
-            latency_ms: None, config: json!({}),
+            latency_ms: None, config: json!({}), routing_enabled: true,
         }
     }
 
@@ -193,8 +195,8 @@ mod tests {
     #[test]
     fn splits_rules_by_kind() {
         let rules = vec![
-            crate::store::Rule { id: 1, channel_id: "a".into(), kind: "domain".into(), pattern: "x.com".into(), enabled: 1 },
-            crate::store::Rule { id: 2, channel_id: "a".into(), kind: "ip".into(), pattern: "10.0.0.0/8".into(), enabled: 1 },
+            crate::store::Rule { id: 1, channel_id: "a".into(), kind: "domain".into(), pattern: "x.com".into(), enabled: 1, note: String::new(), locked: 0 },
+            crate::store::Rule { id: 2, channel_id: "a".into(), kind: "ip".into(), pattern: "10.0.0.0/8".into(), enabled: 1, note: String::new(), locked: 0 },
         ];
         let (domains, ips) = split_rules(rules);
         assert_eq!(domains.len(), 1);

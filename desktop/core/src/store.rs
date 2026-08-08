@@ -15,12 +15,13 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
         CREATE TABLE IF NOT EXISTS channels(
           id TEXT PRIMARY KEY, name TEXT, vpn_type TEXT, server TEXT, ec_ver TEXT,
           login_method TEXT, username TEXT, password_enc TEXT, vnc_password TEXT,
-          mac TEXT, novnc_port INTEGER, probe_url TEXT, status TEXT, container_id TEXT);
+          mac TEXT, novnc_port INTEGER, probe_url TEXT, status TEXT, container_id TEXT,
+          routing_enabled INTEGER DEFAULT 1);
         CREATE TABLE IF NOT EXISTS domains(
           id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, pattern TEXT);
         CREATE TABLE IF NOT EXISTS rules(
           id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, kind TEXT, pattern TEXT,
-          enabled INTEGER DEFAULT 1);
+          enabled INTEGER DEFAULT 1, note TEXT DEFAULT '', locked INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS mirrors(
           id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT UNIQUE, priority INTEGER,
           enabled INTEGER DEFAULT 1);
@@ -33,6 +34,17 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
     }
     if !cols.contains("config_json") {
         conn.execute("ALTER TABLE channels ADD COLUMN config_json TEXT", [])?;
+    }
+    if !cols.contains("routing_enabled") {
+        conn.execute("ALTER TABLE channels ADD COLUMN routing_enabled INTEGER DEFAULT 1", [])?;
+    }
+
+    let rule_cols = table_columns(&conn, "rules")?;
+    if !rule_cols.contains("note") {
+        conn.execute("ALTER TABLE rules ADD COLUMN note TEXT DEFAULT ''", [])?;
+    }
+    if !rule_cols.contains("locked") {
+        conn.execute("ALTER TABLE rules ADD COLUMN locked INTEGER DEFAULT 0", [])?;
     }
 
     let rules_n: i64 = conn.query_row("SELECT COUNT(*) FROM rules", [], |r| r.get(0))?;
@@ -119,15 +131,18 @@ pub struct ChannelPublic {
     pub container_id: Option<String>,
     pub latency_ms: Option<i64>,
     pub config: Value,
+    pub routing_enabled: bool,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub id: i64,
     pub channel_id: String,
     pub kind: String,
     pub pattern: String,
     pub enabled: i64,
+    pub note: String,
+    pub locked: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -159,7 +174,7 @@ fn public_config(raw: Option<String>) -> Value {
 }
 
 const CH_COLS: &str =
-    "id,name,vpn_type,server,ec_ver,login_method,username,vnc_password,mac,novnc_port,probe_url,status,container_id,latency_ms,config_json";
+    "id,name,vpn_type,server,ec_ver,login_method,username,vnc_password,mac,novnc_port,probe_url,status,container_id,latency_ms,config_json,routing_enabled";
 
 fn map_channel(row: &rusqlite::Row) -> rusqlite::Result<ChannelPublic> {
     let config_json: Option<String> = row.get(14)?;
@@ -179,6 +194,7 @@ fn map_channel(row: &rusqlite::Row) -> rusqlite::Result<ChannelPublic> {
         container_id: row.get(12)?,
         latency_ms: row.get(13)?,
         config: public_config(config_json),
+        routing_enabled: row.get::<_, Option<i64>>(15)?.unwrap_or(1) != 0,
     })
 }
 
@@ -206,13 +222,15 @@ fn map_rule(row: &rusqlite::Row) -> rusqlite::Result<Rule> {
         kind: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
         pattern: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
         enabled: row.get(4)?,
+        note: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        locked: row.get::<_, Option<i64>>(6)?.unwrap_or_default(),
     })
 }
 
 pub fn list_rules(db: &Path, cid: &str) -> anyhow::Result<Vec<Rule>> {
     let conn = Connection::open(db)?;
     // ORDER BY id:钉死插入序,让规则输出面(mihomo rules/provider/pac)两栈顺序可复现(golden 契约)。
-    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE channel_id=?1 ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled,note,locked FROM rules WHERE channel_id=?1 ORDER BY id")?;
     let rows = stmt.query_map([cid], map_rule)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
@@ -220,18 +238,61 @@ pub fn list_rules(db: &Path, cid: &str) -> anyhow::Result<Vec<Rule>> {
 pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
     let conn = Connection::open(db)?;
     // ORDER BY id:同 list_rules，插入序是规则排序/编码的稳定输入（golden 契约）。
-    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled,note,locked FROM rules ORDER BY id")?;
     let rows = stmt.query_map([], map_rule)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// 运行时五个规则消费面共用的有效规则集。
 ///
-/// 当前仅折叠规则自身的 `enabled`，所以输出与 [`all_rules`] 逐项一致；保留所有元素与
-/// `ORDER BY id` 插入序，过滤仍由各消费面原有逻辑完成。后续开关只允许改返回项的
-/// `enabled` 值，不能过滤或重排，避免 mihomo/provider/PAC/TUN 的规则集合漂移。
+/// 依次折叠全局 `routing_off`、通道 `routing_enabled`、规则自身 `enabled`。只改返回项的
+/// `enabled` 值，保留所有元素与 `ORDER BY id` 插入序；过滤仍由各消费面原有逻辑完成，
+/// 避免 mihomo/provider/PAC/TUN 的规则集合和顺序漂移。原始字段由 [`all_rules`] 提供给导出。
 pub fn effective_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
-    all_rules(db)
+    let mut rules = all_rules(db)?;
+    if routing_off(db.parent().unwrap_or_else(|| Path::new("."))) {
+        for rule in &mut rules {
+            rule.enabled = 0;
+        }
+        return Ok(rules);
+    }
+
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare(
+        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 ORDER BY id",
+    )?;
+    let disabled = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    for rule in &mut rules {
+        if disabled.contains(&rule.channel_id) {
+            rule.enabled = 0;
+        }
+    }
+    Ok(rules)
+}
+
+fn routing_off_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("routing_off")
+}
+
+pub fn routing_off(data_dir: &Path) -> bool {
+    routing_off_path(data_dir).is_file()
+}
+
+pub fn set_routing_off(data_dir: &Path, off: bool) -> anyhow::Result<()> {
+    std::fs::create_dir_all(data_dir)?;
+    let path = routing_off_path(data_dir);
+    if off {
+        std::fs::write(path, b"off\n")?;
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// 对照 add_rule:INSERT enabled=1,返回 lastrowid。
@@ -250,7 +311,7 @@ fn insert_rule(conn: &Connection, cid: &str, kind: &str, pattern: &str) -> anyho
 
 pub fn get_rule(db: &Path, rid: i64) -> anyhow::Result<Option<Rule>> {
     let conn = Connection::open(db)?;
-    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE id=?1")?;
+    let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled,note,locked FROM rules WHERE id=?1")?;
     let mut rows = stmt.query_map([rid], map_rule)?;
     match rows.next() {
         Some(r) => Ok(Some(r?)),
@@ -268,36 +329,88 @@ pub fn del_rule(db: &Path, cid: &str, rid: i64) -> anyhow::Result<bool> {
 }
 
 pub fn set_rule_enabled(db: &Path, cid: &str, rid: i64, enabled: bool) -> anyhow::Result<bool> {
-    let conn = Connection::open(db)?;
-    set_rule_enabled_in(&conn, cid, rid, enabled)
+    update_rule(db, cid, rid, Some(enabled), None, None)
 }
 
-fn set_rule_enabled_in(conn: &Connection, cid: &str, rid: i64, enabled: bool) -> anyhow::Result<bool> {
-    let changed = conn.execute(
-        "UPDATE rules SET enabled=?1 WHERE id=?2 AND channel_id=?3",
-        rusqlite::params![if enabled { 1 } else { 0 }, rid, cid],
-    )?;
-    Ok(changed == 1)
-}
-
-/// 批量启停规则：单事务逐条核对；任一 id 不存在时整批回滚。
-pub fn set_rules_enabled(db: &Path, ids: &[i64], enabled: bool) -> anyhow::Result<bool> {
-    if ids.is_empty() {
-        return Ok(false);
-    }
+/// 单条规则编辑不受 `locked` 限制；锁只保护批量启停。
+pub fn update_rule(
+    db: &Path,
+    cid: &str,
+    rid: i64,
+    enabled: Option<bool>,
+    note: Option<&str>,
+    locked: Option<bool>,
+) -> anyhow::Result<bool> {
     let mut conn = Connection::open(db)?;
     let tx = conn.transaction()?;
-    for rid in ids {
-        let changed = tx.execute(
-            "UPDATE rules SET enabled=?1 WHERE id=?2",
-            rusqlite::params![if enabled { 1 } else { 0 }, rid],
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM rules WHERE id=?1 AND channel_id=?2)",
+        rusqlite::params![rid, cid],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(false);
+    }
+    if let Some(value) = enabled {
+        tx.execute(
+            "UPDATE rules SET enabled=?1 WHERE id=?2 AND channel_id=?3",
+            rusqlite::params![if value { 1 } else { 0 }, rid, cid],
         )?;
-        if changed != 1 {
-            return Ok(false);
-        }
+    }
+    if let Some(value) = note {
+        tx.execute(
+            "UPDATE rules SET note=?1 WHERE id=?2 AND channel_id=?3",
+            rusqlite::params![value, rid, cid],
+        )?;
+    }
+    if let Some(value) = locked {
+        tx.execute(
+            "UPDATE rules SET locked=?1 WHERE id=?2 AND channel_id=?3",
+            rusqlite::params![if value { 1 } else { 0 }, rid, cid],
+        )?;
     }
     tx.commit()?;
     Ok(true)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BatchRuleUpdate {
+    pub updated: usize,
+    pub skipped_locked: usize,
+}
+
+/// 批量启停规则：单事务逐条核对；任一 id 不存在时整批回滚，锁定规则原样跳过。
+pub fn set_rules_enabled(
+    db: &Path,
+    ids: &[i64],
+    enabled: bool,
+) -> anyhow::Result<Option<BatchRuleUpdate>> {
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction()?;
+    let mut updated = 0;
+    let mut skipped_locked = 0;
+    for rid in ids {
+        let locked: Option<i64> = tx
+            .query_row("SELECT locked FROM rules WHERE id=?1", [rid], |row| row.get(0))
+            .optional()?;
+        let Some(locked) = locked else {
+            return Ok(None);
+        };
+        if locked != 0 {
+            skipped_locked += 1;
+            continue;
+        }
+        tx.execute(
+            "UPDATE rules SET enabled=?1 WHERE id=?2",
+            rusqlite::params![if enabled { 1 } else { 0 }, rid],
+        )?;
+        updated += 1;
+    }
+    tx.commit()?;
+    Ok(Some(BatchRuleUpdate { updated, skipped_locked }))
 }
 
 // ── config 字段级 Fernet 加解密 (命门 #5) ─────────────────────────────────────
@@ -457,12 +570,15 @@ pub struct NewChannel {
     pub mac: String,
     pub probe_url: String,
     pub status: String,
+    pub routing_enabled: bool,
 }
 
 pub struct ImportRule {
     pub kind: String,
     pub pattern: String,
     pub enabled: bool,
+    pub note: String,
+    pub locked: bool,
 }
 
 pub struct ImportChannel {
@@ -495,8 +611,8 @@ fn insert_channel(
     let pw_enc = if ch.password.is_empty() { String::new() } else { f.encrypt(ch.password.as_bytes()) };
     let cfg_json = enc_config(f, config, secret_keys);
     conn.execute(
-        "INSERT INTO channels(id,name,vpn_type,server,ec_ver,login_method,username,password_enc,vnc_password,mac,probe_url,status,config_json) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        "INSERT INTO channels(id,name,vpn_type,server,ec_ver,login_method,username,password_enc,vnc_password,mac,probe_url,status,config_json,routing_enabled) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         rusqlite::params![
             ch.id,
             clean_field("name", &ch.name),
@@ -511,6 +627,7 @@ fn insert_channel(
             clean_field("probe_url", &ch.probe_url),
             ch.status,
             cfg_json,
+            if ch.routing_enabled { 1 } else { 0 },
         ],
     )?;
     Ok(())
@@ -525,8 +642,18 @@ pub fn import_channels(db: &Path, key: &str, plans: &[ImportChannel]) -> anyhow:
         insert_channel(&tx, &f, &plan.channel, &plan.config, &plan.secret_keys)?;
         for rule in &plan.rules {
             let rid = insert_rule(&tx, &plan.channel.id, &rule.kind, &rule.pattern)?;
-            if !rule.enabled && !set_rule_enabled_in(&tx, &plan.channel.id, rid, false)? {
-                anyhow::bail!("imported rule enabled update missed inserted row");
+            let changed = tx.execute(
+                "UPDATE rules SET enabled=?1,note=?2,locked=?3 WHERE id=?4 AND channel_id=?5",
+                rusqlite::params![
+                    if rule.enabled { 1 } else { 0 },
+                    rule.note,
+                    if rule.locked { 1 } else { 0 },
+                    rid,
+                    plan.channel.id,
+                ],
+            )?;
+            if changed != 1 {
+                anyhow::bail!("imported rule metadata update missed inserted row");
             }
         }
     }
@@ -556,6 +683,15 @@ pub fn update_channel(
             let pw = value_to_string(v);
             let enc = if pw.is_empty() { String::new() } else { f.encrypt(pw.as_bytes()) };
             conn.execute("UPDATE channels SET password_enc=?1 WHERE id=?2", rusqlite::params![enc, cid])?;
+        }
+        if let Some(v) = fields.get("routing_enabled") {
+            let enabled = v
+                .as_bool()
+                .ok_or_else(|| anyhow::anyhow!("routing_enabled must be boolean"))?;
+            conn.execute(
+                "UPDATE channels SET routing_enabled=?1 WHERE id=?2",
+                rusqlite::params![if enabled { 1 } else { 0 }, cid],
+            )?;
         }
     }
     let secret: HashSet<&str> = secret_keys.iter().map(|s| s.as_str()).collect();
@@ -676,6 +812,10 @@ mod tests {
         let cols = table_columns(&conn, "channels").unwrap();
         assert!(cols.contains("latency_ms"));
         assert!(cols.contains("config_json"));
+        assert!(cols.contains("routing_enabled"));
+        let rule_cols = table_columns(&conn, "rules").unwrap();
+        assert!(rule_cols.contains("note"));
+        assert!(rule_cols.contains("locked"));
         let m: i64 = conn.query_row("SELECT COUNT(*) FROM mirrors", [], |r| r.get(0)).unwrap();
         assert_eq!(m, 2);
         drop(conn);
@@ -807,6 +947,74 @@ mod tests {
     }
 
     #[test]
+    fn effective_rules_fold_global_channel_and_rule_switches_without_reordering() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled) VALUES('on',1)", []).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled) VALUES('paused',0)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('on','domain','a.com',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('on','ip','10.0.0.0/8',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('paused','domain','b.com',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('paused','ip','10.1.0.0/16',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('on','domain','c.com',0)", []).unwrap();
+        drop(conn);
+
+        let raw = all_rules(&db).unwrap();
+        let folded = effective_rules(&db).unwrap();
+        assert_eq!(folded.iter().map(|r| r.id).collect::<Vec<_>>(), raw.iter().map(|r| r.id).collect::<Vec<_>>());
+        assert_eq!(folded.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0]);
+
+        let channels = list_channels(&db).unwrap();
+        let mihomo = crate::manager::build_mihomo_config(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &folded);
+        let mihomo_rules: Vec<&str> = mihomo["rules"].as_sequence().unwrap().iter()
+            .map(|value| value.as_str().unwrap()).collect();
+        let mihomo_text = mihomo_rules.join("\n");
+        let (v4, v6) = crate::entry::route_sets(&folded);
+        let provider = crate::webutil::clash_provider_text(&folded);
+        let snippet = crate::webutil::clash_snippet_text(&folded, "7899", "8787");
+        let pac = crate::webutil::pac_text(&folded, "7899");
+        for text in [&mihomo_text, &provider, &snippet] {
+            assert!(text.contains("a.com"), "active domain missing from consumer: {text}");
+            assert!(text.contains("10.0.0.0/8"), "active IP missing from consumer: {text}");
+            assert!(!text.contains("10.1.0.0/16"), "paused IP leaked into consumer: {text}");
+            assert!(!text.contains("b.com"), "paused domain leaked into consumer: {text}");
+        }
+        assert!(pac.contains("a.com"));
+        assert!(pac.contains("[\"10.0.0.0\",\"255.0.0.0\"]"));
+        assert!(!pac.contains("10.1.0.0"));
+        assert!(!pac.contains("b.com"));
+        assert!(v4.iter().any(|cidr| cidr == "10.0.0.0/8"));
+        assert!(!v4.iter().any(|cidr| cidr == "10.1.0.0/16"));
+        assert!(v6.is_empty());
+
+        set_routing_off(dir.path(), true).unwrap();
+        assert!(routing_off(dir.path()));
+        let folded_off = effective_rules(&db).unwrap();
+        assert_eq!(folded_off.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![0, 0, 0, 0, 0]);
+        let mihomo = crate::manager::build_mihomo_config(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &folded_off);
+        assert_eq!(
+            mihomo["rules"].as_sequence().unwrap().iter().map(|value| value.as_str().unwrap()).collect::<Vec<_>>(),
+            vec!["MATCH,DIRECT"]
+        );
+        let (v4, v6) = crate::entry::route_sets(&folded_off);
+        assert_eq!(v4, vec!["198.19.0.0/30".to_string()]);
+        assert!(v6.is_empty());
+        assert_eq!(crate::webutil::clash_provider_text(&folded_off), "payload: []\n");
+        assert!(crate::webutil::clash_snippet_text(&folded_off, "7899", "8787").contains("还没绑定任何规则"));
+        let pac = crate::webutil::pac_text(&folded_off, "7899");
+        assert!(pac.contains("var DOMAINS = [];"));
+        assert!(pac.contains("var NETS = [];"));
+        set_routing_off(dir.path(), false).unwrap();
+        assert!(!routing_off(dir.path()));
+        assert_eq!(all_rules(&db).unwrap(), raw, "kill switch must not mutate raw rules");
+        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0]);
+    }
+
+    #[test]
     fn clean_field_strips_correctly() {
         assert_eq!(clean_field("username", " a b c "), "abc");
         assert_eq!(clean_field("server", "v p n.com"), "vpn.com");
@@ -878,7 +1086,7 @@ mod tests {
             login_method: "interactive".into(), username: " alice ".into(),
             password: "p@ss w0rd".into(), vnc_password: "vnc12345".into(),
             mac: "02:11:22:33:44:55".into(), probe_url: "https://intra/".into(),
-            status: "creating".into(),
+            status: "creating".into(), routing_enabled: true,
         }
     }
 
@@ -954,12 +1162,18 @@ mod tests {
         assert_eq!(r.kind, "domain");
         assert_eq!(r.pattern, "a.com");
         assert_eq!(r.enabled, 1);
+        assert_eq!(r.note, "");
+        assert_eq!(r.locked, 0);
 
         assert!(!set_rule_enabled(&db, "other", rid, false).unwrap());
         assert!(set_rule_enabled(&db, "c1", rid, false).unwrap());
         assert_eq!(get_rule(&db, rid).unwrap().unwrap().enabled, 0);
         assert!(set_rule_enabled(&db, "c1", rid, true).unwrap());
         assert_eq!(get_rule(&db, rid).unwrap().unwrap().enabled, 1);
+        assert!(update_rule(&db, "c1", rid, None, Some("SSH 必须直连"), Some(true)).unwrap());
+        let updated = get_rule(&db, rid).unwrap().unwrap();
+        assert_eq!(updated.note, "SSH 必须直连");
+        assert_eq!(updated.locked, 1);
 
         assert!(!del_rule(&db, "other", rid).unwrap());
         assert!(del_rule(&db, "c1", rid).unwrap());
@@ -973,10 +1187,14 @@ mod tests {
         init(&db).unwrap();
         let first = add_rule(&db, "c1", "domain", "a.com").unwrap();
         let second = add_rule(&db, "c1", "domain", "b.com").unwrap();
-        assert!(set_rules_enabled(&db, &[first, second], false).unwrap());
+        update_rule(&db, "c1", second, None, None, Some(true)).unwrap();
+        assert_eq!(
+            set_rules_enabled(&db, &[first, second], false).unwrap(),
+            Some(BatchRuleUpdate { updated: 1, skipped_locked: 1 })
+        );
         assert_eq!(get_rule(&db, first).unwrap().unwrap().enabled, 0);
-        assert_eq!(get_rule(&db, second).unwrap().unwrap().enabled, 0);
-        assert!(!set_rules_enabled(&db, &[first, 999_999], true).unwrap());
+        assert_eq!(get_rule(&db, second).unwrap().unwrap().enabled, 1);
+        assert_eq!(set_rules_enabled(&db, &[first, 999_999], true).unwrap(), None);
         assert_eq!(get_rule(&db, first).unwrap().unwrap().enabled, 0);
     }
 

@@ -280,11 +280,12 @@ pub async fn logs(docker: &bollard::Docker, cid: &str, tail: i64) -> Vec<String>
 /// 在宿主、不在 docker 网,改 inspect mihomo 在 vpn-net 上的 IP(best-effort,失败则不设 DNS,
 /// 对齐 Python 吞 OSError)。
 pub async fn create_channel(
+    state: &crate::AppState,
     docker: &bollard::Docker,
-    cfg: &Config,
     ch: &ChannelPublic,
     vnc_pwd: &str,
 ) -> Result<(String, Option<i64>)> {
+    let cfg = &state.cfg;
     let spec = crate::registry::get(&ch.vpn_type)?;
     let mac = ch.mac.clone().unwrap_or_default();
     let plan = crate::adapters::build_run_kwargs(
@@ -311,11 +312,8 @@ pub async fn create_channel(
         // 凭据注入(oss_connect)在调用方紧随其后做;这里只起容器。
         return Ok((id, None));
     }
-    // hagb/byo:读 host 映射的 noVNC 端口。对照 Python create_channel 的严格 int(c.ports[...]):
-    // 端口缺失(竞态/未映射)→ 硬失败(create 报错),不静默落 None;按需的 novnc_port() 仍宽松(对齐 Python 两个读法的切分)。
-    let port = crate::docker::novnc_port(docker, &ch.id)
-        .await
-        .ok_or_else(|| anyhow!("no 8080/tcp HostPort for vpn-{}", ch.id))?;
+    // hagb/byo:容器 8080 不 publish；宿主入口由 app 独立 SSH 子进程持有。
+    let port = crate::novnc::ensure(state, &ch.id).await?;
     Ok((id, Some(port)))
 }
 
@@ -371,11 +369,6 @@ pub async fn start(docker: &bollard::Docker, cid: &str) -> Result<()> {
 /// 删容器(忽略不存在)。
 pub async fn remove(docker: &bollard::Docker, cid: &str) -> Result<()> {
     crate::docker::rm_force(docker, &format!("vpn-{cid}")).await
-}
-
-/// 读 noVNC 端口(转发 docker.rs)。
-pub async fn novnc_port(docker: &bollard::Docker, cid: &str) -> Option<i64> {
-    crate::docker::novnc_port(docker, cid).await
 }
 
 // ── Task 5: oss_connect + sh + 文件注入(命门 #5)+ ensure_novnc_bridge ────
@@ -560,10 +553,12 @@ mod tests {
             ec_ver: None, login_method: "interactive".into(), username: "".into(),
             vnc_password: None, mac: None, novnc_port: None, probe_url: "".into(),
             status: "logged_in".into(), container_id: None, latency_ms: None, config: json!({}),
+            routing_enabled: true,
         }
     }
     fn rule(cid: &str, kind: &str, pat: &str, enabled: i64) -> Rule {
-        Rule { id: 0, channel_id: cid.into(), kind: kind.into(), pattern: pat.into(), enabled }
+        Rule { id: 0, channel_id: cid.into(), kind: kind.into(), pattern: pat.into(), enabled,
+            note: String::new(), locked: 0 }
     }
 
     #[test]
@@ -709,6 +704,8 @@ mod tests {
                 kind: r["kind"].as_str().unwrap().to_string(),
                 pattern: r["pattern"].as_str().unwrap().to_string(),
                 enabled: r["enabled"].as_bool().unwrap() as i64,
+                note: String::new(),
+                locked: 0,
             })
             .collect();
         let cfg = build_mihomo_config(
@@ -783,7 +780,6 @@ mod tests {
         let _ = stop;
         let _ = start;
         let _ = remove;
-        let _ = novnc_port;
     }
 
     // ── Task 5: oss_plan + sh(命门 #5:argv/stdin 切分) ────────────────────

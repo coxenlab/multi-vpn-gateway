@@ -458,6 +458,13 @@
                 <div><h3>环境诊断</h3><p class="t-xs muted" style="margin-top:4px;">检测 Docker、网络、镜像与分流核心，发现问题可按检查项修复。</p></div>
                 <a class="btn btn-secondary btn-sm" href="env-check.html?tab=trouble">查看常见报错</a>
               </div>
+              <div class="row-between" id="self-heal-setting" style="gap:var(--space-4); padding:var(--space-3) 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border);" hidden>
+                <div>
+                  <div style="font-weight:600;">自动修复</div>
+                  <p class="t-xs muted" style="margin-top:4px;">暂停后仍会继续体检和记日志，只是不再自动执行修复；重启应用会自动恢复。</p>
+                </div>
+                <button class="btn btn-secondary btn-sm" id="self-heal-toggle" type="button" role="switch" aria-checked="true">自动修复 · 开</button>
+              </div>
               <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap;">
                 <select id="diag-type" class="input" style="flex:1; min-width:180px; max-width:320px;">
                   <option value="">(只查环境，不挑类型)</option>
@@ -564,10 +571,40 @@
       render();
     }
 
+    function renderSelfHeal() {
+      const wrap = $("#self-heal-setting"), btn = $("#self-heal-toggle");
+      if (typeof sys.self_heal_enabled !== "boolean") {
+        wrap.hidden = true;
+        return;
+      }
+      wrap.hidden = false;
+      btn.textContent = sys.self_heal_enabled ? "自动修复 · 开" : "自动修复 · 已暂停";
+      btn.setAttribute("aria-checked", String(sys.self_heal_enabled));
+    }
+
+    async function toggleSelfHeal() {
+      const btn = $("#self-heal-toggle");
+      const enabled = !sys.self_heal_enabled;
+      btn.disabled = true;
+      try {
+        const result = await api.selfHeal(enabled);
+        sys.self_heal_enabled = !!result.enabled;
+        renderSelfHeal();
+        toast(enabled ? "自动修复已恢复" : "自动修复已暂停；体检和日志仍会继续", { variant: "success" });
+      } catch (e) {
+        const f = fb.friendlyError(e);
+        toast("切换自动修复失败：" + f.title, { variant: "danger" });
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    $("#self-heal-toggle").addEventListener("click", toggleSelfHeal);
+
     function render() {
       const origin = location.origin;          // 如 http://127.0.0.1:42411
       const mport = sys.mihomo_port;
       const endpoint = `127.0.0.1:${mport}`;
+      renderSelfHeal();
 
       // 顶栏 / 侧栏全局态
       $("#nav-count").textContent = chs.length;
@@ -581,16 +618,18 @@
         $("#chip-entry").lastChild.textContent = "入口未运行";
       }
 
-      // 聚合所有通道 enabled 的域名 + IP/网段
+      // 聚合三级开关折叠后的域名 + IP/网段；旧/web 后端无新字段时保持原行为。
       const patterns = [], cidrs = [];
+      const routingOn = (c) => typeof sys.routing_off !== "boolean"
+        || (!sys.routing_off && c.routing_enabled !== false && c.routing_enabled !== 0);
       chs.forEach((c) => (c.domains || []).forEach((d) => {
-        if (d.enabled) {
+        if (routingOn(c) && d.enabled) {
           const p = d.pattern.replace(/^\+\./, "").replace(/^\*\./, "");
           if (!patterns.includes(p)) patterns.push(p);
         }
       }));
       chs.forEach((c) => (c.ips || []).forEach((d) => {
-        if (d.enabled && !cidrs.includes(d.pattern)) cidrs.push(d.pattern);
+        if (routingOn(c) && d.enabled && !cidrs.includes(d.pattern)) cidrs.push(d.pattern);
       }));
       $("#rules-count").textContent = patterns.length + cidrs.length;
 

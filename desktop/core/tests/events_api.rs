@@ -27,6 +27,8 @@ async fn events_api_is_incremental_capped_and_exportable() {
         mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
         health: vpnmgr_core::health::shared(),
         tunnel: vpnmgr_core::tunnel::handle(),
+        novnc: vpnmgr_core::novnc::handle(),
+        self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await

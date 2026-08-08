@@ -37,6 +37,8 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
         mihomo,
         health: crate::health::shared(),
         tunnel: crate::tunnel::handle(),
+        novnc: crate::novnc::handle(),
+        self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ui_port)); // 命门 #4

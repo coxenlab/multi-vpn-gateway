@@ -35,12 +35,14 @@ def init():
             CREATE TABLE IF NOT EXISTS channels(
               id TEXT PRIMARY KEY, name TEXT, vpn_type TEXT, server TEXT, ec_ver TEXT,
               login_method TEXT, username TEXT, password_enc TEXT, vnc_password TEXT,
-              mac TEXT, novnc_port INTEGER, probe_url TEXT, status TEXT, container_id TEXT);
+              mac TEXT, novnc_port INTEGER, probe_url TEXT, status TEXT, container_id TEXT,
+              routing_enabled INTEGER DEFAULT 1);
             CREATE TABLE IF NOT EXISTS domains(
               id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, pattern TEXT);
             CREATE TABLE IF NOT EXISTS rules(
               id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT,
-              kind TEXT, pattern TEXT, enabled INTEGER DEFAULT 1);
+              kind TEXT, pattern TEXT, enabled INTEGER DEFAULT 1,
+              note TEXT DEFAULT '', locked INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS mirrors(
               id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT UNIQUE,
               priority INTEGER, enabled INTEGER DEFAULT 1);
@@ -51,6 +53,13 @@ def init():
             c.execute("ALTER TABLE channels ADD COLUMN latency_ms INTEGER")
         if "config_json" not in cols:
             c.execute("ALTER TABLE channels ADD COLUMN config_json TEXT")
+        if "routing_enabled" not in cols:
+            c.execute("ALTER TABLE channels ADD COLUMN routing_enabled INTEGER DEFAULT 1")
+        rule_cols = [r[1] for r in c.execute("PRAGMA table_info(rules)").fetchall()]
+        if "note" not in rule_cols:
+            c.execute("ALTER TABLE rules ADD COLUMN note TEXT DEFAULT ''")
+        if "locked" not in rule_cols:
+            c.execute("ALTER TABLE rules ADD COLUMN locked INTEGER DEFAULT 0")
         # 旧 domains 一次性迁入 rules(仅当 rules 为空)
         if c.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0:
             for r in c.execute("SELECT channel_id, pattern FROM domains").fetchall():

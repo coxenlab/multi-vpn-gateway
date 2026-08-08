@@ -19,6 +19,7 @@ pub mod dockerhub;
 pub mod preflight;
 pub mod health;
 pub mod tunnel;
+pub mod novnc;
 pub mod events;
 
 use std::sync::Arc;
@@ -35,6 +36,10 @@ pub struct AppState {
     pub health: health::SharedHealth,
     /// app 自持的 SSH 端口转发子进程(伺服宿主分流口/控制口;见 [`tunnel`])。
     pub tunnel: tunnel::Handle,
+    /// 每通道独立的 noVNC SSH 转发子进程。
+    pub novnc: novnc::Handle,
+    /// 自动修复开关仅驻内存；app 重启默认恢复开启。
+    pub self_heal_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -48,5 +53,13 @@ impl AppState {
         if let Ok(mut g) = self.docker.write() {
             *g = d;
         }
+    }
+
+    pub fn self_heal_enabled(&self) -> bool {
+        self.self_heal_enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_self_heal_enabled(&self, enabled: bool) {
+        self.self_heal_enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 }

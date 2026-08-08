@@ -54,6 +54,9 @@
     .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: var(--elev-raised); transition: left var(--motion-fast) var(--ease-standard); }
     .switch.on { background: var(--success); border-color: var(--success); }
     .switch.on::after { left: 18px; }
+    .rule-note-input { min-width: 150px; height: 32px; padding: 5px 8px; font-size: var(--text-xs); }
+    .rule-lock { min-width: 58px; }
+    .rule-lock svg { width: 14px; height: 14px; }
     .code .ts { color: color-mix(in oklab, var(--on-ink), transparent 45%); }
     .code .ok { color: color-mix(in oklab, var(--success), white 35%); }
     .code .wn { color: color-mix(in oklab, var(--warn), white 30%); }
@@ -146,6 +149,7 @@
               <button class="btn btn-secondary" id="act-probe">检测连通</button>
               <button class="btn btn-secondary" id="act-restart">重启</button>
               <button class="btn btn-secondary" id="act-power">停止</button>
+              <button class="btn btn-secondary" id="act-routing" type="button" role="switch" aria-checked="true" hidden>参与分流 · 开</button>
               <span class="spacer"></span>
               <button class="btn btn-danger" data-open="del-modal">删除</button>
             </div>
@@ -346,7 +350,7 @@
                 </form>
                 <table class="table" data-od-id="domain-table">
                   <thead>
-                    <tr><th>域名 pattern</th><th>命中规则</th><th style="width:96px;">启用</th><th class="r" style="width:64px;">操作</th></tr>
+                    <tr><th>域名 pattern</th><th>命中规则</th><th class="desktop-routing" hidden>备注</th><th style="width:96px;">启用</th><th class="desktop-routing" style="width:76px;" hidden>保护</th><th class="r" style="width:64px;">操作</th></tr>
                   </thead>
                   <tbody id="domain-body"></tbody>
                 </table>
@@ -369,7 +373,7 @@
                 </form>
                 <table class="table" data-od-id="ip-table">
                   <thead>
-                    <tr><th>IP / CIDR</th><th>命中规则</th><th style="width:96px;">启用</th><th class="r" style="width:64px;">操作</th></tr>
+                    <tr><th>IP / CIDR</th><th>命中规则</th><th class="desktop-routing" hidden>备注</th><th style="width:96px;">启用</th><th class="desktop-routing" style="width:76px;" hidden>保护</th><th class="r" style="width:64px;">操作</th></tr>
                   </thead>
                   <tbody id="ip-body"></tbody>
                 </table>
@@ -430,6 +434,13 @@
     let ch, sys;
     let k, kindLabel, containerId, hostName, methodLabel;
     let pwShown = false;
+    const routingControlsSupported = () => sys && typeof sys.routing_off === "boolean";
+    const routingOn = () => ch && (!routingControlsSupported() || (ch.routing_enabled !== false && ch.routing_enabled !== 0));
+    const channelBadge = () => {
+      if (!routingOn() && ch.status === "logged_in")
+        return `<span class="badge is-logged_in"><i class="bdot"></i>已连接 · 不分流</span>`;
+      return badgeHTML(ch.status) + (!routingOn() ? `<span class="badge is-stopped">不分流</span>` : "");
+    };
 
     // initial=true:首屏加载,失败→骨架屏让位给可重试错误条(不再白屏);
     // initial=false(默认):动作后的静默重取,失败照常抛给调用方的 catch 处理。
@@ -476,7 +487,7 @@
     function renderAll() {
       // ── 顶栏 / 面包屑 / 标识 ──
       $("#top-title").textContent = ch.name;
-      $("#top-badge").innerHTML = badgeHTML(ch.status);
+      $("#top-badge").innerHTML = channelBadge();
       $("#crumb-name").textContent = ch.name;
       $("#ch-title").textContent = ch.name;
       $("#ch-kind").innerHTML = `<span class="kind-tag ${k.cls}">${fb.esc(k.label)}</span>`;
@@ -487,6 +498,7 @@
       renderHealth();
       renderLoginPanel();
       renderRuleTables();
+      $$(".desktop-routing").forEach((el) => { el.hidden = !routingControlsSupported(); });
       $("#del-name").textContent = containerId;
       syncStatus();
       // 无头通道(oss,如 openfortivpn):无交互登录 → 隐藏「登录」tab(「重新登录」按钮由 syncStatus 统一显隐)
@@ -600,7 +612,7 @@
     function syncStatus() {
       const stopped = ch.status === "stopped";
       const headless = ch.login_method === "headless";
-      $("#top-badge").innerHTML = badgeHTML(ch.status);
+      $("#top-badge").innerHTML = channelBadge();
       $("#h-status").innerHTML = badgeHTML(ch.status);
       // 电源按钮:停止态=「启动」(走重建),运行态=「停止」——始终可见。
       $("#act-power").textContent = stopped ? "启动" : "停止";
@@ -610,6 +622,10 @@
       $("#act-restart").style.display = stopped ? "none" : "";
       $("#act-probe").style.display = stopped ? "none" : "";
       $("#act-relogin").style.display = (stopped || headless) ? "none" : "";
+      const routing = $("#act-routing");
+      routing.hidden = !routingControlsSupported();
+      routing.textContent = routingOn() ? "参与分流 · 开" : "参与分流 · 关";
+      routing.setAttribute("aria-checked", String(routingOn()));
     }
 
     // ── 顶部操作 ──
@@ -742,6 +758,21 @@
       finally { btn.disabled = false; }
     }
     $("#act-power").addEventListener("click", doPower);
+    $("#act-routing").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const next = !routingOn();
+      btn.disabled = true;
+      btn.textContent = next ? "恢复中…" : "暂停中…";
+      try {
+        await api.update(ch.id, { routing_enabled: next });
+        await boot();
+        toast(next ? "通道已恢复参与分流" : "通道已暂停分流，容器、登录态与探活保持", { variant: "success" });
+      } catch (err) {
+        const f = fb.friendlyError(err);
+        toast("切换分流失败:" + f.title, { variant: "danger" });
+        syncStatus();
+      } finally { btn.disabled = false; }
+    });
 
     // ── 删除 ──
     async function doDelete() {
@@ -765,10 +796,17 @@
       const meta = type === "IP-CIDR"
         ? `<td class="muted t-xs">IP-CIDR · <span class="mono">no-resolve</span></td>`
         : `<td class="muted t-xs">DOMAIN-SUFFIX</td>`;
+      const metadata = routingControlsSupported() ? `
+        <td><input class="input rule-note-input" data-note="${d.id}" value="${fb.esc(d.note || "")}" placeholder="添加备注" aria-label="${fb.esc(d.pattern)} 的备注" /></td>` : "";
+      const protection = routingControlsSupported() ? `
+        <td><button class="btn btn-sm btn-ghost rule-lock" type="button" data-lock="${d.id}" aria-pressed="${!!d.locked}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>${d.locked ? "已锁" : "未锁"}</button></td>` : "";
       return `<tr data-id="${d.id}">
         <td class="mono">${fb.esc(d.pattern)}</td>
         ${meta}
-        <td><span class="switch ${d.enabled ? "on" : ""}" role="switch" aria-checked="${!!d.enabled}" data-toggle="${d.id}"></span></td>
+        ${metadata}
+        <td><button class="switch ${d.enabled ? "on" : ""}" type="button" role="switch" aria-checked="${!!d.enabled}" aria-label="${d.enabled ? "停用" : "启用"} ${fb.esc(d.pattern)}" data-toggle="${d.id}"></button></td>
+        ${protection}
         <td class="r"><button class="btn btn-sm btn-danger" data-del="${d.id}" aria-label="删除">删除</button></td>
       </tr>`;
     }
@@ -776,13 +814,16 @@
       const body = $(o.bodySel);
       function render() {
         if (!o.list.length) {
-          body.innerHTML = `<tr><td colspan="4"><div class="empty" style="padding:var(--space-6);">${o.empty}</div></td></tr>`;
+          body.innerHTML = `<tr><td colspan="${routingControlsSupported() ? 6 : 4}"><div class="empty" style="padding:var(--space-6);">${o.empty}</div></td></tr>`;
           return;
         }
         body.innerHTML = o.list.map((d) => ruleRow(o.type, d)).join("");
         $$(`${o.bodySel} [data-toggle]`).forEach(sw => sw.addEventListener("click", async function onToggle() {
           const d = o.list.find(x => String(x.id) === sw.dataset.toggle);
           if (!d) return;
+          if (d.locked && !await fb.confirm(`「${d.pattern}」已锁定。仍要单独${d.enabled ? "停用" : "启用"}吗？`, {
+            title: "修改锁定规则", confirmLabel: d.enabled ? "仍然停用" : "仍然启用",
+          })) return;
           try {
             await api.toggleRule(ch.id, d.id, !d.enabled);   // 先认后端,成功才翻 UI(无乐观回滚问题)
             d.enabled = d.enabled ? 0 : 1; render();
@@ -792,9 +833,49 @@
             toast("操作出错:" + f.title, { variant: "danger", action: { label: "重试", onClick: onToggle } });
           }
         }));
+        $$(`${o.bodySel} [data-note]`).forEach(input => input.addEventListener("change", async function onNote() {
+          const d = o.list.find(x => String(x.id) === input.dataset.note);
+          if (!d || input.value === (d.note || "")) return;
+          const previous = d.note || "";
+          if (d.locked && !await fb.confirm(`「${d.pattern}」已锁定。仍要修改备注吗？`, {
+            title: "修改锁定规则", confirmLabel: "仍然保存",
+          })) { input.value = previous; return; }
+          input.disabled = true;
+          try {
+            await api.updateRule(ch.id, d.id, { note: input.value });
+            d.note = input.value;
+            toast("规则备注已保存", { variant: "success" });
+          } catch (e) {
+            input.value = previous;
+            const f = fb.friendlyError(e);
+            toast("备注保存失败:" + f.title, { variant: "danger" });
+          } finally { input.disabled = false; }
+        }));
+        $$(`${o.bodySel} [data-lock]`).forEach(btn => btn.addEventListener("click", async function onLock() {
+          const d = o.list.find(x => String(x.id) === btn.dataset.lock);
+          if (!d) return;
+          const next = !d.locked;
+          if (d.locked && !await fb.confirm(`解除「${d.pattern}」的批量操作保护？`, {
+            title: "解除规则锁定", confirmLabel: "解除锁定",
+          })) return;
+          btn.disabled = true;
+          try {
+            await api.updateRule(ch.id, d.id, { locked: next });
+            d.locked = next ? 1 : 0;
+            render();
+            toast(next ? "规则已锁定，批量启停会跳过" : "规则已解除锁定", { variant: "success" });
+          } catch (e) {
+            btn.disabled = false;
+            const f = fb.friendlyError(e);
+            toast("锁定操作失败:" + f.title, { variant: "danger" });
+          }
+        }));
         $$(`${o.bodySel} [data-del]`).forEach(b => b.addEventListener("click", async function onDel() {
           const d = o.list.find(x => String(x.id) === b.dataset.del);
           if (!d) return;
+          if (d.locked && !await fb.confirm(`「${d.pattern}」已锁定。仍要单独删除吗？`, {
+            title: "删除锁定规则", confirmLabel: "仍然删除", danger: true,
+          })) return;
           b.disabled = true;
           try {
             await api.delRule(ch.id, d.id);

@@ -1,7 +1,7 @@
 //! Runtime 家族:把 AdapterSpec 合成 bollard 容器配置。对照 app/adapters.py。纯函数。
 use anyhow::{anyhow, Result};
 use bollard::container::Config;
-use bollard::models::{DeviceMapping, HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{DeviceMapping, HostConfig, RestartPolicy, RestartPolicyNameEnum};
 use std::collections::HashMap;
 use crate::registry::AdapterSpec;
 
@@ -58,19 +58,6 @@ fn base_host_config(spec: &AdapterSpec, vpn_net: &str) -> HostConfig {
     }
 }
 
-/// noVNC 8080 → 127.0.0.1 随机高位(命门 #4)。host_port="" 让 Docker 自选。
-fn novnc_port_bindings() -> HashMap<String, Option<Vec<PortBinding>>> {
-    let mut m = HashMap::new();
-    m.insert(
-        "8080/tcp".to_string(),
-        Some(vec![PortBinding {
-            host_ip: Some("127.0.0.1".to_string()),
-            host_port: Some(String::new()),
-        }]),
-    );
-    m
-}
-
 fn exposed_8080() -> HashMap<String, HashMap<(), ()>> {
     let mut m = HashMap::new();
     m.insert("8080/tcp".to_string(), HashMap::new());
@@ -81,7 +68,7 @@ fn env_vec(map: &indexmap::IndexMap<String, String>) -> Vec<String> {
     map.iter().map(|(k, v)| format!("{k}={v}")).collect()
 }
 
-/// 对照 _build_hagb:EC/aTrust。镜像/env 模板化;空 ec_ver 省略 EC_VER;noVNC 8080 绑 127.0.0.1;卷 /root。
+/// 对照 _build_hagb:EC/aTrust。镜像/env 模板化;空 ec_ver 省略 EC_VER;noVNC 8080 仅容器网可达;卷 /root。
 fn build_hagb(id: &str, mac: &str, ec_ver: Option<&str>, spec: &AdapterSpec, vnc_pwd: &str, vpn_net: &str) -> ContainerPlan {
     let has_ver = ec_ver.map(|s| !s.is_empty()).unwrap_or(false);
     let version = if has_ver { ec_ver.unwrap() } else { DEFAULT_VERSION };
@@ -94,7 +81,6 @@ fn build_hagb(id: &str, mac: &str, ec_ver: Option<&str>, spec: &AdapterSpec, vnc
         env.shift_remove("EC_VER");
     }
     let mut host = base_host_config(spec, vpn_net);
-    host.port_bindings = Some(novnc_port_bindings());
     host.binds = Some(vec![format!("vpndata-{id}:/root")]);
     let config = Config {
         image: Some(apply_ctx(&spec.image, mac, vnc_pwd, version)),
@@ -125,7 +111,7 @@ fn build_oss(id: &str, spec: &AdapterSpec, vpn_net: &str) -> Result<ContainerPla
     Ok(ContainerPlan { name: format!("vpn-{id}"), config })
 }
 
-/// 对照 _build_byo:镜像字面量;env 模板化(USE_NOVNC/PASSWORD);noVNC 8080 绑 127.0.0.1;卷 /root;无 EC_VER 特例。
+/// 对照 _build_byo:镜像字面量;env 模板化(USE_NOVNC/PASSWORD);noVNC 8080 仅容器网可达;卷 /root;无 EC_VER 特例。
 fn build_byo(id: &str, mac: &str, spec: &AdapterSpec, vnc_pwd: &str, vpn_net: &str) -> ContainerPlan {
     let env: indexmap::IndexMap<String, String> = spec
         .env
@@ -133,7 +119,6 @@ fn build_byo(id: &str, mac: &str, spec: &AdapterSpec, vnc_pwd: &str, vpn_net: &s
         .map(|(k, v)| (k.clone(), apply_ctx(v, mac, vnc_pwd, DEFAULT_VERSION)))
         .collect();
     let mut host = base_host_config(spec, vpn_net);
-    host.port_bindings = Some(novnc_port_bindings());
     host.binds = Some(vec![format!("vpndata-{id}:/root")]);
     let config = Config {
         image: Some(spec.image.clone()),
@@ -182,9 +167,8 @@ mod tests {
         let h = hc(&p);
         assert_eq!(h.cap_add, Some(vec!["NET_ADMIN".to_string()]));
         assert_eq!(h.devices.as_ref().unwrap()[0].path_in_container.as_deref(), Some("/dev/net/tun"));
-        let pb = h.port_bindings.as_ref().unwrap().get("8080/tcp").unwrap().as_ref().unwrap();
-        assert_eq!(pb[0].host_ip.as_deref(), Some("127.0.0.1"));
-        assert_eq!(pb[0].host_port.as_deref(), Some(""));
+        assert!(h.port_bindings.is_none(), "noVNC must not be published through lima");
+        assert!(p.config.exposed_ports.as_ref().unwrap().contains_key("8080/tcp"));
         assert_eq!(h.binds, Some(vec!["vpndata-abc:/root".to_string()]));
         assert_eq!(h.network_mode.as_deref(), Some("vpnnet"));
         assert_eq!(h.restart_policy.as_ref().unwrap().name, Some(RestartPolicyNameEnum::UNLESS_STOPPED));
@@ -241,9 +225,9 @@ mod tests {
         let p = build_run_kwargs("b1", "02:00:00:00:00:09", None, &spec, "vncsecret", "net").unwrap();
         assert_eq!(p.config.image.as_deref(), Some("vpnmgr/byo-desktop:latest"));
         let h = hc(&p);
-        // 命门 #4:byo 有 host noVNC 8080 → 127.0.0.1
-        let pb = h.port_bindings.as_ref().unwrap().get("8080/tcp").unwrap().as_ref().unwrap();
-        assert_eq!(pb[0].host_ip.as_deref(), Some("127.0.0.1"));
+        // noVNC 8080 只暴露在容器网络，宿主入口由 app SSH 转发持有。
+        assert!(h.port_bindings.is_none());
+        assert!(p.config.exposed_ports.as_ref().unwrap().contains_key("8080/tcp"));
         // 卷 /root
         assert_eq!(h.binds, Some(vec!["vpndata-b1:/root".to_string()]));
         // 命门 #6:NET_ADMIN + MKNOD

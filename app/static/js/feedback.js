@@ -326,7 +326,7 @@
 
   /* ── 分流口健康全局横幅 ──────────────────────────────────────────────────
    * 后端看门狗(/api/system 的 gateway_health)会在「容器全绿但宿主分流口不可达」
-   * (lima 转发睡醒/抖动后静默丢失)时自动 restart mihomo 自愈;本横幅把这个过程讲清楚,
+   * (app SSH 转发睡醒/抖动后失效)时自动重建转发、必要时 restart mihomo;本横幅把过程讲清楚,
    * 并在自愈放弃/VM 断时给手动修复入口——解决「哪儿都连通就是打不开」的盲区。
    * 所有屏都引 feedback.js,故此处自启,全站一致。命门 #1 不破:不碰通道登录态。 */
   (function gatewayMonitor() {
@@ -348,7 +348,7 @@
     function clear() {
       if (host) { host.remove(); host = null; }
     }
-    function banner(variant, icon, title, msg, actionsHtml) {
+    function banner(variant, icon, title, msg, actionsHtml, closable = true) {
       const h = ensureHost();
       h.innerHTML =
         `<div class="banner ${variant}" style="background:var(--surface);">
@@ -358,9 +358,9 @@
              ${msg ? `<p>${esc(msg)}</p>` : ""}
              ${actionsHtml || ""}
            </div>
-           <button class="fb-gw-close" type="button" title="收起(状态变化时会再提醒)"
+           ${closable ? `<button class="fb-gw-close" type="button" title="收起(状态变化时会再提醒)"
              style="border:0;background:none;cursor:pointer;font-size:16px;line-height:1;
-                    color:var(--text-secondary,#6b7280);padding:2px 4px;align-self:flex-start;">×</button>
+                    color:var(--text-secondary,#6b7280);padding:2px 4px;align-self:flex-start;">×</button>` : ""}
          </div>`;
       const c = h.querySelector(".fb-gw-close");
       if (c) c.addEventListener("click", () => { dismissedKey = currentKey; clear(); });
@@ -381,6 +381,30 @@
     function logOnly() {
       const link = logLink();
       return link ? `<div class="fb-eb-acts" style="margin-top:8px;display:flex;gap:8px;align-items:center;">${link}</div>` : "";
+    }
+    function routingActions() {
+      return `<div class="fb-eb-acts" style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+                <button class="btn btn-primary btn-sm fb-routing-on" type="button">恢复分流</button>
+                <a class="btn btn-ghost btn-sm" href="routing-table.html" style="text-decoration:none;">查看规则</a>
+              </div>`;
+    }
+    function bindRoutingRestore() {
+      const b = host && host.querySelector(".fb-routing-on");
+      if (!b) return;
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        b.textContent = "恢复中…";
+        try {
+          await window.api.setRouting(false);
+          window.toast("分流已恢复", { variant: "success" });
+          poll();
+        } catch (e) {
+          const f = friendlyError(e);
+          window.toast("恢复失败:" + f.title, { variant: "danger" });
+          b.disabled = false;
+          b.textContent = "恢复分流";
+        }
+      });
     }
     let healInFlight = false; // 修复进行中:挡住 10s 轮询重渲染(会把禁用按钮重置成可点 → 双发)
 
@@ -448,9 +472,19 @@
       // 看门狗盲区:容器/转发口探测全绿(gateway_health=healthy),但 mihomo 控制口无应答
       // (转发器半僵死:TCP 能连、无响应)。芯片会红,横幅若不接手就无处可点(2026-07-16)。
       const ctrlDown = gh === "healthy" && sys && sys.mihomo_status !== "running";
-      currentKey = (gh || "healthy") + "|" + (ctrlDown ? 1 : 0);
+      const routingOff = !!(sys && sys.routing_off);
+      currentKey = (gh || "healthy") + "|" + (ctrlDown ? 1 : 0) + "|" + (routingOff ? 1 : 0);
       if (dismissedKey !== null && dismissedKey !== currentKey) dismissedKey = null; // 状态变化 → 复位收起记忆
       const dismissed = dismissedKey === currentKey;
+      if (routingOff) {
+        wasBroken = !!gh && gh !== "healthy";
+        healing = false;
+        banner("warn", SVG.check, "全直连已开启",
+          "所有分流规则暂时失效，mihomo、TUN 路由、PAC 与 Clash 规则均只走 DIRECT；通道和登录态仍保持。",
+          routingActions(), false);
+        bindRoutingRestore();
+        return;
+      }
       // 后端无此字段(老版本)或健康 → 收横幅;若刚从坏态恢复,提示一声。
       if (!gh || gh === "healthy") {
         if (ctrlDown) {
@@ -475,6 +509,12 @@
         healing = false;
         banner("danger", SVG.cross, "与本地引擎(VM)连接中断",
           "所有通道当前都不可达。请从托盘菜单退出并重新打开 app 以重建连接。", healBtn("重试修复"));
+        bindHeal();
+      } else if (sys.self_heal_enabled === false) {
+        healing = false;
+        banner("warn", SVG.cross, "自动修复已暂停",
+          "系统仍在持续体检和记录异常，但不会自动重建转发或重启分流路由。重开 app 会恢复自动修复。",
+          healBtn("手动修复"));
         bindHeal();
       } else if (sys.gave_up) {
         healing = false;

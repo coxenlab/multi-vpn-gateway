@@ -115,6 +115,7 @@ struct EventStore {
 }
 
 impl EventStore {
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     fn record_at(
         &self,
         at: DateTime<Local>,
@@ -463,7 +464,7 @@ fn redact_text(input: &str) -> String {
             };
             let start = search_from + found;
             let tail = &output[start + key.len()..];
-            let Some(sep_rel) = tail.find(|c| c == '=' || c == ':') else {
+            let Some(sep_rel) = tail.find(['=', ':']) else {
                 break;
             };
             let value_start = start + key.len() + sep_rel + 1;

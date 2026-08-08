@@ -142,6 +142,13 @@
     let sys = {};
     let loaded = false;   // 首次加载成功过？决定失败时给整页错误条 or 静默轮询提示
     const ruleCount = (c) => c.domains.length + (c.ips ? c.ips.length : 0);
+    const routingControlsSupported = () => typeof sys.routing_off === "boolean";
+    const routingOn = (c) => !routingControlsSupported() || (c.routing_enabled !== false && c.routing_enabled !== 0);
+    const channelBadge = (c) => {
+      if (!routingOn(c) && c.status === "logged_in")
+        return `<span class="badge is-logged_in"><i class="bdot"></i>已连接 · 不分流</span>`;
+      return badgeHTML(c.status) + (!routingOn(c) ? `<span class="badge is-stopped">不分流</span>` : "");
+    };
 
     // 静默拉数据(供轮询 / 各动作成功后刷新复用);抛错由调用方处理。
     // ⚠️ 通道列表与系统状态**不绑死**:/api/system 要探分流口,链路故障时它慢/失败,
@@ -182,9 +189,12 @@
     function actionsFor(c) {
       const detail = `<a class="btn btn-sm btn-secondary" href="channel.html?id=${fb.esc(c.id)}">详情</a>`;
       const del = `<button class="btn btn-sm btn-danger spacer" onclick="askDel('${fb.esc(c.id)}')">删除</button>`;
+      const route = routingControlsSupported()
+        ? `<button class="btn btn-sm btn-secondary" role="switch" aria-checked="${routingOn(c)}" onclick="toggleRouting('${fb.esc(c.id)}',${routingOn(c)},this)">${routingOn(c) ? "参与分流 · 开" : "参与分流 · 关"}</button>`
+        : "";
       // 停止态:容器没起,登录/探活都无意义 → 只给「启动」(走重建);状态已由右上角徽章表达,不再放死的「已停止」占位钮。
       if (c.status === "stopped")
-        return `<button class="btn btn-sm btn-primary" onclick="power('${fb.esc(c.id)}','start',this)">启动</button>${detail}${del}`;
+        return `<button class="btn btn-sm btn-primary" onclick="power('${fb.esc(c.id)}','start',this)">启动</button>${route}${detail}${del}`;
       // 运行态:登录/重新登录(无头通道隐藏)+ 检测连通 + 停止。「重启」属低频操作,留在详情页。
       const headless = c.login_method === "headless";
       const login = headless ? ""
@@ -194,7 +204,7 @@
       return `${login}
         <button class="btn btn-sm btn-secondary" onclick="probe('${fb.esc(c.id)}', this)">检测连通</button>
         <button class="btn btn-sm btn-secondary" onclick="power('${fb.esc(c.id)}','stop',this)">停止</button>
-        ${detail}${del}`;
+        ${route}${detail}${del}`;
     }
     function cardHTML(c) {
       const k = kindMeta(c.vpn_type);
@@ -209,7 +219,7 @@
             <div class="ch-name">${fb.esc(c.name)}</div>
             <div class="ch-meta">${fb.esc(k.label)}${c.ec_ver ? " " + fb.esc(c.ec_ver) : ""} · id ${c.id} · ${fb.esc(c.server.replace("https://",""))}</div>
           </div>
-          ${badgeHTML(c.status)}
+          ${channelBadge(c)}
         </div>
         <div class="ch-grid">
           <div class="kv"><div class="k">SOCKS5 出口</div><div class="v">${fb.esc(c.socks_endpoint)}</div></div>
@@ -274,6 +284,21 @@
           variant: "danger", action: { label: "重试", onClick: () => power(id, action, btn) },
         });
         btn.disabled = false; btn.textContent = label;
+      }
+    };
+    window.toggleRouting = async function (id, current, btn) {
+      const next = !current;
+      btn.disabled = true;
+      btn.textContent = next ? "恢复中…" : "暂停中…";
+      try {
+        await api.update(id, { routing_enabled: next });
+        await load();
+        toast(next ? "通道已恢复参与分流" : "通道已暂停分流，登录态与探活保持", { variant: "success" });
+      } catch (e) {
+        const f = fb.friendlyError(e);
+        toast("切换分流失败:" + f.title, { variant: "danger" });
+        btn.disabled = false;
+        btn.textContent = current ? "参与分流 · 开" : "参与分流 · 关";
       }
     };
     // 快绑：一次可粘多条，后端自动识别 IP/网段（走 IP-CIDR）与域名（走 DOMAIN-SUFFIX）

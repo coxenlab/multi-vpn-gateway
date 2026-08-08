@@ -124,16 +124,20 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | GET | `/api/vpn-types/{type}/versions` | `{versions:[{tag, arch, usable_here}]}`,实时 Docker Hub;非 versioned 适配器返回空列表 |
 | GET | `/api/channels` | 通道列表(每条含 `domains[]` / `ips[]` / `socks_endpoint` / `uptime` 等) |
 | POST | `/api/channels` | 建通道并起容器(`name, vpn_type, server, ec_ver, login_method, username, password, probe_url, config{}`) |
+| PATCH | `/api/channels/{cid}` | 修改通道字段；桌面版额外支持 `routing_enabled`，不重启容器 |
 | GET | `/api/channels/{cid}/login` | noVNC 登录地址 `{url}`;无头适配器返回 `{login_mode:"headless"}` |
 | POST | `/api/channels/{cid}/upload` | multipart 上传 → `{ok, package}`(BYO 安装器经 `put_archive` 落数据卷) |
 | GET | `/api/channels/{cid}/status` | **跑 SOCKS5 探活** → `{status, connected, latency_ms}` |
 | POST | `/api/channels/{cid}/rules` | 加分流规则(`patterns[]` 或 `pattern`,可选 `kind: domain\|ip`;裸 IP 自动补 `/32`、`/128`)→ `{reload_status, domains, ips, added, rejected}` |
-| PATCH | `/api/channels/{cid}/rules/{rid}` | 启用 / 停用一条规则(`enabled`)→ `{ok, reload_status}` |
+| PATCH | `/api/channels/{cid}/rules/{rid}` | 修改单条规则(`enabled`，桌面版另支持 `note` / `locked`)→ `{ok, rule, reload_status?}` |
+| PATCH | `/api/rules` | 桌面版批量启停；锁定规则跳过 → `{updated, skipped_locked, reload_status}` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | 删规则 → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | 起 / 停容器 → `{ok}` |
 | DELETE | `/api/channels/{cid}` | 删通道 → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | 容器日志 → `{lines}` |
 | GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址 |
+| POST | `/api/system/self-heal` | 桌面版内存态自愈动作开关(`enabled`)；重开 app 自动恢复 |
+| GET \| POST | `/api/routing` | 桌面版持久化全直连总开关(`{off}`)；不改规则原始启停状态 |
 | GET | `/api/connections` | mihomo 实时连接 |
 | GET | `/api/proxies` | mihomo 代理 → `{proxies}` |
 | GET | `/clash/vpn-rules.yaml` | 给 Clash 订阅的 rule-provider 清单(`text/plain`) |
@@ -158,7 +162,7 @@ creating ──▶ running ──▶ logged_in     (另有 stopped、error)
 
 - 所有 host 端口只绑 `127.0.0.1`,**永不** `0.0.0.0`。
 - 密码 Fernet 加密落库;`master.key` 权限 0600、存在数据卷;接口永不回传密文与 secret 字段。无头适配器经 stdin 注入凭据,绝不进命令行;BYO 安装器流式落数据卷,绝不入 SQLite。
-- SOCKS5(1080)只在 Docker 内网暴露;noVNC 映射到 `127.0.0.1` 随机高位端口。
+- SOCKS5(1080)只在 Docker 内网暴露。桌面版不 publish noVNC 容器 8080，由 app 为每条通道自持一条 SSH 转发到 `127.0.0.1` 随机高位端口；Web 版保留 Docker loopback 映射。
 
 ## 文档
 

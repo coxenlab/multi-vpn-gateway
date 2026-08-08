@@ -46,6 +46,10 @@
     .rule-badge { display: inline-flex; padding: 2px 7px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; white-space: nowrap; }
     .rule-badge.conflict { color: var(--danger); background: var(--danger-soft); }
     .rule-badge.dead { color: color-mix(in oklab, var(--warn), black 32%); background: var(--warn-soft); }
+    .rule-badge.paused { color: var(--muted); background: var(--surface-2); }
+    .rule-note-input { min-width: 150px; height: 32px; padding: 5px 8px; font-size: var(--text-xs); }
+    .rule-lock { min-width: 58px; }
+    .rule-lock svg { width: 14px; height: 14px; }
     .switch { position: relative; width: 38px; height: 22px; border-radius: var(--radius-pill); background: var(--surface-2); border: 1px solid var(--border); padding: 0; transition: background var(--motion-fast); }
     .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: var(--elev-raised); transition: left var(--motion-fast) var(--ease-standard); }
     .switch.on { background: var(--success); border-color: var(--success); }
@@ -130,6 +134,7 @@
         </button>
         <h1>分流总表</h1>
         <span class="spacer"></span>
+        <button class="btn btn-secondary btn-sm" id="global-routing" type="button" role="switch" aria-checked="true" hidden>分流总开关 · 开</button>
         <span class="sys-chip hide-mobile"><span class="dot"></span>每 8 秒自动刷新</span>
       </header>
 
@@ -179,7 +184,9 @@
                   <th>所属通道</th>
                   <th class="hide-sm">模式</th>
                   <th>通道状态</th>
+                  <th class="desktop-routing" hidden>备注</th>
                   <th>启停</th>
+                  <th class="desktop-routing" hidden>保护</th>
                   <th>问题</th>
                 </tr>
               </thead>
@@ -216,7 +223,10 @@
     let visibleRuleIds = [];
     const selectedRules = new Set();
 
-    const enabledRules = (c) => [...(c.domains || []), ...(c.ips || [])].filter((r) => r.enabled);
+    const routingControlsSupported = () => typeof sys.routing_off === "boolean";
+    const channelRoutingOn = (c) => !routingControlsSupported() || (c.routing_enabled !== false && c.routing_enabled !== 0);
+    const enabledRules = (c) => (sys.routing_off || !channelRoutingOn(c))
+      ? [] : [...(c.domains || []), ...(c.ips || [])].filter((r) => r.enabled);
     const allRules = (c) => [...(c.domains || []), ...(c.ips || [])];
     const isDeadCh = (c) => c.status === "stopped" || c.status === "error" || c.status === "down";
 
@@ -348,8 +358,8 @@
     function paintPipes(sorted) {
       $("#pipe-rows").innerHTML = sorted.map((c) => {
         const d = diagMap && diagMap[c.id];
-        const doms = (c.domains || []).filter((r) => r.enabled).length;
-        const ips = (c.ips || []).filter((r) => r.enabled).length;
+        const doms = enabledRules(c).filter((r) => r.kind === "domain").length;
+        const ips = enabledRules(c).filter((r) => r.kind === "ip").length;
         const en = doms + ips;
         const up = c.status === "logged_in";
         const running = c.status === "running" || c.status === "starting" || c.status === "created";
@@ -396,7 +406,7 @@
         return `<div class="pipe-row${up ? "" : " dim"}">
           <div class="pipe-ch"><a class="grp-name" href="channel.html?id=${fb.esc(c.id)}">${fb.esc(c.name)}</a>${badgeHTML(c.status)}</div>
           <div class="pipe">
-            ${node(en ? "ok" : "", "分流规则", en ? `${doms} 域名 + ${ips} IP 命中走此通道` : "未绑定 · 不参与分流")}
+            ${node(en ? "ok" : "", "分流规则", en ? `${doms} 域名 + ${ips} IP 命中走此通道` : (sys.routing_off ? "全直连中 · 规则暂不生效" : !channelRoutingOn(c) ? "通道已暂停分流" : "未绑定 · 不参与分流"))}
             ${ARROW}
             ${node(contDot, "容器 SOCKS 出口", `${c.socks_endpoint} · 仅 docker 内网`, contNotes)}
             ${ARROW}
@@ -452,6 +462,12 @@
       $("#summary-dead").parentElement.classList.toggle("active", deadRules.length > 0);
       $("#nav-count").textContent = chs.length;
       $("#foot-port").textContent = ":" + (sys.mihomo_port || "—");
+      const globalRouting = $("#global-routing");
+      globalRouting.hidden = !routingControlsSupported();
+      globalRouting.disabled = busy;
+      globalRouting.textContent = sys.routing_off ? "分流总开关 · 关" : "分流总开关 · 开";
+      globalRouting.setAttribute("aria-checked", String(!sys.routing_off));
+      $$(".desktop-routing").forEach((el) => { el.hidden = !routingControlsSupported(); });
 
       const issueDetails = $("#issue-details");
       issueDetails.style.display = hasIssues ? "" : "none";
@@ -481,7 +497,7 @@
       const visible = flat.filter(({ c, r, mode }) => {
         if (filterChannel && c.id !== filterChannel) return false;
         if (!q) return true;
-        return [r.pattern, r.kind, c.name, mode.label].some((v) => String(v || "").toLowerCase().includes(q));
+        return [r.pattern, r.kind, r.note, c.name, mode.label].some((v) => String(v || "").toLowerCase().includes(q));
       });
       visibleRuleIds = visible.map(({ r }) => String(r.id));
 
@@ -492,10 +508,16 @@
         const id = String(r.id);
         const conflictNotes = r.enabled ? (confNote.get(r.id) || []) : [];
         const dead = !!r.enabled && deadRids.has(r.id);
-        const cls = conflictNotes.length ? "hit-conflict" : dead ? "hit-dead" : r.enabled ? "" : "off";
+        const effective = !!r.enabled && channelRoutingOn(c) && !sys.routing_off;
+        const cls = conflictNotes.length ? "hit-conflict" : dead ? "hit-dead" : effective ? "" : "off";
         const badges = [];
         if (conflictNotes.length) badges.push(`<span class="rule-badge conflict" title="${fb.esc(conflictNotes.join("；"))}">冲突 ${conflictNotes.length}</span>`);
         if (dead) badges.push(`<span class="rule-badge dead" title="通道已停止，命中后不会回落直连">失效</span>`);
+        if (!channelRoutingOn(c)) badges.push(`<span class="rule-badge paused">通道暂停</span>`);
+        if (sys.routing_off) badges.push(`<span class="rule-badge paused">全直连</span>`);
+        const metadata = routingControlsSupported() ? `<td><input class="input rule-note-input" data-rule-note="${fb.esc(id)}" data-cid="${fb.esc(c.id)}" value="${fb.esc(r.note || "")}" placeholder="添加备注" aria-label="${fb.esc(r.pattern)} 的备注" ${busy ? "disabled" : ""} /></td>` : "";
+        const protection = routingControlsSupported() ? `<td><button class="btn btn-sm btn-ghost rule-lock" type="button" data-rule-lock="${fb.esc(id)}" data-cid="${fb.esc(c.id)}" aria-pressed="${!!r.locked}" ${busy ? "disabled" : ""}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>${r.locked ? "已锁" : "未锁"}</button></td>` : "";
         return `<tr class="${cls}">
           <td><input class="rule-check" type="checkbox" data-select-rule="${fb.esc(id)}" ${selectedRules.has(id) ? "checked" : ""} ${busy ? "disabled" : ""} aria-label="选择 ${fb.esc(r.pattern)}" /></td>
           <td><div class="rule-pattern">${fb.esc(r.pattern)}</div></td>
@@ -503,10 +525,12 @@
           <td><a class="grp-name" href="channel.html?id=${fb.esc(c.id)}">${fb.esc(c.name)}</a><div class="grp-meta">${fb.esc(c.socks_endpoint || "")}</div></td>
           <td class="hide-sm">${fb.esc(mode.label)}</td>
           <td>${badgeHTML(c.status)}</td>
+          ${metadata}
           <td><button class="switch ${r.enabled ? "on" : ""}" type="button" role="switch" aria-checked="${!!r.enabled}" aria-label="${r.enabled ? "停用" : "启用"} ${fb.esc(r.pattern)}" data-rule-toggle="${fb.esc(id)}" data-cid="${fb.esc(c.id)}" data-enabled="${r.enabled ? "1" : "0"}" ${busy ? "disabled" : ""}></button></td>
+          ${protection}
           <td><div class="rule-badges">${badges.join("") || `<span class="muted">—</span>`}</div></td>
         </tr>`;
-      }).join("") || `<tr><td colspan="8"><div class="empty" style="padding:var(--space-6);">${totalRules ? "没有匹配当前筛选的规则" : "还没有分流规则，请先在通道详情绑定域名或 IP 网段"}</div></td></tr>`;
+      }).join("") || `<tr><td colspan="${routingControlsSupported() ? 10 : 8}"><div class="empty" style="padding:var(--space-6);">${totalRules ? "没有匹配当前筛选的规则" : "还没有分流规则，请先在通道详情绑定域名或 IP 网段"}</div></td></tr>`;
 
       const selectVisible = $("#select-visible");
       const selectedVisible = visibleRuleIds.filter((id) => selectedRules.has(id)).length;
@@ -530,6 +554,37 @@
       visibleRuleIds.forEach((id) => e.target.checked ? selectedRules.add(id) : selectedRules.delete(id));
       paint();
     });
+    function findRule(id) {
+      for (const c of chs) {
+        const rule = allRules(c).find((r) => String(r.id) === String(id));
+        if (rule) return { c, rule };
+      }
+      return null;
+    }
+    $("#tbody").addEventListener("change", async (e) => {
+      const input = e.target.closest("[data-rule-note]");
+      if (!input || busy) return;
+      const found = findRule(input.dataset.ruleNote);
+      if (!found || input.value === (found.rule.note || "")) return;
+      const previous = found.rule.note || "";
+      if (found.rule.locked && !await fb.confirm(`「${found.rule.pattern}」已锁定。仍要修改备注吗？`, {
+        title: "修改锁定规则", confirmLabel: "仍然保存",
+      })) { input.value = previous; return; }
+      busy = true;
+      input.disabled = true;
+      try {
+        await api.updateRule(found.c.id, found.rule.id, { note: input.value });
+        found.rule.note = input.value;
+        toast("规则备注已保存", { variant: "success" });
+      } catch (err) {
+        input.value = previous;
+        const f = fb.friendlyError(err);
+        toast("备注保存失败:" + f.title, { variant: "danger" });
+      } finally {
+        busy = false;
+        paint();
+      }
+    });
     $("#tbody").addEventListener("change", (e) => {
       const box = e.target.closest("[data-select-rule]");
       if (!box) return;
@@ -540,8 +595,35 @@
       $("#select-visible").indeterminate = chosen > 0 && chosen < visibleRuleIds.length;
     });
     $("#tbody").addEventListener("click", async (e) => {
+      const lock = e.target.closest("[data-rule-lock]");
+      if (lock && !busy) {
+        const found = findRule(lock.dataset.ruleLock);
+        if (!found) return;
+        const next = !found.rule.locked;
+        if (found.rule.locked && !await fb.confirm(`解除「${found.rule.pattern}」的批量操作保护？`, {
+          title: "解除规则锁定", confirmLabel: "解除锁定",
+        })) return;
+        busy = true;
+        lock.disabled = true;
+        try {
+          await api.updateRule(found.c.id, found.rule.id, { locked: next });
+          found.rule.locked = next ? 1 : 0;
+          toast(next ? "规则已锁定，批量启停会跳过" : "规则已解除锁定", { variant: "success" });
+        } catch (err) {
+          const f = fb.friendlyError(err);
+          toast("锁定操作失败:" + f.title, { variant: "danger" });
+        } finally {
+          busy = false;
+          paint();
+        }
+        return;
+      }
       const btn = e.target.closest("[data-rule-toggle]");
       if (!btn || busy) return;
+      const found = findRule(btn.dataset.ruleToggle);
+      if (found && found.rule.locked && !await fb.confirm(`「${found.rule.pattern}」已锁定。仍要单独${found.rule.enabled ? "停用" : "启用"}吗？`, {
+        title: "修改锁定规则", confirmLabel: found.rule.enabled ? "仍然停用" : "仍然启用",
+      })) return;
       busy = true;
       btn.disabled = true;
       const enabled = btn.dataset.enabled !== "1";
@@ -567,9 +649,10 @@
       button.textContent = enabled ? "启用中…" : "停用中…";
       updateBulkState();
       try {
-        await api.toggleRules(ids, enabled);
+        const result = await api.toggleRules(ids, enabled);
         selectedRules.clear();
-        toast(`已${enabled ? "启用" : "停用"} ${ids.length} 条规则`, { variant: "success" });
+        const skipped = Number(result.skipped_locked || 0);
+        toast(`已${enabled ? "启用" : "停用"} ${result.updated || 0} 条规则${skipped ? `，${skipped} 条已跳过（锁定）` : ""}`, { variant: "success" });
         await load(false);
       } catch (err) {
         const f = fb.friendlyError(err);
@@ -582,6 +665,31 @@
     }
     $("#bulk-enable").addEventListener("click", () => batchToggle(true));
     $("#bulk-disable").addEventListener("click", () => batchToggle(false));
+
+    async function toggleGlobalRouting() {
+      if (busy || !routingControlsSupported()) return;
+      const turningOff = !sys.routing_off;
+      if (turningOff && !await fb.confirm("开启全直连后，所有分流规则会暂时失效；原始启停状态会保留，恢复分流后继续生效。", {
+        title: "开启全直连", confirmLabel: "开启全直连",
+      })) return;
+      const btn = $("#global-routing");
+      busy = true;
+      btn.disabled = true;
+      try {
+        const result = await api.setRouting(turningOff);
+        sys.routing_off = !!result.off;
+        await load(false);
+        toast(turningOff ? "已开启全直连，全部分流规则暂不生效" : "已恢复分流，原始规则状态继续生效", { variant: "success" });
+      } catch (err) {
+        const f = fb.friendlyError(err);
+        toast("切换分流总开关失败：" + f.title, { variant: "danger" });
+      } finally {
+        busy = false;
+        btn.disabled = false;
+        paint();
+      }
+    }
+    $("#global-routing").addEventListener("click", toggleGlobalRouting);
 
     load();
     loadEntry();

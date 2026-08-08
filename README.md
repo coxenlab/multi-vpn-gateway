@@ -151,16 +151,20 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | GET | `/api/vpn-types/{type}/versions` | `{versions:[{tag, arch, usable_here}]}`, live from Docker Hub; empty list for non-versioned adapters |
 | GET | `/api/channels` | channel list (each with `domains[]`, `ips[]`, `socks_endpoint`, `uptime`, …) |
 | POST | `/api/channels` | create channel + start container (`name, vpn_type, server, ec_ver, login_method, username, password, probe_url, config{}`) |
+| PATCH | `/api/channels/{cid}` | update channel fields; desktop mode also accepts `routing_enabled` without restarting the container |
 | GET | `/api/channels/{cid}/login` | `{url}` (noVNC) — or `{login_mode:"headless"}` for headless adapters |
 | POST | `/api/channels/{cid}/upload` | multipart upload → `{ok, package}` (BYO installer streamed into the data volume via `put_archive`) |
 | GET | `/api/channels/{cid}/status` | **runs a SOCKS5 probe** → `{status, connected, latency_ms}` |
 | POST | `/api/channels/{cid}/rules` | add routing rules (`patterns[]` or `pattern`, optional `kind: domain\|ip`; bare IPs auto-get `/32` or `/128`) → `{reload_status, domains, ips, added, rejected}` |
-| PATCH | `/api/channels/{cid}/rules/{rid}` | enable / disable one rule (`enabled`) → `{ok, reload_status}` |
+| PATCH | `/api/channels/{cid}/rules/{rid}` | update one rule (`enabled`, or desktop-only `note` / `locked`) → `{ok, rule, reload_status?}` |
+| PATCH | `/api/rules` | desktop batch enable / disable; locked rules are skipped → `{updated, skipped_locked, reload_status}` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | delete one rule → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | start / stop container → `{ok}` |
 | DELETE | `/api/channels/{cid}` | delete channel → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | container logs → `{lines}` |
 | GET | `/api/system` | mihomo status / ports / controller |
+| POST | `/api/system/self-heal` | desktop-only in-memory watchdog action toggle (`enabled`); app restart restores it |
+| GET \| POST | `/api/routing` | desktop-only persistent global direct-routing switch (`{off}`); preserves raw rule states |
 | GET | `/api/connections` | mihomo live connections |
 | GET | `/api/proxies` | mihomo proxies → `{proxies}` |
 | GET | `/clash/vpn-rules.yaml` | rule-provider payload for Clash to subscribe (`text/plain`) |
@@ -188,8 +192,9 @@ creating ──▶ running ──▶ logged_in     (plus stopped, error)
   data volume; the API never returns ciphertext or secret fields. Headless
   adapters inject credentials over stdin, never on the command line; BYO
   installers are streamed into the data volume and never stored in SQLite.
-- SOCKS5 (1080) is exposed on the Docker network only; noVNC is mapped to a
-  random high port on `127.0.0.1`.
+- SOCKS5 (1080) is exposed on the Docker network only. In desktop mode noVNC
+  container port 8080 is not published; the app owns a per-channel SSH forward
+  on a random `127.0.0.1` high port. Web mode keeps its Docker loopback mapping.
 
 ## Documentation
 

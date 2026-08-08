@@ -22,6 +22,8 @@ async fn boots_and_serves_system_and_index() {
         mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
         health: vpnmgr_core::health::shared(),
         tunnel: vpnmgr_core::tunnel::handle(),
+        novnc: vpnmgr_core::novnc::handle(),
+        self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
 
     // 命门 #4: bind 127.0.0.1 only

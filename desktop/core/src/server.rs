@@ -20,6 +20,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api/system", get(routes::system))
         .route("/api/system/heal-proxy", axum::routing::post(routes::heal_proxy))
+        .route("/api/system/self-heal", axum::routing::post(api::self_heal_set))
+        .route("/api/routing", get(api::routing_get).post(api::routing_set))
         .route("/api/channels", get(routes::channels).post(api::create))
         .route("/api/channels/:cid", axum::routing::patch(api::update).delete(api::delete))
         .route("/api/channels/:cid/start", axum::routing::post(api::start))
@@ -103,6 +105,8 @@ mod tests {
             mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),
             health: crate::health::shared(),
             tunnel: crate::tunnel::handle(),
+            novnc: crate::novnc::handle(),
+            self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -132,6 +136,79 @@ mod tests {
         assert_eq!(v["mihomo_status"], "down");
         assert_eq!(v["mihomo_port"], 7899);
         assert_eq!(v["ui_port"], 8787);
+        assert_eq!(v["self_heal_enabled"], true);
+        assert_eq!(v["routing_off"], false);
+    }
+
+    #[tokio::test]
+    async fn self_heal_and_routing_control_routes_preserve_state_on_failed_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,status,routing_enabled) VALUES('c1','one','running',1)", []).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,status,container_id,routing_enabled) VALUES('c2','two','running','stale',1)", []).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        let app = build_router(state_with_db(dir.path()));
+
+        let response = app.clone().oneshot(
+            Request::builder().method("POST").uri("/api/system/self-heal")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"enabled":false}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(value["enabled"], false);
+
+        let response = app.clone().oneshot(
+            Request::builder().uri("/api/system").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(value["self_heal_enabled"], false);
+
+        let response = app.clone().oneshot(
+            Request::builder().uri("/api/routing").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(value["off"], false);
+
+        let response = app.clone().oneshot(
+            Request::builder().method("POST").uri("/api/routing")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"off":true}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(!crate::store::routing_off(dir.path()), "failed reload must roll routing marker back");
+
+        let response = app.clone().oneshot(
+            Request::builder().uri("/api/routing").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(value["off"], false);
+
+        let response = app.clone().oneshot(
+            Request::builder().method("PATCH").uri("/api/channels/c1")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"routing_enabled":false,"server":"vpn.changed.test"}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let c1 = crate::store::get_channel(&db, "c1").unwrap().unwrap();
+        assert!(c1.routing_enabled, "failed reload must roll channel routing_enabled back");
+        assert_eq!(c1.server, "vpn.changed.test", "unrelated channel edits remain applied");
+
+        let response = app.oneshot(
+            Request::builder().method("PATCH").uri("/api/channels/c2")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"routing_enabled":false,"server":"vpn.changed.test"}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(crate::store::get_channel(&db, "c2").unwrap().unwrap().routing_enabled,
+            "failed reprovision must roll channel routing_enabled back");
     }
 
     #[tokio::test]
@@ -232,6 +309,39 @@ mod tests {
         ).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(crate::store::get_rule(&db, rid).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn rule_metadata_patch_needs_no_docker_and_locked_rule_allows_single_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,status) VALUES('c1','one','running')", []).unwrap();
+        let rid = crate::store::add_rule(&db, "c1", "domain", "a.com").unwrap();
+        let app = build_router(state_with_db(dir.path()));
+
+        let response = app.clone().oneshot(
+            Request::builder().method("PATCH").uri(format!("/api/channels/c1/rules/{rid}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"note":"SSH 保持直连","locked":true}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(value["rule"]["note"], "SSH 保持直连");
+        assert_eq!(value["rule"]["locked"], 1);
+
+        let response = app.oneshot(
+            Request::builder().method("PATCH").uri(format!("/api/channels/c1/rules/{rid}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"note":"锁定后仍可单条修改"}"#)).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let rule = crate::store::get_rule(&db, rid).unwrap().unwrap();
+        assert_eq!(rule.note, "锁定后仍可单条修改");
+        assert_eq!(rule.locked, 1);
+        assert_eq!(rule.enabled, 1);
     }
 
     #[tokio::test]
@@ -447,6 +557,7 @@ mod tests {
             mac: "02:11:22:33:44:55".into(),
             probe_url: "https://intra/".into(),
             status: "stopped".into(),
+            routing_enabled: true,
         };
         crate::store::add_channel(db, key, &nc, &cfg, &["password".to_string()]).unwrap();
     }
@@ -463,6 +574,9 @@ mod tests {
         crate::store::add_rule(&db, "ia", "domain", "a.com").unwrap();
         let rid = crate::store::add_rule(&db, "ia", "ip", "10.0.0.0/8").unwrap();
         crate::store::set_rule_enabled(&db, "ia", rid, false).unwrap();
+        crate::store::update_rule(&db, "ia", rid, None, Some("SSH 保持直连"), Some(true)).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "UPDATE channels SET routing_enabled=0 WHERE id='ia'", []).unwrap();
 
         let app = build_router(state_with_db(dir.path()));
         let resp = app.clone()
@@ -480,12 +594,14 @@ mod tests {
         // interactive:密码剥掉,server 仍在
         assert!(ia["config"].get("password").is_none());
         assert_eq!(ia["config"]["server"], "vpn.x.com");
+        assert_eq!(ia["routing_enabled"], false);
         // headless:密码是解密后的明文
         assert_eq!(hb["config"]["password"], "secret-b");
         // 规则带 enabled
         let ia_rules = ia["rules"].as_array().unwrap();
         assert!(ia_rules.iter().any(|r| r["pattern"] == "a.com" && r["enabled"] == 1));
-        assert!(ia_rules.iter().any(|r| r["pattern"] == "10.0.0.0/8" && r["enabled"] == 0));
+        assert!(ia_rules.iter().any(|r| r["pattern"] == "10.0.0.0/8"
+            && r["enabled"] == 0 && r["note"] == "SSH 保持直连" && r["locked"] == 1));
     }
 
     #[tokio::test]
@@ -502,11 +618,17 @@ mod tests {
             "channels": [{
                 "name": "Imported", "vpn_type": "anyconnect", "server": "vpn.i.com",
                 "login_method": "headless", "username": "carol", "probe_url": "https://i/",
+                "routing_enabled": false,
                 "config": {"server": "vpn.i.com", "username": "carol", "password": "plain-pw"},
                 "rules": [
-                    {"kind": "domain", "pattern": "i.com", "enabled": 1},
+                    {"kind": "domain", "pattern": "i.com", "enabled": 1,
+                     "note": "保留说明", "locked": true},
                     {"kind": "ip", "pattern": "10.1.0.0/16", "enabled": 0}
                 ]
+            }, {
+                "name": "Legacy", "vpn_type": "easyconnect", "server": "vpn.legacy.com",
+                "login_method": "interactive", "config": {},
+                "rules": [{"kind": "domain", "pattern": "legacy.com", "enabled": 1}]
             }]
         });
         let app = build_router(state_with_db(dir.path()));
@@ -532,11 +654,18 @@ mod tests {
         let ch = chans.iter().find(|c| c.name == "Imported").unwrap();
         assert_eq!(ch.status, "stopped");
         assert!(!ch.id.is_empty());
+        assert!(!ch.routing_enabled);
 
         // 规则 pattern/enabled 原样恢复
         let rules = crate::store::list_rules(&db, &ch.id).unwrap();
-        assert!(rules.iter().any(|r| r.pattern == "i.com" && r.enabled == 1));
+        assert!(rules.iter().any(|r| r.pattern == "i.com" && r.enabled == 1
+            && r.note == "保留说明" && r.locked == 1));
         assert!(rules.iter().any(|r| r.pattern == "10.1.0.0/16" && r.enabled == 0));
+        let legacy = chans.iter().find(|c| c.name == "Legacy").unwrap();
+        assert!(legacy.routing_enabled, "legacy import must default routing_enabled on");
+        let legacy_rule = crate::store::list_rules(&db, &legacy.id).unwrap().pop().unwrap();
+        assert_eq!(legacy_rule.note, "");
+        assert_eq!(legacy_rule.locked, 0);
 
         // secret 已重新加密:密文 != 明文,_secret 含 password,get_config 解回明文
         let raw = crate::store::get_config_raw(&db, &ch.id).unwrap();

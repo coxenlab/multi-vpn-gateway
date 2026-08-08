@@ -48,6 +48,9 @@
     vpnVersions: (type) => req("GET", `/api/vpn-types/${type}/versions`),
     system: () => req("GET", "/api/system"),
     healProxy: () => req("POST", "/api/system/heal-proxy"),
+    selfHeal: (enabled) => req("POST", "/api/system/self-heal", { enabled }),
+    routing: () => req("GET", "/api/routing"),
+    setRouting: (off) => req("POST", "/api/routing", { off }),
     preflight: (vpnType, version, scope) =>
       req("GET", `/api/preflight?scope=${scope || "preflight"}${vpnType ? "&vpn_type=" + encodeURIComponent(vpnType) : ""}${version ? "&version=" + encodeURIComponent(version) : ""}`),
     preflightFix: (action, params) => req("POST", `/api/preflight/fix/${action}`, params || {}),
@@ -88,6 +91,7 @@
     delRule: (id, rid) => req("DELETE", `/api/channels/${id}/rules/${rid}`),
     toggleRule: (id, rid, enabled) =>
       req("PATCH", `/api/channels/${id}/rules/${rid}`, { enabled }),
+    updateRule: (id, rid, body) => req("PATCH", `/api/channels/${id}/rules/${rid}`, body),
     toggleRules: (ids, enabled) => req("PATCH", "/api/rules", { ids, enabled }),
     start: (id) => req("POST", `/api/channels/${id}/start`),
     stop: (id) => req("POST", `/api/channels/${id}/stop`),

@@ -177,7 +177,7 @@ pub fn plan_rules(patterns: &[String], forced: Option<&str>, existing: &[(String
     RulePlan { to_add, added, rejected }
 }
 
-/// 对照 main.py login 的 url 构造(命门 #4:端口是容器实时映射的 host 端口)。
+/// 对照 main.py login 的 url 构造(命门 #4:Web 栈用 Docker loopback 映射；桌面栈由 app SSH 转发持有端口)。
 /// path 须带尾斜杠:镜像内 tinyproxy 把 /websockify 301→/websockify/,WS 握手不跟随 301。
 pub fn login_url(port: i64, vnc_password: &str) -> String {
     format!(
@@ -459,7 +459,8 @@ mod tests {
     }
 
     fn rl(kind: &str, pat: &str, en: i64) -> crate::store::Rule {
-        crate::store::Rule { id: 0, channel_id: "c".into(), kind: kind.into(), pattern: pat.into(), enabled: en }
+        crate::store::Rule { id: 0, channel_id: "c".into(), kind: kind.into(), pattern: pat.into(), enabled: en,
+            note: String::new(), locked: 0 }
     }
 
     #[test]
@@ -496,6 +497,8 @@ mod tests {
                 kind: r["kind"].as_str().unwrap().to_string(),
                 pattern: r["pattern"].as_str().unwrap().to_string(),
                 enabled: r["enabled"].as_bool().unwrap() as i64,
+                note: String::new(),
+                locked: 0,
             })
             .collect();
         let out = clash_provider_text(&rules);

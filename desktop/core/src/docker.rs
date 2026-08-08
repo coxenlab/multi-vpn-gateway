@@ -191,9 +191,8 @@ pub async fn start(docker: &Docker, name: &str) -> Result<()> {
     container_action_result("start", name, result, false)
 }
 
-/// 原地重启容器(保留端口映射/配置)。看门狗据此重启 mihomo,让其分流口"重新出现"→
-/// 逼 lima 在当前活的 SSH 主连接上重建宿主端口转发(命门:仅 mihomo 这类可重启的基础设施用,
-/// EC/aTrust/oss 见 [[hagb-oss-no-inplace-restart]] 走重建)。
+/// 原地重启容器(保留配置)。看门狗据此重启 mihomo，再由 app 按新容器 IP 重建 SSH 转发。
+/// 仅 mihomo 这类可重启基础设施使用；EC/aTrust/oss 走重建。
 pub async fn restart(docker: &Docker, name: &str) -> Result<()> {
     docker
         .restart_container(name, None::<RestartContainerOptions>)
@@ -242,14 +241,6 @@ pub async fn create_from_plan(docker: &Docker, plan: &ContainerPlan, dns: Option
         .await
         .map_err(|e| anyhow!("start {}: {e}", plan.name))?;
     Ok(res.id)
-}
-
-pub async fn novnc_port(docker: &Docker, cid: &str) -> Option<i64> {
-    let name = format!("vpn-{cid}");
-    let info = docker.inspect_container(&name, None).await.ok()?;
-    let ports = info.network_settings?.ports?;
-    let binding = ports.get("8080/tcp")?.as_ref()?.first()?;
-    binding.host_port.as_ref()?.parse::<i64>().ok()
 }
 
 pub async fn container_ip_on_net(docker: &Docker, name: &str, net: &str) -> Option<String> {

@@ -775,6 +775,8 @@ mod tests {
             kind: kind.into(),
             pattern: pat.into(),
             enabled: en,
+            note: String::new(),
+            locked: 0,
         };
         let rules = vec![
             r("ip", "10.0.0.0/8", 1, "a"),

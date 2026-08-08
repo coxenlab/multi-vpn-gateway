@@ -37,7 +37,7 @@ use crate::{docker, infra, AppState};
 pub enum GatewayHealth {
     /// 容器在跑 + 宿主分流口可达。
     Healthy,
-    /// 容器在跑但宿主分流口连不上 = lima 转发静默丢失(本工具自愈目标态)。
+    /// 容器在跑但宿主分流口连不上 = app SSH 转发失效(本工具自愈目标态)。
     ForwardDead,
     /// mihomo 容器没在跑(不自动重启——交给 ensure/手动,避免盖住更深的问题)。
     ContainerDown,
@@ -174,12 +174,13 @@ impl Watchdog {
             // 分流口不过数据:先重建自持隧道(廉价、不动容器);连续无效才升级重启 mihomo。
             GatewayHealth::ForwardDead | GatewayHealth::TransportDead => {
                 self.fail_streak += 1;
-                if self.gave_up {
+                if self.gave_up
+                    || self.fail_streak < FAIL_STREAK_BEFORE_HEAL // 防抖:再观察一拍
+                    || self
+                        .last_heal_ms
+                        .is_some_and(|t| now_ms.saturating_sub(t) < HEAL_COOLDOWN_MS) // 冷却中
+                {
                     Action::None
-                } else if self.fail_streak < FAIL_STREAK_BEFORE_HEAL {
-                    Action::None // 防抖:再观察一拍
-                } else if self.last_heal_ms.is_some_and(|t| now_ms.saturating_sub(t) < HEAL_COOLDOWN_MS) {
-                    Action::None // 冷却中
                 } else {
                     self.heal_times_ms.retain(|&t| now_ms.saturating_sub(t) < FLAP_WINDOW_MS);
                     if self.heal_times_ms.len() >= FLAP_GIVEUP_COUNT {
@@ -353,8 +354,18 @@ pub fn spawn(state: AppState) {
         let mut tick = tokio::time::interval(Duration::from_secs(TICK_SECS));
         let mut last_wall = std::time::SystemTime::now();
         let mut last_health: Option<GatewayHealth> = None;
+        let mut self_heal_was_enabled = true;
+        let mut tick_count = 0_u64;
         loop {
             tick.tick().await;
+            tick_count = tick_count.wrapping_add(1);
+            let self_heal_enabled = state.self_heal_enabled();
+            let self_heal_resumed = self_heal_enabled && !self_heal_was_enabled;
+            if self_heal_resumed {
+                // 暂停期间不累计故障梯子；恢复后从干净状态重新观察。
+                wd = Watchdog::default();
+            }
+            self_heal_was_enabled = self_heal_enabled;
             let wall_gap = std::time::SystemTime::now()
                 .duration_since(last_wall)
                 .map(|d| d.as_secs())
@@ -363,7 +374,9 @@ pub fn spawn(state: AppState) {
             let woke = wall_gap >= WAKE_GAP_SECS;
             if woke {
                 crate::ev!(warn, "watchdog", "wake_detected", "检测到睡眠唤醒,立即体检自愈", { "wall_gap_s": wall_gap });
-                wd.force_heal();
+                if self_heal_enabled {
+                    wd.force_heal();
+                }
             }
 
             match crate::tunnel::take_exited(&state).await {
@@ -371,6 +384,9 @@ pub fn spawn(state: AppState) {
                 Ok(None) => {}
                 Err(e) => { crate::ev!(warn, "tunnel", "tunnel_check_failed", "SSH 转发进程状态检查失败", { "error": e.to_string() }); }
             }
+            // 暂停时仍清理/记录已退出的 noVNC 进程，只由 watchdog_tick 内部开关挡住 ensure 动作。
+            let ensure_due = self_heal_resumed || woke || tick_count.is_multiple_of(3);
+            tokio::spawn(crate::novnc::watchdog_tick(state.clone(), ensure_due));
 
             let now_ms = started.elapsed().as_millis() as u64;
             let probe_started = std::time::Instant::now();
@@ -388,6 +404,17 @@ pub fn spawn(state: AppState) {
                 crate::ev!(warn, "watchdog", "health_changed", "首次体检发现分流链路异常", { "from": "unknown", "to": health.as_str() });
             }
             last_health = Some(health);
+
+            if !self_heal_enabled {
+                if let Ok(mut snap) = state.health.lock() {
+                    snap.gateway_health = health;
+                    snap.proxy_port_reachable =
+                        matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded);
+                    snap.healing = false;
+                    snap.gave_up = false;
+                }
+                continue;
+            }
 
             let gave_up_before = wd.gave_up();
             let action = wd.decide(health, now_ms);

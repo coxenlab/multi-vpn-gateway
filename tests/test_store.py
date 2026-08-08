@@ -1,6 +1,15 @@
 import store
 
 
+def test_switch_columns_exist_in_both_stack_schema():
+    store.init()
+    with store._c() as c:
+        channel_cols = {row[1] for row in c.execute("PRAGMA table_info(channels)")}
+        rule_cols = {row[1] for row in c.execute("PRAGMA table_info(rules)")}
+    assert "routing_enabled" in channel_cols
+    assert {"note", "locked"}.issubset(rule_cols)
+
+
 def test_add_and_list_rules(make_channel):
     store.add_channel(make_channel("c1"))
     rid = store.add_rule("c1", "domain", "a.com")
