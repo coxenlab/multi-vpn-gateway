@@ -74,6 +74,11 @@ pub struct HealthSnapshot {
     pub healing: bool,
     /// 自动自愈已放弃(两级梯子都无效),需手动修复/查诊断。
     pub gave_up: bool,
+    /// VM 出站(usernet 用户态 NAT)僵死:宿主换网(通勤/睡醒)后 lima usernet 的 TCP
+    /// 出口会整体僵死且**永不自愈**(2026-09-01 实测:宿主直连全通、VM 内 0/8 全挂,
+    /// 重启 VM 立愈)。症状伪装成「通道已登录但探活不过」,与分流口健康完全正交,
+    /// 故单列一面旗;修复=重开 app(重建 VM),不在本模块自愈范围。
+    pub vm_egress_dead: bool,
 }
 
 impl Default for HealthSnapshot {
@@ -84,6 +89,7 @@ impl Default for HealthSnapshot {
             proxy_port_reachable: true,
             healing: false,
             gave_up: false,
+            vm_egress_dead: false,
         }
     }
 }
@@ -243,32 +249,89 @@ impl Watchdog {
 
 // ── 检测(I/O)─────────────────────────────────────────────────────────────
 
+/// 分流口探测结果:失败时保留失败阶段——「无人监听」「连得上但不回话(僵死转发典型)」
+/// 「mihomo 回包异常」是三种不同的病,压成一个 bool 就没法事后定位(2026-08-26 复盘教训)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyProbe {
+    Ok,
+    /// 端口配置无效(空/0/非数字)。
+    BadPort,
+    /// TCP connect 出错(无人监听 / 被拒)= 宿主侧转发进程不在。
+    ConnectFailed,
+    /// TCP connect 3s 无响应(SYN 无人应,罕见)。
+    ConnectTimeout,
+    /// 连接建立但 3s 内握手无回音 = 僵死转发 / 链路后段不通的典型形态。
+    Stalled,
+    /// 握手中途连接被关(EOF / 写失败)。
+    Closed,
+    /// 回包不是 `05 00`(对端不是正常 SOCKS5)。
+    BadReply,
+}
+
+impl ProxyProbe {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::BadPort => "bad_port",
+            Self::ConnectFailed => "connect_failed",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::Stalled => "stalled",
+            Self::Closed => "closed",
+            Self::BadReply => "bad_reply",
+        }
+    }
+}
+
 /// 宿主侧探分流口是否**真的过数据**(命门 #4:127.0.0.1)。这是用户 Clash 真正拨的口。
 ///
 /// ⚠️ 判据必须端到端,不能只看 TCP 能否建连:2026-08-04 事故里 lima 的转发僵死后
 /// listener 照常 accept、数据永不转发,旧的「connect 成功即健康」判据因此连续数小时
 /// 误报 healthy——看门狗一次没触发、手动修复还回「已修复」。这里发一次真实 SOCKS5
 /// 握手(`05 01 00` → 期望 `05 00`),只与 mihomo 本地交互、不产生上游流量。
-pub async fn proxy_serves(host_port: &str) -> bool {
+pub async fn probe_proxy(host_port: &str) -> ProxyProbe {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let port: u16 = match host_port.parse() {
         Ok(p) if p != 0 => p,
-        _ => return false,
+        _ => return ProxyProbe::BadPort,
     };
     let addr = format!("127.0.0.1:{port}");
-    let handshake = async {
-        let mut s = tokio::net::TcpStream::connect(&addr).await.ok()?;
-        s.write_all(&[0x05, 0x01, 0x00]).await.ok()?;
-        let mut resp = [0u8; 2];
-        s.read_exact(&mut resp).await.ok()?;
-        Some(resp == [0x05, 0x00])
+    // connect 与握手分开限时:僵死转发的典型是 connect 成功后永远无字节,合在一个
+    // 超时里就分不清「没人听」和「听了不干活」。
+    let mut s = match tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    {
+        Err(_) => return ProxyProbe::ConnectTimeout,
+        Ok(Err(_)) => return ProxyProbe::ConnectFailed,
+        Ok(Ok(s)) => s,
     };
-    // 3s:僵死转发的典型表现是 connect 成功后永远无字节,必须靠超时判死。
-    matches!(tokio::time::timeout(Duration::from_secs(3), handshake).await, Ok(Some(true)))
+    let handshake = async {
+        if s.write_all(&[0x05, 0x01, 0x00]).await.is_err() {
+            return ProxyProbe::Closed;
+        }
+        let mut resp = [0u8; 2];
+        match s.read_exact(&mut resp).await {
+            Err(_) => ProxyProbe::Closed,
+            Ok(_) if resp == [0x05, 0x00] => ProxyProbe::Ok,
+            Ok(_) => ProxyProbe::BadReply,
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(3), handshake).await {
+        Err(_) => ProxyProbe::Stalled,
+        Ok(outcome) => outcome,
+    }
 }
 
-/// 综合判网关健康。
-pub async fn check(state: &AppState) -> GatewayHealth {
+/// bool 简写(隧道 ensure / 手动修复等只关心通不通的场合)。
+pub async fn proxy_serves(host_port: &str) -> bool {
+    probe_proxy(host_port).await == ProxyProbe::Ok
+}
+
+/// 综合判网关健康。附带返回分流口探测的失败阶段(没探到分流口那步则为 `Ok` 占位,
+/// 此时 health 本身已说明故障层:container_down / vm_down)。
+pub async fn check(state: &AppState) -> (GatewayHealth, ProxyProbe) {
     // ping 包 5s 超时:半死 sock(accept 后不回话)下 bollard 兜底超时是 120s,
     // 裸 await 会把 20s 一拍的看门狗拖到分钟级、快照陈旧(与 ssh 探针/隧道同等硬化)。
     let mut docker = match state.docker() {
@@ -295,21 +358,142 @@ pub async fn check(state: &AppState) -> GatewayHealth {
         // 鉴别诊断(盲区 #3):docker.sock 与被检转发共享 mux 故障域,ping 挂 ≠ VM 死。
         // 独立 SSH 探针可达 = 仅传输层断(可自愈);再按分流口死活分「待救」vs「降级稳态」。
         if !crate::vm::ssh_reachable(crate::vm::PROFILE).await {
-            return GatewayHealth::VmDown;
+            return (GatewayHealth::VmDown, ProxyProbe::Ok);
         }
-        return if proxy_serves(&state.cfg.mihomo_host_port).await {
-            GatewayHealth::TransportDegraded
+        let probe = probe_proxy(&state.cfg.mihomo_host_port).await;
+        return if probe == ProxyProbe::Ok {
+            (GatewayHealth::TransportDegraded, probe)
         } else {
-            GatewayHealth::TransportDead
+            (GatewayHealth::TransportDead, probe)
         };
     };
     if !docker::is_running(&docker, infra::MIHOMO_CONTAINER).await {
-        return GatewayHealth::ContainerDown;
+        return (GatewayHealth::ContainerDown, ProxyProbe::Ok);
     }
-    if proxy_serves(&state.cfg.mihomo_host_port).await {
-        GatewayHealth::Healthy
+    let probe = probe_proxy(&state.cfg.mihomo_host_port).await;
+    if probe == ProxyProbe::Ok {
+        (GatewayHealth::Healthy, probe)
     } else {
-        GatewayHealth::ForwardDead
+        (GatewayHealth::ForwardDead, probe)
+    }
+}
+
+// ── 故障定位证据(只在失败拍采集,健康路径零成本)──────────────────────────
+
+/// 宿主分流口当前被谁监听(lsof 快照)。区分「旧转发还活着占着口」vs「口上没人」——
+/// 2026-08-26 heal 空转事故里 exit 255「端口可能被占用」只是猜测文案,这里落实证。
+async fn port_listener_snapshot(host_port: &str) -> String {
+    let Ok(port) = host_port.parse::<u16>() else { return "bad_port".into() };
+    let out = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::process::Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
+            .output(),
+    )
+    .await;
+    match out {
+        Err(_) => "lsof_timeout".into(),
+        Ok(Err(e)) => format!("lsof_failed:{e}"),
+        Ok(Ok(o)) => {
+            // -Fpc 输出形如 "p123\ncssh\n" 的字段行;拼成 "ssh(123)"。
+            let text = String::from_utf8_lossy(&o.stdout);
+            let (mut pid, mut items) = (String::new(), Vec::new());
+            for line in text.lines() {
+                match line.split_at(1) {
+                    ("p", rest) => pid = rest.to_string(),
+                    ("c", rest) => items.push(format!("{rest}({pid})")),
+                    _ => {}
+                }
+            }
+            if items.is_empty() { "none".into() } else { items.join(",") }
+        }
+    }
+}
+
+/// 绕开宿主转发,经**独立** SSH 连接从 VM 内直探 mihomo 分流口(同一份 SOCKS5 握手)。
+/// 二分故障段:VM 侧通 = 死在「宿主口 → SSH 转发」段;VM 侧也不通 = mihomo 自身不响应。
+async fn vm_side_probe(state: &AppState) -> String {
+    let Some(docker) = state.docker() else { return "skipped:no_docker".into() };
+    let Some(ip) = crate::docker::container_ip(&docker, infra::MIHOMO_CONTAINER).await else {
+        return "skipped:no_ip".into();
+    };
+    let cfg = crate::vm::ssh_config_path(crate::vm::PROFILE);
+    if !cfg.exists() {
+        return "skipped:no_ssh_config".into();
+    }
+    // /dev/tcp 是 bash 内建,VM(Ubuntu)必有;整段再套 timeout 防 head 挂死。
+    let remote = format!(
+        "timeout 3 bash -c 'exec 3<>/dev/tcp/{ip}/{port}; printf \"\\x05\\x01\\x00\" >&3; head -c 2 <&3 | od -An -tx1'",
+        port = infra::MIHOMO_PROXY_PORT
+    );
+    let out = tokio::time::timeout(
+        Duration::from_secs(8),
+        tokio::process::Command::new("ssh")
+            .args([
+                "-F", &cfg.display().to_string(),
+                "-o", "ControlMaster=no",
+                "-o", "ControlPath=none",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=5",
+                &format!("lima-colima-{}", crate::vm::PROFILE),
+                "--", &remote,
+            ])
+            .output(),
+    )
+    .await;
+    match out {
+        Err(_) => "ssh_timeout".into(),
+        Ok(Err(e)) => format!("ssh_spawn_failed:{e}"),
+        Ok(Ok(o)) => {
+            let reply: Vec<&str> = std::str::from_utf8(&o.stdout)
+                .unwrap_or("")
+                .split_whitespace()
+                .collect();
+            if reply == ["05", "00"] {
+                "ok".into()
+            } else if !o.status.success() {
+                format!("unreachable(exit {:?})", o.status.code())
+            } else {
+                format!("bad_reply:{}", reply.join(" "))
+            }
+        }
+    }
+}
+
+/// VM 出站(usernet)探活:经**独立** SSH 从 VM 内对稳定公网锚点发真实 TCP 建连
+/// (223.5.5.5 / 119.29.29.29 的 443,均为国内公共 DNS 的 anycast,只发 SYN 握手即断,
+/// 任一成功即算通)。走 usernet 用户态 NAT 的完整出站路径——这正是宿主换网后会
+/// 整体僵死的那一段,docker ping / 分流口探测对它全盲(2026-09-01 实测:僵死时
+/// 二者全绿,通道却「已登录但探活不过」)。
+///
+/// 返回 None = 没探成(SSH 不可达/超时),不计入失败连击——SSH 走 vsock,与出站
+/// NAT 不同故障域,SSH 挂时应由 vm_down 路径定性,别把它误记成出站僵死。
+async fn vm_egress_probe() -> Option<bool> {
+    let cfg = crate::vm::ssh_config_path(crate::vm::PROFILE);
+    if !cfg.exists() {
+        return None;
+    }
+    // 两锚点相或:单点被墙内路由抖动误伤时不误报。/dev/tcp 是 bash 内建,VM 必有。
+    let remote = "timeout 3 bash -c 'exec 3<>/dev/tcp/223.5.5.5/443' 2>/dev/null \
+                  || timeout 3 bash -c 'exec 3<>/dev/tcp/119.29.29.29/443' 2>/dev/null";
+    let out = tokio::time::timeout(
+        Duration::from_secs(12),
+        tokio::process::Command::new("ssh")
+            .args([
+                "-F", &cfg.display().to_string(),
+                "-o", "ControlMaster=no",
+                "-o", "ControlPath=none",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=5",
+                &format!("lima-colima-{}", crate::vm::PROFILE),
+                "--", remote,
+            ])
+            .output(),
+    )
+    .await;
+    match out {
+        Err(_) | Ok(Err(_)) => None,
+        Ok(Ok(o)) => Some(o.status.success()),
     }
 }
 
@@ -356,6 +540,10 @@ pub fn spawn(state: AppState) {
         let mut last_health: Option<GatewayHealth> = None;
         let mut self_heal_was_enabled = true;
         let mut tick_count = 0_u64;
+        // VM 出站僵死检测:连续失败计数 + 当前定性(3 次连击 ≈ 3 分钟才转僵死,防瞬时抖动)。
+        const EGRESS_FAIL_BEFORE_DEAD: u32 = 3;
+        let mut egress_fail_streak = 0_u32;
+        let mut egress_dead = false;
         loop {
             tick.tick().await;
             tick_count = tick_count.wrapping_add(1);
@@ -380,7 +568,7 @@ pub fn spawn(state: AppState) {
             }
 
             match crate::tunnel::take_exited(&state).await {
-                Ok(Some(status)) => { crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程非预期退出", { "exit_code": status.code() }); }
+                Ok(Some(status)) => { crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程非预期退出", { "exit_code": status.code(), "stderr": crate::tunnel::stderr_tail() }); }
                 Ok(None) => {}
                 Err(e) => { crate::ev!(warn, "tunnel", "tunnel_check_failed", "SSH 转发进程状态检查失败", { "error": e.to_string() }); }
             }
@@ -390,20 +578,63 @@ pub fn spawn(state: AppState) {
 
             let now_ms = started.elapsed().as_millis() as u64;
             let probe_started = std::time::Instant::now();
-            let health = check(&state).await;
+            let (health, probe) = check(&state).await;
             let probe_ms = probe_started.elapsed().as_millis() as u64;
-            crate::ev!(debug, "watchdog", "health_tick", "分流链路体检完成", { "health": health.as_str(), "probe_ms": probe_ms });
+            crate::ev!(debug, "watchdog", "health_tick", "分流链路体检完成", { "health": health.as_str(), "probe": probe.as_str(), "probe_ms": probe_ms });
             if last_health.is_some_and(|previous| previous != health) {
                 let previous = last_health.unwrap();
                 if health == GatewayHealth::Healthy {
                     crate::ev!(info, "watchdog", "health_changed", "分流链路健康态已变化", { "from": previous.as_str(), "to": health.as_str() });
                 } else {
-                    crate::ev!(warn, "watchdog", "health_changed", "分流链路健康态已变化", { "from": previous.as_str(), "to": health.as_str() });
+                    crate::ev!(warn, "watchdog", "health_changed", "分流链路健康态已变化", { "from": previous.as_str(), "to": health.as_str(), "probe": probe.as_str() });
                 }
             } else if last_health.is_none() && health != GatewayHealth::Healthy {
-                crate::ev!(warn, "watchdog", "health_changed", "首次体检发现分流链路异常", { "from": "unknown", "to": health.as_str() });
+                crate::ev!(warn, "watchdog", "health_changed", "首次体检发现分流链路异常", { "from": "unknown", "to": health.as_str(), "probe": probe.as_str() });
+            }
+            // 进故障的第一拍立刻固化定位证据:20 秒瞬断只有这一拍能抓到现场。
+            // (只在转坏那拍采集:lsof + 独立 SSH 直探合计可达 ~10s,不能每拍都做。)
+            let is_fault = matches!(health, GatewayHealth::ForwardDead | GatewayHealth::TransportDead);
+            let was_fault = matches!(
+                last_health,
+                Some(GatewayHealth::ForwardDead | GatewayHealth::TransportDead)
+            );
+            if is_fault && !was_fault {
+                let (tunnel_pid, tunnel_alive) = crate::tunnel::status(&state).await;
+                let port_listener = port_listener_snapshot(&state.cfg.mihomo_host_port).await;
+                let vm_side = vm_side_probe(&state).await;
+                crate::ev!(warn, "watchdog", "fault_located", "分流口故障现场证据", {
+                    "probe": probe.as_str(),
+                    "tunnel_pid": tunnel_pid,
+                    "tunnel_alive": tunnel_alive,
+                    "port_listener": port_listener,
+                    "vm_side": vm_side
+                });
             }
             last_health = Some(health);
+
+            // VM 出站僵死检测:与分流口健康正交(僵死时 docker ping/分流口全绿),每 3 拍
+            // (60s)一探;睡醒拍立探——换网/睡醒正是僵死的诱因。VM 已死时跳过(归 vm_down)。
+            if health != GatewayHealth::VmDown && (woke || tick_count.is_multiple_of(3)) {
+                match vm_egress_probe().await {
+                    Some(true) => {
+                        egress_fail_streak = 0;
+                        if egress_dead {
+                            egress_dead = false;
+                            crate::ev!(info, "watchdog", "vm_egress_recovered", "VM 出站已恢复", {});
+                        }
+                    }
+                    Some(false) => {
+                        egress_fail_streak += 1;
+                        if !egress_dead && egress_fail_streak >= EGRESS_FAIL_BEFORE_DEAD {
+                            egress_dead = true;
+                            crate::ev!(error, "watchdog", "vm_egress_dead",
+                                "VM 出站僵死(常见于换网/睡醒后,不会自愈):通道会表现为已登录但探活不过。请退出并重新打开 app 重建 VM",
+                                { "fail_streak": egress_fail_streak });
+                        }
+                    }
+                    None => {} // SSH 没探成,不计连击(故障域不同,由 vm_down 路径定性)
+                }
+            }
 
             if !self_heal_enabled {
                 if let Ok(mut snap) = state.health.lock() {
@@ -412,6 +643,7 @@ pub fn spawn(state: AppState) {
                         matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded);
                     snap.healing = false;
                     snap.gave_up = false;
+                    snap.vm_egress_dead = egress_dead;
                 }
                 continue;
             }
@@ -425,6 +657,7 @@ pub fn spawn(state: AppState) {
                     matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded);
                 snap.healing = wd.healing(health);
                 snap.gave_up = wd.gave_up();
+                snap.vm_egress_dead = egress_dead;
             }
             if !gave_up_before && wd.gave_up() {
                 crate::ev!(error, "watchdog", "giveup", "自动修复已用尽,等待手动处理", { "heal_count": wd.heal_count(), "window_min": FLAP_WINDOW_MS / 60_000 });
@@ -438,9 +671,14 @@ pub fn spawn(state: AppState) {
             }
             match action {
                 Action::Tunnel => {
+                    // 重建决策的依据落盘:旧转发进程死活 + 端口被谁占着,heal 空转时靠它定责。
+                    let (tunnel_pid, tunnel_alive) = crate::tunnel::status(&state).await;
+                    let port_listener = port_listener_snapshot(&state.cfg.mihomo_host_port).await;
                     crate::ev!(warn, "watchdog", "heal_start", "分流口不过数据,重建 SSH 转发", {
                         "action": action.as_str(), "fail_streak": wd.fail_streak(),
-                        "reason": if woke { "wake_gap" } else { "health_check" }
+                        "reason": if woke { "wake_gap" } else { "health_check" },
+                        "tunnel_pid": tunnel_pid, "tunnel_alive": tunnel_alive,
+                        "port_listener": port_listener
                     });
                     let action_started = std::time::Instant::now();
                     match heal_transport(&state).await {
@@ -449,9 +687,13 @@ pub fn spawn(state: AppState) {
                     }
                 }
                 Action::Restart => {
+                    let (tunnel_pid, tunnel_alive) = crate::tunnel::status(&state).await;
+                    let port_listener = port_listener_snapshot(&state.cfg.mihomo_host_port).await;
                     crate::ev!(warn, "watchdog", "heal_start", "重建转发无效,升级重启分流路由", {
                         "action": action.as_str(), "fail_streak": wd.fail_streak(),
-                        "reason": if woke { "wake_gap" } else { "health_check" }
+                        "reason": if woke { "wake_gap" } else { "health_check" },
+                        "tunnel_pid": tunnel_pid, "tunnel_alive": tunnel_alive,
+                        "port_listener": port_listener
                     });
                     let action_started = std::time::Instant::now();
                     let result = async {
@@ -658,6 +900,37 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(30)).await;
         });
         assert!(!proxy_serves(&port.to_string()).await, "能连上但不过数据 ≠ 健康");
+    }
+
+    #[tokio::test]
+    async fn probe_distinguishes_failure_stages() {
+        // 无人监听 → connect_failed(与「连上但不回话」是不同的病,必须分开)。
+        assert_eq!(probe_proxy("1").await, ProxyProbe::ConnectFailed);
+        assert_eq!(probe_proxy("0").await, ProxyProbe::BadPort);
+        assert_eq!(probe_proxy("").await, ProxyProbe::BadPort);
+        // 僵死转发形态:accept 后无字节 → stalled。
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _held = l.accept().await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        assert_eq!(probe_proxy(&port.to_string()).await, ProxyProbe::Stalled);
+    }
+
+    #[tokio::test]
+    async fn probe_flags_bad_reply() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = l.accept().await {
+                let mut req = [0u8; 3];
+                let _ = s.read_exact(&mut req).await;
+                let _ = s.write_all(b"HT").await; // 不是 SOCKS5(比如误连到 HTTP 服务)
+            }
+        });
+        assert_eq!(probe_proxy(&port.to_string()).await, ProxyProbe::BadReply);
     }
 
     #[tokio::test]

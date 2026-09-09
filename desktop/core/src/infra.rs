@@ -136,6 +136,18 @@ pub fn ensure_params(data_dir: &Path) -> Result<InfraParams> {
     Ok(params)
 }
 
+/// UI 口被别的进程占了时重摇一个空闲高位口并回写 infra.json(红队 F6:一次随机后写死,
+/// 「重试这一步」永远撞同一个被占端口)。返回新端口;调用方负责同步 env 与 Config。
+pub fn reroll_ui_port(data_dir: &Path) -> Result<u16> {
+    let pf = data_dir.join("infra.json");
+    let mut params: InfraParams = serde_json::from_str(&std::fs::read_to_string(&pf)?)
+        .map_err(|e| anyhow!("解析 {}: {e}", pf.display()))?;
+    let mut used = vec![params.mihomo_host_port, params.mihomo_ctrl_port, params.ui_port];
+    params.ui_port = free_high_port(&mut used)?;
+    write_0600(&pf, &serde_json::to_string_pretty(&params)?)?;
+    Ok(params.ui_port)
+}
+
 fn set_env_if_unset(k: &str, v: &str) {
     if std::env::var(k).ok().filter(|s| !s.is_empty()).is_none() {
         std::env::set_var(k, v);
@@ -216,9 +228,16 @@ fn mihomo_container_config(cfg: &Config) -> ContainerConfig<String> {
 /// 只能 load;byo-desktop 1.15GB 暂不内置 → 用户首次用 byo 时再按需取)。`images_dir` = 打包后的
 /// `Contents/Resources/images`;幂等(镜像已在则跳过)。缺文件/dev 未打包时静默跳过,载入错误交调用方处理。
 pub async fn ensure_bundled_images(docker: &Docker, images_dir: &Path) -> Result<()> {
-    let oss = images_dir.join("oss-vpn.tar.gz");
-    if oss.exists() && docker::load_image_if_absent(docker, "vpnmgr/oss-vpn:latest", &oss).await? {
-        crate::ev!(info, "boot", "bundled_image_loaded", "内置 VPN 镜像已载入", { "image": "vpnmgr/oss-vpn:latest" });
+    // (镜像名, tarball 文件名)。mihomo 也内置:第 05 步「下载分流内核」从此离线,
+    // 镜像源只剩建 EC/aTrust 通道时才需要(红队推演 B1:两个可用源都死时首启锁死)。
+    for (image, file) in [
+        ("vpnmgr/oss-vpn:latest", "oss-vpn.tar.gz"),
+        (MIHOMO_IMAGE, "mihomo.tar.gz"),
+    ] {
+        let tarball = images_dir.join(file);
+        if tarball.exists() && docker::load_image_if_absent(docker, image, &tarball).await? {
+            crate::ev!(info, "boot", "bundled_image_loaded", "内置镜像已载入", { "image": image });
+        }
     }
     Ok(())
 }
@@ -340,13 +359,20 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
         .await
         .map_err(|e| anyhow!("start {MIHOMO_CONTAINER}: {e}"))?;
 
-    // 等控制 API 起来(首启容器冷启动可能秒级)。
+    if recreated_old_publish {
+        crate::ev!(info, "infra", "mihomo_recreated", "旧端口发布形态的 mihomo 已重建", { "container": MIHOMO_CONTAINER });
+    }
+    // ⚠️ 这里不等控制 API:宿主侧 ctrl 端口要靠 tunnel::ensure 的 SSH 转发才通,而转发
+    // 排在本函数之后——首建容器时在此等待必然超时(素机首启确定性卡死;老机器因容器
+    // 已存在走上面的早退分支从未暴露)。就绪等待拆到 [`wait_mihomo_ctrl`],转发建立后再调。
+    Ok(())
+}
+
+/// 等 mihomo#1 控制 API(宿主 URL,经 app 自持 SSH 转发)就绪。须在 `tunnel::ensure` 之后调用。
+pub async fn wait_mihomo_ctrl(cfg: &Config) -> Result<()> {
     let ctrl = Controller::new(cfg.mihomo_ctrl_url.clone(), cfg.mihomo_secret.clone());
     for _ in 0..30 {
         if ctrl.alive().await {
-            if recreated_old_publish {
-                crate::ev!(info, "infra", "mihomo_recreated", "旧端口发布形态的 mihomo 已重建", { "container": MIHOMO_CONTAINER });
-            }
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;

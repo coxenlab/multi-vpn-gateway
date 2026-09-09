@@ -236,6 +236,37 @@ pub async fn system_proxy_status(ui_port: &str) -> SystemProxyState {
     st
 }
 
+/// 退出清理:遍历**所有**网络服务,凡自动代理指向本工具 PAC 的一律关闭。
+/// 与 system_proxy_apply(false) 的区别:后者只动当前默认路由那一个服务——用户换过网
+/// (Wi-Fi→有线)或退出时已离线的话,旧服务上会残留指向已死 127.0.0.1 PAC 的配置
+/// (红队 D3)。返回关闭的服务数;全程 best-effort。
+pub async fn system_proxy_park_all(ui_port: &str) -> usize {
+    if !cfg!(target_os = "macos") {
+        return 0;
+    }
+    let ours = pac_url(ui_port);
+    let Ok(listing) = run("networksetup", &["-listallnetworkservices"]).await else { return 0 };
+    let mut parked = 0;
+    for line in listing.lines().skip(1) {
+        // 已停用的服务带 '*' 前缀;服务名本身可含空格,整行即名字
+        let svc = line.trim().trim_start_matches('*').trim();
+        if svc.is_empty() {
+            continue;
+        }
+        let Ok(out) = run("networksetup", &["-getautoproxyurl", svc]).await else { continue };
+        let (url, enabled) = parse_autoproxy(&out);
+        if enabled
+            && url.as_deref() == Some(ours.as_str())
+            && run("networksetup", &["-setautoproxystate", svc, "off"]).await.is_ok()
+        {
+            parked += 1;
+            crate::ev!(info, "entry", "system_proxy_changed", "退出清理:系统自动代理已关闭",
+                { "enabled": false, "service": svc });
+        }
+    }
+    parked
+}
+
 /// 应用/清除本工具的系统自动代理(PAC)。`enable=true` 指向本地 PAC 并开启;false 关闭自动代理。
 /// ⚠️ 改系统设置:只应由前端按钮显式触发。返回最终状态。
 pub async fn system_proxy_apply(ui_port: &str, enable: bool) -> anyhow::Result<SystemProxyState> {
@@ -561,6 +592,28 @@ pub async fn tun_sync(cfg: &crate::config::Config) {
         Err(e) => {
             crate::ev!(error, "entry", "tun_helper_unreachable", "TUN 路由对账失败,助手不可达",
                 { "operation": "sync", "error": e.to_string() });
+        }
+    }
+}
+
+/// 退出清理:让 helper 停掉 mihomo#2 并回收路由,但**保留启用标记**——
+/// 与 tun_apply(false) 的区别在于用户意图不变:下次启动 rebuild 尾部的 tun_sync
+/// 会自动重新下发,无需再开一次开关。app 退出后 mihomo#2 的上游(分流口转发)
+/// 已死,路由若残留会把命中网段变黑洞,故必须停。
+pub async fn tun_park(cfg: &crate::config::Config) {
+    if !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
+        return;
+    }
+    match helper_call(serde_json::json!({ "cmd": "stop" })).await {
+        Ok(_) => {
+            crate::ev!(info, "entry", "tun_parked",
+                "退出清理:TUN 引擎已停、路由已回收(启用标记保留,下次启动自动恢复)",
+                { "operation": "park" });
+        }
+        Err(e) => {
+            crate::ev!(warn, "entry", "tun_helper_unreachable",
+                "退出清理:TUN 助手停止失败(路由可能残留)",
+                { "operation": "park", "error": e.to_string() });
         }
     }
 }

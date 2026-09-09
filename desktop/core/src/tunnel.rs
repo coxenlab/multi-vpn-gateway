@@ -35,6 +35,48 @@ pub fn handle() -> Handle {
     Arc::new(Mutex::new(None))
 }
 
+/// 最近一次隧道进程的 stderr 尾部(每次 spawn 清空,后台任务续写)。
+/// exit 255 时 ssh 的真实死因只在 stderr 里(`Address already in use` vs 认证失败 vs
+/// connection refused),不采集就只能靠猜——2026-08-26 复盘的盲点 #3。
+static STDERR_TAIL: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+const STDERR_TAIL_LINES: usize = 8;
+
+/// 供事件日志引用的 stderr 尾部(单行拼接)。
+pub fn stderr_tail() -> String {
+    STDERR_TAIL
+        .lock()
+        .map(|v| v.join(" | "))
+        .unwrap_or_default()
+}
+
+fn stderr_reset() {
+    if let Ok(mut v) = STDERR_TAIL.lock() {
+        v.clear();
+    }
+}
+
+fn stderr_push(line: String) {
+    if let Ok(mut v) = STDERR_TAIL.lock() {
+        if v.len() >= STDERR_TAIL_LINES {
+            v.remove(0);
+        }
+        v.push(line);
+    }
+}
+
+/// 不消费退出状态的存活检查(给看门狗的证据采集用):`(pid, alive)`。
+/// 与 [`take_exited`] 不冲突:tokio 的 `try_wait` 对已结束子进程返回缓存状态。
+pub async fn status(state: &AppState) -> (Option<u32>, bool) {
+    let mut guard = state.tunnel.lock().await;
+    match guard.as_mut() {
+        None => (None, false),
+        Some(child) => {
+            let alive = matches!(child.try_wait(), Ok(None));
+            (child.id(), alive)
+        }
+    }
+}
+
 /// 一条转发:宿主端口 → VM 内可达地址(`<容器IP>:<容器端口>`)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fwd {
@@ -138,8 +180,21 @@ async fn try_ensure(state: &AppState) -> Result<()> {
     let started = std::time::Instant::now();
     cmd.args(forward_args(&cfg.display().to_string(), crate::vm::PROFILE, &fwds))
         .kill_on_drop(true)
-        .stdin(std::process::Stdio::null());
-    let child = cmd.spawn().map_err(|e| anyhow!("拉起 SSH 转发失败: {e}"))?;
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| anyhow!("拉起 SSH 转发失败: {e}"))?;
+    stderr_reset();
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    stderr_push(line);
+                }
+            }
+        });
+    }
     *state.tunnel.lock().await = Some(child);
     crate::ev!(info, "tunnel", "tunnel_spawn", "SSH 转发进程已拉起", { "forwards": forward_summary });
 
@@ -149,10 +204,13 @@ async fn try_ensure(state: &AppState) -> Result<()> {
             crate::ev!(info, "tunnel", "tunnel_ready", "SSH 转发已就绪", { "duration_ms": started.elapsed().as_millis() as u64 });
             return Ok(());
         }
-        // 进程当场退出(多为端口被占)→ 立刻报错,不空等满 15s。
+        // 进程当场退出 → 立刻报错,不空等满 15s;死因看 stderr(端口被占/认证失败/refused)。
         if let Some(st) = take_exited(state).await? {
-            crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程在就绪前退出", { "exit_code": st.code() });
-            return Err(anyhow!("SSH 转发进程退出(exit {:?});宿主端口可能被占用", st.code()));
+            // 给 stderr 读取任务一点时间把最后几行冲进缓冲。
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let stderr = stderr_tail();
+            crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程在就绪前退出", { "exit_code": st.code(), "stderr": stderr });
+            return Err(anyhow!("SSH 转发进程退出(exit {:?}):{}", st.code(), if stderr.is_empty() { "无 stderr 输出".to_string() } else { stderr }));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

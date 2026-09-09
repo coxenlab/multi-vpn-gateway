@@ -12,6 +12,13 @@ pub struct Config {
     pub vpn_net: String,
 }
 
+/// 编译期开发默认数据目录(desktop/core/.data)。⚠️ 只在开发机成立:打包分发到别人机器
+/// 上这是个不存在且不可写的绝对路径(os error 13),壳须在启动最早期把 DATA_DIR 改写到
+/// 用户可写目录(见 desktop/app main.rs resolve_data_dir)。
+pub fn dev_default_data_dir() -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.data"))
+}
+
 impl Config {
     /// 真实加载:env 非空才算设置(空串当未设)。
     pub fn load() -> Self {
@@ -24,7 +31,7 @@ impl Config {
             ui_port: get("UI_PORT").and_then(|s| s.parse().ok()).unwrap_or(8787),
             data_dir: get("DATA_DIR")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.data"))),
+                .unwrap_or_else(dev_default_data_dir),
             static_dir: get("STATIC_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/static"))),

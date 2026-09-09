@@ -7,15 +7,60 @@
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use vpnmgr_core::{app, config::Config, infra, manager, vm};
+
+/// 退出清理用:boot 建出 AppState 后存一份克隆(内部全 Arc,克隆廉价)。
+static SHUTDOWN_STATE: OnceLock<vpnmgr_core::AppState> = OnceLock::new();
+/// 退出清理已完成:下一次 ExitRequested 直接放行。
+static CLEANUP_DONE: AtomicBool = AtomicBool::new(false);
+/// 退出清理进行中(防重复触发,如托盘「退出」连点)。
+static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
+/// 清理起始时刻(epoch 秒)。红队 M6:清理任务若 panic,CLEANUP_DONE 永远不落,
+/// app 会退不掉——超过逃生阈值后放行退出,别把用户逼去强杀(强杀恰好跳过清理)。
+static CLEANUP_STARTED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 逃生阈值:NORMAL_BUDGET(90s)+ 余量。
+const CLEANUP_ESCAPE_SECS: u64 = 120;
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 清理期间的用户可见反馈(红队 M8:最长 90s 零提示会逼用户强杀):
+/// 亮出主窗 + 覆盖一层不可关的关闭提示。best-effort,失败无害。
+fn show_shutdown_overlay(handle: &tauri::AppHandle) {
+    if let Some(w) = handle.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.eval(
+            "(() => { if (document.getElementById('vpnmgr-shutdown-overlay')) return; \
+             const d = document.createElement('div'); d.id = 'vpnmgr-shutdown-overlay'; \
+             d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(250,249,245,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font-family:system-ui;color:#3d3929;'; \
+             d.innerHTML = '<div style=\"font-size:18px;font-weight:600;\">正在退出…</div>\
+               <div style=\"font-size:13px;color:#83827d;\">按层级关闭:TUN 路由 → 系统代理 → VPN 容器 → 虚拟机(最多约 90 秒)</div>'; \
+             document.body.appendChild(d); })()",
+        );
+    }
+}
+
+/// 是否仍在 boot(colima start 可能在跑)。红队 M7:此时再并发 colima stop 会把
+/// lima 搞进半创建态 → 清理跳过停 VM。
+fn boot_in_progress(handle: &tauri::AppHandle) -> bool {
+    handle
+        .try_state::<BootState>()
+        .map(|s| s.running.lock().map(|g| *g).unwrap_or(false))
+        .unwrap_or(false)
+}
 
 #[derive(Clone, Copy)]
 enum BootStep {
@@ -212,6 +257,24 @@ fn forward_progress(
     }
 }
 
+/// 分发修复:DATA_DIR 未设时,core 的编译期默认(desktop/core/.data)在别人机器上是
+/// 不存在且不可写的绝对路径 → 首启「准备运行时」Permission denied (os error 13)。
+/// 开发机已有历史库则沿用旧路径(不迁移);否则落到 ~/Library/Application Support/<bundle-id>。
+/// 必须在第一次 Config::load()(含 boot 里的 events::init)之前调用。
+fn resolve_data_dir(handle: &tauri::AppHandle) {
+    if std::env::var("DATA_DIR").ok().filter(|s| !s.is_empty()).is_some() {
+        return; // 用户/环境显式指定,尊重
+    }
+    if vpnmgr_core::config::dev_default_data_dir().join("vpnmgr.db").exists() {
+        return; // 开发机既有数据,保持编译期默认
+    }
+    match handle.path().app_data_dir() {
+        Ok(dir) => std::env::set_var("DATA_DIR", &dir),
+        // 回落编译期默认 = 在别人机器上正是要修的那个 os error 13,必须留痕
+        Err(e) => eprintln!("[boot] app_data_dir 解析失败({e}),回落编译期默认数据目录(打包机外将不可写)"),
+    }
+}
+
 fn prepare_runtime(handle: &tauri::AppHandle) -> anyhow::Result<()> {
     let mut prefixes = Vec::new();
     if let Ok(resources) = handle.path().resource_dir() {
@@ -243,9 +306,44 @@ fn prepare_runtime(handle: &tauri::AppHandle) -> anyhow::Result<()> {
         }
     }
 
+    seed_vm_image_cache(handle);
+
     let data_dir = Config::load().data_dir;
     infra::ensure_params(&data_dir)?;
     Ok(())
+}
+
+/// 内置 VM 磁盘镜像预置:bundle 里带了 colima 的下载缓存文件(key = sha256(下载 URL),
+/// 见 stage-vm-image.sh),种到 ~/Library/Caches/colima/caches/ 后,colima start 命中
+/// 缓存即跳过 GitHub 下载 —— 修「首启在无法连 GitHub 的网络里 resolve redirect failed」。
+/// best-effort:失败只打日志,colima 仍可走原下载路径。
+fn seed_vm_image_cache(handle: &tauri::AppHandle) {
+    let Ok(resources) = handle.path().resource_dir() else { return };
+    let Ok(entries) = std::fs::read_dir(resources.join("vm-image")) else {
+        // 红队 F5:漏跑 stage-vm-image.sh 的包若在此静默,首启会退回连 GitHub 下 317MB,
+        // 失败现象指向第 02 步、没人能反推到打包漏了一步——必须留痕。
+        eprintln!("[boot] bundle 缺 vm-image 资源(打包漏跑 stage-vm-image.sh?),VM 镜像将走在线下载");
+        return;
+    };
+    let Ok(home) = handle.path().home_dir() else { return };
+    let cache_dir = home.join("Library/Caches/colima/caches");
+    for entry in entries.flatten() {
+        let dst = cache_dir.join(entry.file_name());
+        if dst.exists() {
+            continue; // 已有缓存(或已种过),不重复拷 300MB
+        }
+        // 红队 M5:直写目标名时,317MB 拷到一半进程被 kill/断电会留下截断文件——
+        // colima 校验 sha512 失败后只报错不重下,首启从此硬卡。改为 .part + 原子 rename。
+        let tmp = cache_dir.join(format!("{}.part", entry.file_name().to_string_lossy()));
+        let result = std::fs::create_dir_all(&cache_dir)
+            .map_err(anyhow::Error::from)
+            .and_then(|_| std::fs::copy(entry.path(), &tmp).map_err(Into::into))
+            .and_then(|_| std::fs::rename(&tmp, &dst).map_err(Into::into));
+        if let Err(e) = result {
+            eprintln!("[boot] 预置 VM 镜像缓存失败(将回退在线下载): {e}");
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
 }
 
 /// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 导航真 UI。
@@ -358,6 +456,7 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     let (listener, state) = app::bootstrap(cfg)
         .await
         .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
+    let _ = SHUTDOWN_STATE.set(state.clone());   // 供退出清理停容器用
     let docker = state
         .docker()
         .ok_or_else(|| BootFailure::new(BootStep::Docker, "容器引擎连接未建立", &docker_log))?;
@@ -423,6 +522,10 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         service_log.push(format!("分流口转发未就绪: {e}"));
         eprintln!("[boot] 分流口 SSH 转发未就绪(看门狗将重试): {e}");
     }
+    // 控制 API 就绪等待放在转发之后(素机首启顺序 bug:宿主 ctrl 口靠上面的转发才通)。
+    infra::wait_mihomo_ctrl(&state.cfg)
+        .await
+        .map_err(|e| BootFailure::new(BootStep::Service, e, &service_log))?;
     let rebuild_status = manager::rebuild(&state.cfg, Some(&docker), &state.cfg.db_path()).await;
     service_log.push(format!("规则载入结果: {rebuild_status}"));
     // rebuild 失败多为配置/数据问题(如 config parse error),重试修不好;删坏通道、
@@ -528,6 +631,35 @@ fn main() {
         .manage(BootState::default())
         .invoke_handler(tauri::generate_handler![boot_retry, boot_open_settings])
         .setup(|app| {
+            resolve_data_dir(app.handle());   // 须先于一切 Config::load()
+
+            // 红队 H1:默认 macOS 应用菜单的 Quit 直发 AppKit `terminate:`,tao 没有
+            // applicationShouldTerminate 拦截 → 完全绕过 ExitRequested 与层级清理。
+            // 换成自定义菜单:Quit(⌘Q)走 app.exit(0) → ExitRequested → 清理。
+            // Edit 子菜单必须保留,否则 webview 里 ⌘C/⌘V 失效。
+            let app_sub = Submenu::with_items(app, "VPN 管理网关", true, &[
+                &PredefinedMenuItem::hide(app, None)?,
+                &PredefinedMenuItem::hide_others(app, None)?,
+                &PredefinedMenuItem::show_all(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &MenuItem::with_id(app, "menu-quit", "退出 VPN 管理网关", true, Some("CmdOrCtrl+Q"))?,
+            ])?;
+            let edit_sub = Submenu::with_items(app, "编辑", true, &[
+                &PredefinedMenuItem::undo(app, None)?,
+                &PredefinedMenuItem::redo(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::cut(app, None)?,
+                &PredefinedMenuItem::copy(app, None)?,
+                &PredefinedMenuItem::paste(app, None)?,
+                &PredefinedMenuItem::select_all(app, None)?,
+            ])?;
+            app.set_menu(Menu::with_items(app, &[&app_sub, &edit_sub])?)?;
+            app.on_menu_event(|app, event| {
+                if event.id.as_ref() == "menu-quit" {
+                    app.exit(0);
+                }
+            });
+
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("VPN 管理网关")
                 .inner_size(1240.0, 820.0)
@@ -564,8 +696,53 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // 退出层级清理:托盘「退出」与自定义菜单 ⌘Q 都经 app.exit(0) 汇到 ExitRequested——
+        // 先拦下,按 TUN → 系统代理 → 容器 → VM 收干净再真正退出。
+        // RunEvent::Exit 是 terminate: 路径(注销/关机等绕过 ExitRequested)的同步兜底。
+        .run(|handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if CLEANUP_DONE.load(Ordering::SeqCst) {
+                    return; // 清理已完成:放行退出
+                }
+                // M6 逃生阈值:清理任务 panic/卡死时不落 CLEANUP_DONE → 超时放行,
+                // 别把用户逼去强杀(强杀恰好跳过全部清理)。
+                let started_at = CLEANUP_STARTED_AT.load(Ordering::SeqCst);
+                if started_at > 0 && now_epoch_secs().saturating_sub(started_at) > CLEANUP_ESCAPE_SECS {
+                    eprintln!("[shutdown] 清理超过逃生阈值仍未完成,放行退出");
+                    return;
+                }
+                api.prevent_exit();
+                if CLEANUP_STARTED.swap(true, Ordering::SeqCst) {
+                    return; // 清理进行中:忽略重复退出请求
+                }
+                CLEANUP_STARTED_AT.store(now_epoch_secs(), Ordering::SeqCst);
+                show_shutdown_overlay(handle); // M8:清理期给用户可见反馈
+                let stop_vm = !boot_in_progress(handle); // M7:boot 中不与 colima start 并发停 VM
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let cfg = Config::load();
+                    vpnmgr_core::shutdown::shutdown_all(
+                        SHUTDOWN_STATE.get(), &cfg, stop_vm,
+                        vpnmgr_core::shutdown::NORMAL_BUDGET,
+                    ).await;
+                    CLEANUP_DONE.store(true, Ordering::SeqCst);
+                    handle.exit(0);
+                });
+            }
+            // H1 兜底:AppKit terminate:(注销/关机、任何未被自定义菜单收编的退出手势)
+            // 不发 ExitRequested,只在进程将死前走到这里——同步做一轮收紧预算的清理。
+            tauri::RunEvent::Exit if !CLEANUP_DONE.swap(true, Ordering::SeqCst) => {
+                let stop_vm = !boot_in_progress(handle);
+                let cfg = Config::load();
+                tauri::async_runtime::block_on(vpnmgr_core::shutdown::shutdown_all(
+                    SHUTDOWN_STATE.get(), &cfg, stop_vm,
+                    vpnmgr_core::shutdown::FALLBACK_BUDGET,
+                ));
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]

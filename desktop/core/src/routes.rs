@@ -20,6 +20,7 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "proxy_port_reachable": h.proxy_port_reachable,
         "healing": h.healing,
         "gave_up": h.gave_up,
+        "vm_egress_dead": h.vm_egress_dead,
         "self_heal_enabled": st.self_heal_enabled(),
         "routing_off": store::routing_off(&st.cfg.data_dir),
     }))

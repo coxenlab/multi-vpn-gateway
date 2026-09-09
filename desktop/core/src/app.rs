@@ -29,7 +29,23 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
         }
     };
 
-    let ui_port = cfg.ui_port;
+    // 命门 #4:只绑 127.0.0.1。持久化的 ui_port 被别的进程占了(AddrInUse)时重摇一个
+    // 空闲口回写 infra.json 再绑(红队 F6:否则「重试」永远撞同一个口,且报错被归到 Docker 步)。
+    let mut cfg = cfg;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.ui_port));
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            let new_port = crate::infra::reroll_ui_port(&cfg.data_dir)?;
+            crate::ev!(warn, "boot", "ui_port_rerolled", "UI 端口被占,已重摇并持久化",
+                { "old": cfg.ui_port, "new": new_port });
+            cfg.ui_port = new_port;
+            std::env::set_var("UI_PORT", new_port.to_string());
+            tokio::net::TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], new_port))).await?
+        }
+        Err(e) => return Err(e.into()),
+    };
+
     let mihomo = Controller::new(cfg.mihomo_ctrl_url.clone(), cfg.mihomo_secret.clone());
     let state = AppState {
         cfg: Arc::new(cfg),
@@ -40,9 +56,6 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
         novnc: crate::novnc::handle(),
         self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     };
-
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], ui_port)); // 命门 #4
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     Ok((listener, state))
 }
 

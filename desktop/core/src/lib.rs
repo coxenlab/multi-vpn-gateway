@@ -21,6 +21,7 @@ pub mod health;
 pub mod tunnel;
 pub mod novnc;
 pub mod events;
+pub mod shutdown;
 
 use std::sync::Arc;
 
