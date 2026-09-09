@@ -17,6 +17,12 @@ client. In particular:
     Ivanti, etc.) are likewise the property of their respective owners and are
     not distributed by this project.
 
+Bundled open-source components:
+
+  * noVNC (https://github.com/novnc/noVNC) core client library is vendored at
+    `app/static/vendor/novnc/` under the Mozilla Public License 2.0; see
+    `app/static/vendor/novnc/LICENSE.txt`.
+
 Product and company names are used only to describe compatibility (nominative
 use); no affiliation, sponsorship, or endorsement is implied.
 
@@ -39,6 +45,12 @@ you run with this tool, and for complying with the applicable vendor terms
     `hagb/docker-atrust`);这些上游镜像及其内容受各自条款约束。
   * 其它厂商客户端(Cisco AnyConnect、GlobalProtect、Fortinet、Pulse/Ivanti
     等)同属各自所有者,本项目不分发。
+
+随附的开源组件:
+
+  * noVNC(https://github.com/novnc/noVNC)核心客户端库以 vendor 形式收录于
+    `app/static/vendor/novnc/`,遵循 Mozilla Public License 2.0,见
+    `app/static/vendor/novnc/LICENSE.txt`。
 
 文中出现的产品与公司名称仅用于描述兼容性(指称性使用),不暗示任何关联、
 赞助或背书。
