@@ -66,6 +66,10 @@ pub fn build_router(state: AppState) -> Router {
         // 运行事件日志(桌面版 host-only;web 版前端 feature-detect)
         .route("/api/events", get(crate::events::list))
         .route("/api/events/export", get(crate::events::export))
+        .route(
+            "/api/events/enabled",
+            get(crate::events::enabled_get).post(crate::events::set_enabled_route),
+        )
         // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法
         .route("/api/preflight/fix/:x", get(api::preflight_fix_status).post(api::preflight_fix))
         .route("/api/images", get(api::images_inventory))

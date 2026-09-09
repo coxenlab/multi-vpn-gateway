@@ -3,43 +3,41 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>系统与接入 · VPN 管理网关</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
+  <title>设置 · VPN 管理网关</title>
   <link rel="stylesheet" href="css/app.css" />
   <style>
-    /* 屏内独有：方式卡 + 代码块复制条 + 数据流换行 + 入口地址卡 */
-    .step-card { position: relative; }
-    .copy-btn { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; cursor: pointer; color: var(--on-ink); opacity: 0.78; font-family: var(--font-mono); font-size: var(--text-xs); transition: opacity var(--motion-fast) var(--ease-standard); }
+    /* 屏内独有:代码块复制条 + 入口地址卡 + 运行日志表 */
+    .copy-btn { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; cursor: pointer; color: var(--on-ink); opacity: 0.78; font-size: var(--text-xs); transition: opacity var(--motion-fast) var(--ease-standard); }
     .copy-btn:hover { opacity: 1; }
     .copy-btn svg { width: 14px; height: 14px; }
-    .flow-arrow .down { display: none; }
-    @media (max-width: 720px) {
-      .flow { flex-direction: column; align-items: stretch; }
-      .flow-arrow { padding: var(--space-2) 0; }
-      .flow-arrow .right { display: none; }
-      .flow-arrow .down { display: block; }
-    }
-    /* 入口地址卡 */
     .entry-addr { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
-    .entry-addr .addr { font-family: var(--font-mono); font-size: 1.55rem; font-weight: 600; color: var(--fg); letter-spacing: 0.01em; }
+    .entry-addr .addr { font-family: var(--font-mono); font-size: 1.55rem; font-weight: 600; color: var(--fg); }
     .entry-addr .sub { font-size: var(--text-xs); color: var(--muted); margin-top: 5px; line-height: 1.5; }
-    /* tab 内说明 + 方式卡间距 */
     .tab-lead { font-size: var(--text-sm); color: var(--muted); margin-bottom: var(--space-4); line-height: 1.6; }
     .method-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
-    .method-head h3 { display: flex; align-items: center; gap: 8px; }
     details.adv { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); background: var(--surface-2); }
     details.adv summary { cursor: pointer; font-weight: 500; font-size: var(--text-sm); }
     details.adv p { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--muted); line-height: 1.6; }
-    /* 运行日志：故障时间线。左侧色轨只编码级别，不作装饰。 */
+    details.adv .card { margin-top: var(--space-3); }
+    details.sect { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+    details.sect > summary { cursor: pointer; padding: var(--space-4) var(--space-5); font-weight: 600; list-style: none; display: flex; align-items: center; gap: var(--space-3); }
+    details.sect > summary::-webkit-details-marker { display: none; }
+    details.sect > summary::after { content: "展开"; margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
+    details.sect[open] > summary::after { content: "收起"; }
+    details.sect > .sect-body { border-top: 1px solid var(--border); padding: var(--space-4) var(--space-5); }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+    .setting-row:first-child { border-top: 0; }
+    .setting-row .sr-t { font-weight: 600; }
+    .setting-row .sr-d { font-size: var(--text-xs); color: var(--muted); margin-top: 3px; }
+    /* 运行日志 */
     .runtime-summary { display: grid; grid-template-columns: 1.2fr 1.6fr 1fr; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); overflow: hidden; }
     .runtime-summary > div { padding: var(--space-4) var(--space-5); min-width: 0; }
     .runtime-summary > div + div { border-left: 1px solid var(--border); }
-    .runtime-summary .rk { color: var(--muted); font-family: var(--font-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+    .runtime-summary .rk { color: var(--muted); font-size: var(--text-xs); }
     .runtime-summary .rv { margin-top: 5px; font-size: var(--text-sm); line-height: 1.5; }
     .runtime-toolbar { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
     .runtime-toolbar .select { width: auto; min-width: 120px; }
+    .runtime-toolbar .input[type="date"] { width: auto; }
     .runtime-search { flex: 1 1 190px; min-width: 150px; }
     .runtime-toolbar .btn[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in oklab, var(--accent), transparent 45%); background: var(--accent-soft); }
     .runtime-meta { min-height: 20px; color: var(--muted); font-size: var(--text-xs); }
@@ -72,443 +70,248 @@
 </head>
 <body data-page="system">
   <div class="app">
-    <!-- ════ 侧栏（所有屏一致） ════ -->
-    <aside class="sidebar">
-      <div class="sidebar-logo">
-        <span class="logo-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
-        </span>
-        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
-      </div>
-      <nav class="sidebar-nav">
-        <span class="nav-label">管理</span>
-        <a class="nav-item" data-nav="channels" href="index.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
-          通道总览 <span class="count" id="nav-count">—</span>
-        </a>
-        <a class="nav-item" data-nav="routing" href="routing-table.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/></svg>
-          分流总表
-        </a>
-        <a class="nav-item" data-nav="monitor" href="monitor.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
-          流量监控
-        </a>
-        <a class="nav-item" data-nav="system" href="clash-config.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
-          系统与接入
-        </a>
-        <a class="nav-item" data-nav="containers" href="containers.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
-          容器管理
-        </a>
-      </nav>
-      <div class="sidebar-foot">
-        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
-          <span class="dot"></span>
-          <span>mihomo 运行中</span>
-          <span class="k spacer" id="foot-port">:7899</span>
-        </div>
-        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
-      </div>
-    </aside>
+    <aside class="sidebar"></aside>
 
-    <!-- ════ 主区 ════ -->
     <div class="main">
       <header class="topbar">
         <button class="icon-btn menu-btn" aria-label="菜单">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
-        <h1>系统与接入</h1>
+        <h1>设置</h1>
         <span class="spacer"></span>
-        <span class="sys-chip ok hide-mobile" id="chip-entry"><span class="dot"></span>入口运行中</span>
-        <a class="btn btn-secondary" href="index.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
-          返回总览
-        </a>
       </header>
 
       <div class="content content-narrow stack-6">
-        <div class="page-head">
-          <div class="crumb">设置 / 系统与接入</div>
-          <h1>系统与接入</h1>
-          <p>在一个地方完成入口接管、环境体检和镜像准备。日常先看入口；安装或容器异常时再切到诊断。</p>
-        </div>
-
         <div data-tabscope id="system-tabs">
           <div class="tabs" data-tabs>
-            <button class="tab active" data-tab="entry">入口接入</button>
-            <button class="tab" data-tab="diag">环境诊断</button>
-            <button class="tab" data-tab="mirrors">镜像源</button>
-            <button class="tab" data-tab="images">镜像清单</button>
+            <button class="tab active" data-tab="entry">接入</button>
+            <button class="tab" data-tab="diag">环境</button>
+            <button class="tab" data-tab="backup">备份</button>
             <button class="tab" data-tab="logs" id="runtime-logs-tab" hidden>运行日志</button>
           </div>
 
+          <!-- ═══ 接入 ═══ -->
           <div class="tabpanel active" data-panel="entry" style="padding-top:var(--space-6);">
             <div class="stack-6">
-              <!-- 反馈层宿主：页面加载/失败提示(默认空,boot 接管) -->
               <div id="boot-feedback"></div>
-              <div class="page-head" data-od-id="entry-intro">
-                <h2>把流量接进统一入口</h2>
-                <p>所有接管方式最终都指向本工具 mihomo 分流口。命中已绑定的客户域名 / IP → 对应 VPN 容器；未命中 → 直连放行，永不回环。</p>
+
+              <div class="card card-pad" data-od-id="entry-addr">
+                <div class="entry-addr">
+                  <div>
+                    <div class="addr" id="entry-endpoint">—</div>
+                    <div class="sub">本机代理入口，支持 HTTP 与 SOCKS5。把流量指到这里，命中规则的走对应通道，其余直连。</div>
+                  </div>
+                  <button class="btn btn-secondary" id="copy-endpoint">复制地址</button>
+                </div>
               </div>
 
-        <!-- 入口地址卡 -->
-        <div class="card card-pad" data-od-id="entry-addr">
-          <div class="entry-addr">
-            <div>
-              <div class="addr" id="entry-endpoint">127.0.0.1:48721</div>
-              <div class="sub">同一端口同时支持 <span class="mono">HTTP</span> 与 <span class="mono">SOCKS5</span>（mihomo mixed-port）· 仅本机 <span class="mono">127.0.0.1</span> 可达，不对外暴露</div>
+              <div class="banner info" id="entry-reco" data-od-id="entry-reco">
+                <div>
+                  <div class="bt" id="entry-reco-title">正在检测本机环境…</div>
+                  <p id="entry-reco-line">根据本机是否有 Clash、是否为桌面版，自动推荐接入方式。</p>
+                </div>
+              </div>
+
+              <div data-tabscope data-od-id="entry-tabs">
+                <div class="tabs" data-tabs>
+                  <button class="tab" data-tab="tun" id="etab-tun">TUN 接管</button>
+                  <button class="tab" data-tab="pac" id="etab-pac">系统代理</button>
+                  <button class="tab active" data-tab="rule" id="etab-rule">已有 Clash</button>
+                  <button class="tab" data-tab="proc" id="etab-proc">浏览器 / 命令行</button>
+                </div>
+
+                <!-- 已有 Clash -->
+                <div class="tabpanel active" data-panel="rule" style="padding-top:var(--space-6);">
+                  <p class="tab-lead">在你现有的 Clash 里加一个节点、订阅一份规则。只有命中的客户域名 / IP 会走这里，其余流量照走你原来的规则。</p>
+                  <div class="stack-4">
+                    <article class="card" id="card-detect" data-od-id="m-detect" style="display:none;">
+                      <div class="card-head">
+                        <div class="method-head" style="flex:1;">
+                          <div><h3>一键导入（Clash Verge Rev）</h3><p class="t-xs muted" id="detect-line" style="margin-top:2px;">检测中…</p></div>
+                          <span class="tag" id="detect-tag">—</span>
+                        </div>
+                      </div>
+                      <div class="card-body" style="padding:0;">
+                        <div class="code-head"><span>Merge 配置块</span><button class="copy-btn" id="copy-merge">复制</button></div>
+                        <pre class="code" id="code-merge"></pre>
+                        <div class="card-body"><p class="t-xs muted">Clash Verge Rev：订阅 → 新建「Merge」→ 粘贴 → 拖到你的订阅后面启用。之后规则变动自动同步。</p></div>
+                      </div>
+                    </article>
+
+                    <article class="card" data-od-id="m-proxy">
+                      <div class="card-head"><h3>第一步 · 加节点</h3><span class="t-xs muted">粘到 proxies 下</span></div>
+                      <div class="card-body" style="padding:0;">
+                        <div class="code-head"><span>proxies</span><button class="copy-btn" id="copy-proxy">复制</button></div>
+                        <pre class="code" id="code-proxy"></pre>
+                      </div>
+                    </article>
+
+                    <article class="card" data-od-id="m-provider">
+                      <div class="card-head"><h3>第二步 · 订阅规则</h3><span class="t-xs muted">之后在本工具增删规则会自动同步</span></div>
+                      <div class="card-body" style="padding:0;">
+                        <div class="code-head"><span>rule-providers + rules</span><button class="copy-btn" id="copy-provider">复制</button></div>
+                        <pre class="code" id="code-provider"></pre>
+                      </div>
+                    </article>
+
+                    <details class="adv" data-od-id="m-rules">
+                      <summary>不想订阅？复制当前规则快照（<span id="rules-count">—</span> 条，规则变动后需重新粘贴）</summary>
+                      <div class="card">
+                        <div class="card-body" style="padding:0;">
+                          <div class="code-head"><span>rules</span><button class="copy-btn" id="copy-rules">复制</button></div>
+                          <pre class="code" id="code-rules"></pre>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                </div>
+
+                <!-- TUN -->
+                <div class="tabpanel" data-panel="tun" style="padding-top:var(--space-6);">
+                  <p class="tab-lead">最彻底的接管方式：按规则里的 IP 网段直接接管路由，终端和不认代理的程序也生效。桌面版专属，首次需要一次管理员授权。</p>
+                  <div class="stack-4">
+                    <article class="card" id="card-tun" data-od-id="m-tunentry" style="display:none;">
+                      <div class="card-head"><h3>TUN 接管</h3><span class="tag" id="tun-tag">—</span></div>
+                      <div class="card-body">
+                        <div class="row-between" style="gap:12px; flex-wrap:wrap;">
+                          <span class="t-sm" id="tun-status">—</span>
+                          <span style="display:flex; gap:8px;">
+                            <button class="btn" id="tun-uninstall" style="display:none;">卸载助手</button>
+                            <button class="btn btn-primary" id="tun-action" style="display:none;">—</button>
+                          </span>
+                        </div>
+                        <p class="t-xs muted" style="margin-top:8px; line-height:1.5;">目前只接管 IP 网段规则；域名规则请配合「已有 Clash」或「系统代理」。</p>
+                      </div>
+                    </article>
+                    <details class="adv" data-od-id="m-tun">
+                      <summary>为什么这里没有开关？</summary>
+                      <p>Web 版运行在 Docker 里，无法接管本机路由。桌面版才有 TUN 接管；Web 版请用「系统代理」或「已有 Clash」。</p>
+                    </details>
+                  </div>
+                </div>
+
+                <!-- 系统代理 / PAC -->
+                <div class="tabpanel" data-panel="pac" style="padding-top:var(--space-6);">
+                  <p class="tab-lead">没有 Clash 时最省事的方式：把系统的「自动代理」指向本工具，命中规则的走 VPN，其余直连。</p>
+                  <div class="stack-4">
+                    <article class="card" data-od-id="m-pac">
+                      <div class="card-head"><h3>自动代理（PAC）</h3></div>
+                      <div class="card-body" style="padding:0;">
+                        <div class="card-body" id="pac-host-wrap" style="display:none;">
+                          <div class="row-between" style="gap:12px; flex-wrap:wrap;">
+                            <span class="t-sm" id="pac-host-status">—</span>
+                            <button class="btn btn-primary" id="pac-apply">应用到系统</button>
+                          </div>
+                        </div>
+                        <div class="code-head"><span>PAC 地址（填进系统「自动代理配置」）</span><button class="copy-btn" id="copy-pac">复制</button></div>
+                        <pre class="code" id="code-pac-url"></pre>
+                        <div class="code-head"><span>macOS 命令</span><button class="copy-btn" id="copy-pac-cmd">复制</button></div>
+                        <pre class="code" id="code-pac-cmd"></pre>
+                        <div class="card-body"><p class="t-xs muted">Windows：设置 → 代理 → 「使用安装脚本」填该地址。退出本工具前请先取消系统代理，否则会断网。</p></div>
+                      </div>
+                    </article>
+                    <details class="adv" data-od-id="m-sys">
+                      <summary>改用全局 SOCKS 代理（整机流量都先经过入口）</summary>
+                      <div class="card">
+                        <div class="card-body" style="padding:0;">
+                          <div class="code-head"><span>macOS 开 / 关</span><button class="copy-btn" id="copy-sys">复制</button></div>
+                          <pre class="code" id="code-sys"></pre>
+                          <div class="card-body"><p class="t-xs muted">Windows：设置 → 代理 → 手动设置代理，填 <span class="mono" id="sp-port">127.0.0.1:—</span>。</p></div>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                </div>
+
+                <!-- 浏览器 / 命令行 -->
+                <div class="tabpanel" data-panel="proc" style="padding-top:var(--space-6);">
+                  <p class="tab-lead">不动系统设置，只让浏览器或某个终端走内网。</p>
+                  <div class="stack-4">
+                    <article class="card" data-od-id="m-browser">
+                      <div class="card-head"><h3>浏览器代理插件</h3><span class="t-xs muted">SwitchyOmega 等</span></div>
+                      <div class="card-body" style="padding:0;">
+                        <div class="code-head"><span>自动切换的域名清单</span><button class="copy-btn" id="copy-browser">复制</button></div>
+                        <pre class="code" id="code-browser"></pre>
+                        <div class="card-body"><p class="t-xs muted">新建 SOCKS5 情景：服务器 <span class="mono">127.0.0.1</span>，端口 <span class="mono" id="bp-port">—</span>；这些域名走该情景，其余直连。</p></div>
+                      </div>
+                    </article>
+                    <article class="card" data-od-id="m-env">
+                      <div class="card-head"><h3>命令行</h3><span class="t-xs muted">当前终端生效</span></div>
+                      <div class="card-body" style="padding:0;">
+                        <div class="code-head"><span>export</span><button class="copy-btn" id="copy-env">复制</button></div>
+                        <pre class="code" id="code-env"></pre>
+                      </div>
+                    </article>
+                  </div>
+                </div>
+              </div>
             </div>
-            <button class="btn btn-secondary" id="copy-endpoint">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
-              复制入口地址
-            </button>
-          </div>
-        </div>
-
-        <!-- 端到端数据流图 -->
-        <section data-od-id="entry-flow">
-          <div class="row-between" style="margin-bottom:16px;">
-            <h2>端到端数据流</h2>
-            <span class="t-sm muted">无论用哪种接管方式</span>
-          </div>
-          <div class="card card-pad">
-            <div class="flow">
-              <div class="flow-node">
-                <div class="fn-t">你的流量</div>
-                <div class="fn-d">浏览器 / 系统 / CLI</div>
-              </div>
-              <div class="flow-arrow">
-                <svg class="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                <svg class="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-              </div>
-              <div class="flow-node">
-                <div class="fn-t">接管方式</div>
-                <div class="fn-d">Clash / 系统代理<br>PAC / 环境变量</div>
-              </div>
-              <div class="flow-arrow">
-                <svg class="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                <svg class="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-              </div>
-              <div class="flow-node accent">
-                <div class="fn-t">本工具 mihomo</div>
-                <div class="fn-d" id="flow-entry">:7899 · 第二跳<br>分流到 VPN 容器</div>
-              </div>
-              <div class="flow-arrow">
-                <svg class="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                <svg class="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-              </div>
-              <div class="flow-node">
-                <div class="fn-t">VPN 容器</div>
-                <div class="fn-d">:108xx · EC / aTrust</div>
-              </div>
-              <div class="flow-arrow">
-                <svg class="right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-                <svg class="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-              </div>
-              <div class="flow-node">
-                <div class="fn-t">客户内网</div>
-                <div class="fn-d">DNS 在隧道侧解析</div>
-              </div>
-            </div>
-            <p class="t-xs muted" style="margin-top:16px; line-height:1.6;">未命中绑定目标的流量不进 VPN 容器——由入口直接 <span class="mono">MATCH → DIRECT</span> 放行，永不回环，避免环路。</p>
-          </div>
-        </section>
-
-        <!-- 接入方式(按方式分 tab;检测后自动推荐最优并切过去) -->
-        <div class="banner info" id="entry-reco" data-od-id="entry-reco">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-          <div>
-            <div class="bt" id="entry-reco-title">正在检测本机环境…</div>
-            <p id="entry-reco-line">根据是否有 Clash、桌面版 TUN / 系统代理能力,自动推荐最合适的接入方式。</p>
-          </div>
-        </div>
-        <div data-tabscope data-od-id="entry-tabs">
-          <div class="tabs" data-tabs>
-            <button class="tab" data-tab="tun" id="etab-tun">TUN 路由接管</button>
-            <button class="tab" data-tab="pac" id="etab-pac">系统代理 / PAC</button>
-            <button class="tab active" data-tab="rule" id="etab-rule">Clash 接入</button>
-            <button class="tab" data-tab="proc" id="etab-proc">浏览器 / 命令行</button>
           </div>
 
-          <!-- ─── Tab：Clash 接入(已有 Clash) ─── -->
-          <div class="tabpanel active" data-panel="rule" style="padding-top:var(--space-6);">
-            <p class="tab-lead">已经在用 Clash 的人：本工具只接管命中的客户域名 / IP，其余流量照走你 Clash 的原有逻辑（机场 / DIRECT / 广告拦截），两边互不影响。先加一个 <span class="mono">vpn-router</span> 节点，再选订阅或内联其一。</p>
+          <!-- ═══ 环境 ═══ -->
+          <div class="tabpanel" data-panel="diag" style="padding-top:var(--space-6);">
             <div class="stack-4">
-              <!-- 7c：本机 Clash 检测 + Verge 一键导入(host-only;无后端能力时整卡隐藏) -->
-              <article class="card step-card" id="card-detect" data-od-id="m-detect" style="display:none;">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>本机 Clash 检测</h3><p class="t-xs muted" id="detect-line" style="margin-top:2px;">检测中…</p></div>
-                    <span class="tag" id="detect-tag">—</span>
-                  </div>
+              <div class="card card-pad">
+                <div class="setting-row" id="self-heal-setting" hidden>
+                  <div><div class="sr-t">自动修复</div><div class="sr-d">发现分流链路异常时自动修复。暂停后仍会继续检测和记录。</div></div>
+                  <button class="btn btn-secondary btn-sm" id="self-heal-toggle" type="button" role="switch" aria-checked="true">开</button>
                 </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>Clash Verge Rev「Merge」一键导入块</span><button class="copy-btn" id="copy-merge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-merge"></pre>
-                  <div class="card-body">
-                    <div class="note-line">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-                      <span>Clash Verge Rev:订阅 → 新建「Merge」类型 → 粘贴本块 → 拖到你的订阅之后启用。规则/节点自动并入,之后增删目标经 <span class="mono">vpn-rules</span> 订阅同步。</span>
-                    </div>
-                  </div>
+                <div class="setting-row">
+                  <div><div class="sr-t">环境检查</div><div class="sr-d">检查 Docker、网络、镜像与分流核心，发现问题可按项修复。</div></div>
+                  <span class="row" style="gap:var(--space-2);">
+                    <select id="diag-type" class="select" style="min-width:160px;"><option value="">基础环境</option></select>
+                    <button class="btn btn-primary btn-sm" id="diag-run">开始检查</button>
+                  </span>
                 </div>
-              </article>
-              <!-- 前置：加节点 -->
-              <article class="card step-card" data-od-id="m-proxy">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>第一步 · 加 vpn-router 节点</h3><p class="t-xs muted" style="margin-top:2px;">粘进你现有 Clash 的 <span class="mono">proxies:</span> 下</p></div>
-                  </div>
+                <div id="diag-host" style="margin-top:var(--space-3);"></div>
+                <div class="setting-row">
+                  <div><div class="sr-t">容器状态</div><div class="sr-d">查看每个容器的运行情况，清理残留。</div></div>
+                  <a class="btn btn-secondary btn-sm" href="containers.html">查看</a>
                 </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>proxies</span><button class="copy-btn" id="copy-proxy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-proxy"></pre>
+                <div class="setting-row">
+                  <div><div class="sr-t">常见问题</div><div class="sr-d">安装、拉取镜像和登录常见报错的处理方法。</div></div>
+                  <a class="btn btn-secondary btn-sm" href="env-check.html?tab=trouble">查看</a>
                 </div>
-              </article>
+              </div>
 
-              <!-- ① 订阅 rule-provider -->
-              <article class="card step-card" data-od-id="m-provider">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>方式① rule-provider 订阅 <span class="pill">推荐</span></h3><p class="t-xs muted" style="margin-top:2px;">订阅一份清单，之后在本工具增删目标，Clash 按 <span class="mono">interval</span> 自动同步，不再碰 Clash</p></div>
-                    <span class="tag">复杂度 低</span>
+              <details class="sect" id="mirrors-sect">
+                <summary>镜像源</summary>
+                <div class="sect-body stack-4" id="mir-panel">
+                  <p class="t-xs muted">拉取镜像时按顺序尝试。国内网络建议至少保留一个可用的镜像源。</p>
+                  <div class="row" style="gap:var(--space-2);">
+                    <input id="mir-host" class="input" placeholder="docker.example.com" style="flex:1;">
+                    <button class="btn btn-primary btn-sm" id="mir-add">添加</button>
                   </div>
+                  <div id="mir-list"></div>
                 </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>rule-providers + 引用</span><button class="copy-btn" id="copy-provider"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-provider"></pre>
-                  <div class="card-body">
-                    <div class="note-line">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-                      <span><span class="mono">behavior: classical</span> 的清单同时放域名与 IP；规则里用 <span class="mono">RULE-SET,vpn-rules,vpn-router,no-resolve</span> 引用即可。与方式②二选一，不要叠加。</span>
-                    </div>
-                  </div>
-                </div>
-              </article>
+              </details>
 
-              <!-- ② 内联规则 -->
-              <article class="card step-card" data-od-id="m-rules">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>方式② 内联规则</h3><p class="t-xs muted" style="margin-top:2px;">不想订阅时，把当前规则一次性快照粘到 <span class="mono">rules:</span> 顶部（之后改目标需手动重粘）</p></div>
-                    <span class="tag mono"><span id="rules-count">—</span> 条</span>
-                  </div>
+              <details class="sect" id="images-sect">
+                <summary>镜像清单</summary>
+                <div class="sect-body">
+                  <p class="t-xs muted" style="margin-bottom:var(--space-3);">本系统用到的全部镜像，可提前拉取或离线导入。</p>
+                  <div id="img-list"></div>
                 </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>rules</span><button class="copy-btn" id="copy-rules"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-rules"></pre>
-                </div>
-              </article>
-
-            </div>
-          </div>
-
-          <!-- ─── Tab：TUN 路由接管(桌面版) ─── -->
-          <div class="tabpanel" data-panel="tun" style="padding-top:var(--space-6);">
-            <p class="tab-lead">最彻底的接管：root 助手把绑定的 IP 网段按路由接管进宿主 TUN 引擎,不改系统代理,终端与不认代理的应用也生效。桌面版专属,首次需一次管理员授权。</p>
-            <div class="stack-4">
-              <!-- ⑦ TUN 路由级入口(桌面版 host-only;无后端能力时整卡隐藏。任务 #6) -->
-              <article class="card step-card" id="card-tun" data-od-id="m-tunentry" style="display:none;">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>方式⑦ TUN 路由级接管 <span class="pill">独立于 Clash</span></h3><p class="t-xs muted" style="margin-top:2px;">root 助手把绑定的 IP 网段按最长前缀路由进宿主 TUN 引擎：不改系统代理 / WiFi 配置、与 ClashX 的 TUN 共存,终端和不认代理的 app 也生效</p></div>
-                    <span class="tag" id="tun-tag">—</span>
-                  </div>
-                </div>
-                <div class="card-body">
-                  <div class="row-between" style="gap:12px; flex-wrap:wrap;">
-                    <span class="t-sm" id="tun-status">—</span>
-                    <span style="display:flex; gap:8px;">
-                      <button class="btn" id="tun-uninstall" style="display:none;">卸载助手</button>
-                      <button class="btn btn-primary" id="tun-action" style="display:none;">—</button>
-                    </span>
-                  </div>
-                  <p class="t-xs muted" style="margin-top:8px; line-height:1.5;">首次使用需安装 root 助手（弹一次管理员密码,ClashX 同款模型）。当前仅 <b>IP 网段</b>规则走路由级；内网<b>域名</b>请配合「Clash 接入」或 PAC,域名级拆分 DNS 在下一阶段。</p>
-                </div>
-              </article>
-
-              <!-- web 版无宿主能力时的降级说明(桌面版此卡被上面的真实 TUN 卡取代) -->
-              <details class="adv" data-od-id="m-tun">
-                <summary>为什么这里没有开关?(Web 版说明)</summary>
-                <p>Web 版（纯 Docker）做不了整机 TUN：mihomo 在容器里,tun 出不了 host 网络栈。<b>桌面版才有宿主级 TUN 路由接管</b>(root 助手 + 宿主 TUN 引擎,按绑定 IP 网段加路由,与 ClashX 共存)。Web 版请改用「系统代理 / PAC」页签。</p>
               </details>
             </div>
           </div>
 
-          <!-- ─── Tab：系统代理 / PAC(没 Clash 的全局接管) ─── -->
-          <div class="tabpanel" data-panel="pac" style="padding-top:var(--space-6);">
-            <p class="tab-lead">没装 Clash、也不想装助手：把系统代理或 PAC 指向入口,由入口替你分流。命中目标走 VPN、其余 DIRECT。桌面版一键应用,Web 版复制命令。</p>
-            <div class="stack-4">
-              <!-- ④ PAC -->
-              <article class="card step-card" data-od-id="m-pac">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>方式④ PAC 自动代理 <span class="pill">推荐</span></h3><p class="t-xs muted" style="margin-top:2px;">只对命中的域名 / IP 走代理、其余 DIRECT，体验最接近 Clash 但零额外软件</p></div>
-                    <span class="tag">复杂度 中</span>
-                  </div>
-                </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>PAC 地址（填进系统“自动代理配置”）</span><button class="copy-btn" id="copy-pac"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-pac-url"></pre>
-                  <div class="code-head"><span>macOS 一键设置</span><button class="copy-btn" id="copy-pac-cmd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-pac-cmd"></pre>
-                  <!-- 7c：桌面版直接执行 networksetup(host-only;无后端能力时隐藏) -->
-                  <div class="card-body" id="pac-host-wrap" style="display:none;">
-                    <div class="row-between" style="gap:12px; flex-wrap:wrap;">
-                      <span class="t-sm" id="pac-host-status">—</span>
-                      <button class="btn btn-primary" id="pac-apply">一键应用 PAC 系统代理</button>
-                    </div>
-                    <p class="t-xs muted" style="margin-top:8px; line-height:1.5;">桌面版可直接改本机当前网络服务的「自动代理」,无需手敲命令。停用前记得在此取消。</p>
-                  </div>
-                  <div class="card-body">
-                    <div class="note-line">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-                      <span>Windows：设置 → 代理 → “使用安装脚本” 填该 PAC 地址。PAC 内容随你在本工具增删目标自动更新，系统按自身策略重取。</span>
-                    </div>
-                  </div>
-                </div>
-              </article>
-
-              <!-- ③ 系统全局代理 -->
-              <article class="card step-card" data-od-id="m-sys">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>方式③ 系统全局代理</h3><p class="t-xs muted" style="margin-top:2px;">最省事，但整机流量都先经入口（未命中再 DIRECT 放行）</p></div>
-                    <span class="tag">复杂度 低</span>
-                  </div>
-                </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>macOS 开 / 关</span><button class="copy-btn" id="copy-sys"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-sys"></pre>
-                  <div class="card-body">
-                    <div class="note-line">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-                      <span>Windows：设置 → 网络和 Internet → 代理 → 手动设置代理，填 <span class="mono" id="sp-port">127.0.0.1:—</span>。</span>
-                    </div>
-                  </div>
-                </div>
-              </article>
-
-              <!-- 全局接管的命门提示 -->
-              <div class="banner warn" data-od-id="global-warn">
-                <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
-                <div>
-                  <div class="bt">停用本工具前，先取消系统代理 / PAC</div>
-                  <p>全局接管把整机流量指到入口；如果本工具 mihomo 停了而系统代理还指着它，会直接断网。换机器 / 重启 Docker 前记得先关掉系统代理或 PAC。</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- ─── Tab：浏览器 / 命令行(局部接入) ─── -->
-          <div class="tabpanel" data-panel="proc" style="padding-top:var(--space-6);">
-            <p class="tab-lead">不动系统：只让浏览器或某个终端 / CLI 走内网。</p>
-            <div class="stack-4">
-              <!-- ⑥ 浏览器插件 -->
-              <article class="card step-card" data-od-id="m-browser">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>方式⑥ 浏览器代理插件</h3><p class="t-xs muted" style="margin-top:2px;">SwitchyOmega 等：新建 SOCKS5 情景指向入口，auto switch 里把客户域名设为走该情景、其余直连</p></div>
-                    <span class="tag">复杂度 低</span>
-                  </div>
-                </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>auto switch 域名清单（粘进插件规则）</span><button class="copy-btn" id="copy-browser"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-browser"></pre>
-                  <div class="card-body">
-                    <div class="note-line">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-                      <span>情景模式协议选 <span class="mono">SOCKS5</span>、服务器 <span class="mono">127.0.0.1</span>、端口 <span class="mono" id="bp-port">—</span>。只在浏览器内分流，不动系统。</span>
-                    </div>
-                  </div>
-                </div>
-              </article>
-
-              <!-- ⑤ 环境变量 -->
-              <article class="card step-card" data-od-id="m-env">
-                <div class="card-head">
-                  <div class="method-head" style="flex:1;">
-                    <div><h3>方式⑤ 命令行环境变量</h3><p class="t-xs muted" style="margin-top:2px;">只影响读取这些变量的进程（curl / git / wget / docker 等），当前终端生效</p></div>
-                    <span class="tag">复杂度 低</span>
-                  </div>
-                </div>
-                <div class="card-body" style="padding:0;">
-                  <div class="code-head"><span>export（写进 ~/.zshrc 则持久）</span><button class="copy-btn" id="copy-env"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>复制</button></div>
-                  <pre class="code" id="code-env"></pre>
-                  <div class="card-body">
-                    <div class="note-line">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-                      <span>务必用 <span class="mono">socks5h://</span>（h = 远程解析）而非 <span class="mono">socks5://</span>，否则内网域名会在本地解析、解析不到。</span>
-                    </div>
-                  </div>
-                </div>
-              </article>
-
-            </div>
-          </div>
-        </div>
-
-        <!-- DNS 命门提示：分 Clash / 非 Clash 两态 -->
-        <div class="banner warn" data-od-id="dns-clash">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
-          <div>
-            <div class="bt">Clash 接管（方式①②）：规则必须带 no-resolve</div>
-            <p>让你的 Clash 不抢先在本地解析，把域名原样透传给 <span class="mono">vpn-router</span>，由 VPN 侧 DNS 解析——客户内网域名通常只在隧道侧才解析得到。<span class="mono">no-resolve</span> 只属于 Clash 路径，是“上游会抢解析”的反制。</p>
-          </div>
-        </div>
-        <div class="banner info" data-od-id="dns-other">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-          <div>
-            <div class="bt">非 Clash 接管（方式③④⑤⑥）：用 socks5h，别写 no-resolve</div>
-            <p>系统代理 / PAC / HTTP 代理天然把域名原样交给入口，内层 mihomo 靠 <span class="mono">respect-rules + sniffer</span> 自己在 VPN 侧解析；命令行用 <span class="mono">socks5h</span> 远程解析即可。<span class="mono">no-resolve</span> 是 Clash 规则的修饰，不是代理地址的一部分，别带进这些方式。</p>
-          </div>
-        </div>
-            </div>
-          </div>
-
-          <div class="tabpanel" data-panel="diag" style="padding-top:var(--space-6);">
-            <div class="card card-pad stack-4">
-              <div class="row-between">
-                <div><h3>环境诊断</h3><p class="t-xs muted" style="margin-top:4px;">检测 Docker、网络、镜像与分流核心，发现问题可按检查项修复。</p></div>
-                <a class="btn btn-secondary btn-sm" href="env-check.html?tab=trouble">查看常见报错</a>
-              </div>
-              <div class="row-between" id="self-heal-setting" style="gap:var(--space-4); padding:var(--space-3) 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border);" hidden>
-                <div>
-                  <div style="font-weight:600;">自动修复</div>
-                  <p class="t-xs muted" style="margin-top:4px;">暂停后仍会继续体检和记日志，只是不再自动执行修复；重启应用会自动恢复。</p>
-                </div>
-                <button class="btn btn-secondary btn-sm" id="self-heal-toggle" type="button" role="switch" aria-checked="true">自动修复 · 开</button>
-              </div>
-              <div style="display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap;">
-                <select id="diag-type" class="input" style="flex:1; min-width:180px; max-width:320px;">
-                  <option value="">(只查环境，不挑类型)</option>
-                </select>
-                <button class="btn btn-primary" id="diag-run">全量体检</button>
-              </div>
-              <div id="diag-host"></div>
-            </div>
-          </div>
-
-          <div class="tabpanel" data-panel="mirrors" style="padding-top:var(--space-6);">
-            <div class="card card-pad stack-4" id="mir-panel">
-              <div><h3>镜像源</h3><p class="t-xs muted" style="margin-top:4px;">按优先级管理镜像代理；可单独测速、启停或上移。</p></div>
-              <div class="row" style="gap:var(--space-2);">
-                <input id="mir-host" class="input" placeholder="docker.example.com" style="flex:1;">
-                <button class="btn btn-primary" id="mir-add">添加</button>
-              </div>
-              <div id="mir-list"></div>
-            </div>
-          </div>
-
-          <div class="tabpanel" data-panel="images" style="padding-top:var(--space-6);">
+          <!-- ═══ 备份 ═══ -->
+          <div class="tabpanel" data-panel="backup" style="padding-top:var(--space-6);">
             <div class="card card-pad">
-              <div style="margin-bottom:var(--space-4);"><h3>镜像清单</h3><p class="t-xs muted" style="margin-top:4px;">本系统用到的全部镜像与下载、构建、离线命令；可拉取镜像支持按本机架构一键准备。</p></div>
-              <div id="img-list"></div>
+              <div class="setting-row">
+                <div><div class="sr-t">导出配置</div><div class="sr-d">全部通道与分流规则。自动登录类通道的凭据会一并导出，文件请妥善保管。</div></div>
+                <button class="btn btn-secondary btn-sm" id="btn-export">导出</button>
+              </div>
+              <div class="setting-row">
+                <div><div class="sr-t">导入配置</div><div class="sr-d">导入后通道处于停止状态，按需逐个启动；同名通道会跳过。</div></div>
+                <button class="btn btn-secondary btn-sm" id="btn-import">导入</button>
+                <input type="file" id="import-file" accept="application/json,.json" hidden />
+              </div>
             </div>
           </div>
 
+          <!-- ═══ 运行日志 ═══ -->
           <div class="tabpanel" data-panel="logs" id="runtime-logs-panel" style="padding-top:var(--space-6);" hidden>
             <div class="stack-4">
               <div class="runtime-summary" id="runtime-summary" aria-live="polite">
@@ -518,18 +321,24 @@
               </div>
               <div class="runtime-toolbar" aria-label="运行日志筛选">
                 <select class="select" id="runtime-level" aria-label="最低日志级别">
-                  <option value="info" selected>Info 及以上</option>
-                  <option value="debug">全部（含 Debug）</option>
-                  <option value="warn">Warn 及以上</option>
-                  <option value="error">只看 Error</option>
+                  <option value="info" selected>常规</option>
+                  <option value="debug">全部（含调试）</option>
+                  <option value="warn">仅警告和错误</option>
+                  <option value="error">仅错误</option>
                 </select>
                 <select class="select" id="runtime-source" aria-label="日志来源"><option value="">全部来源</option></select>
-                <input class="input runtime-search" id="runtime-search" type="search" placeholder="搜索说明" aria-label="搜索日志说明" />
-                <button class="btn btn-secondary btn-sm" id="runtime-heal-only" type="button" aria-pressed="false">只看自愈</button>
+                <input class="input runtime-search" id="runtime-search" type="search" placeholder="搜索" aria-label="搜索日志" />
+                <button class="btn btn-secondary btn-sm" id="runtime-audit-only" type="button" aria-pressed="false">只看操作记录</button>
                 <span class="spacer"></span>
                 <button class="btn btn-secondary btn-sm" id="runtime-pause" type="button" aria-pressed="false">暂停</button>
                 <button class="btn btn-secondary btn-sm" id="runtime-copy" type="button">复制</button>
-                <a class="btn btn-secondary btn-sm" id="runtime-export" href="/api/events/export?days=1" download="vpnmgr-events.jsonl">导出</a>
+              </div>
+              <div class="runtime-toolbar" aria-label="日志开关与导出">
+                <button class="btn btn-secondary btn-sm" id="runtime-enabled" type="button" role="switch" aria-checked="true">日志记录 · 开</button>
+                <span class="spacer"></span>
+                <label class="t-xs muted">从 <input class="input" type="date" id="runtime-from" /></label>
+                <label class="t-xs muted">到 <input class="input" type="date" id="runtime-to" /></label>
+                <button class="btn btn-secondary btn-sm" id="runtime-export" type="button">导出</button>
               </div>
               <div class="runtime-meta" id="runtime-meta" aria-live="polite"></div>
               <div class="runtime-log-shell">
@@ -538,7 +347,7 @@
                     <thead><tr><th>时间</th><th>级别</th><th>来源</th><th>说明</th></tr></thead>
                     <tbody id="runtime-log-body"></tbody>
                   </table>
-                  <div class="runtime-empty" id="runtime-empty" hidden>还没有符合条件的运行记录。</div>
+                  <div class="runtime-empty" id="runtime-empty" hidden>没有符合条件的记录。</div>
                 </div>
               </div>
             </div>
@@ -555,33 +364,25 @@
   <script src="js/environment.js"></script>
   <script src="js/runtime-events.js"></script>
   <script>
-    // 高亮辅助：把 yaml 文本里的注释 / 键 / 串套上色彩 class(转义统一走 fb.esc,全站唯一实现;渲染在 render() 运行时,fb 已就位)
     const cmt = (s) => `<span class="cmt">${fb.esc(s)}</span>`;
     const key = (s) => `<span class="key">${fb.esc(s)}</span>`;
     const str = (s) => `<span class="str">${fb.esc(s)}</span>`;
 
     let chs = [], sys = {}, cmds = {};
 
-    // 主加载：拉通道 + 系统态(整页依赖,失败必须可重试,不再静默白屏)
     async function boot() {
       const fbHost = $("#boot-feedback");
       fbHost.innerHTML = "";
-      const loading = fb.spinner("正在加载入口配置…");
+      const loading = fb.spinner("正在加载…");
       loading.style.padding = "var(--space-3) 0";
       fbHost.appendChild(loading);
       try {
         [chs, sys] = await Promise.all([api.channels(), api.system()]);
       } catch (e) {
         fbHost.innerHTML = "";
-        fb.errorBanner(fbHost, {
-          fromError: e,
-          onRetry: boot,
-          retryLabel: "重新加载",
-        });
-        toast("加载入口配置失败", { variant: "danger", action: { label: "重试", onClick: boot } });
+        fb.errorBanner(fbHost, { fromError: e, onRetry: boot, retryLabel: "重新加载" });
         return;
       }
-      // entrySetup 可选(无后端能力时回落到内置默认命令),失败静默降级
       try { cmds = await api.entrySetup(); } catch (e) { cmds = {}; }
       fbHost.innerHTML = "";
       render();
@@ -589,15 +390,11 @@
 
     function renderSelfHeal() {
       const wrap = $("#self-heal-setting"), btn = $("#self-heal-toggle");
-      if (typeof sys.self_heal_enabled !== "boolean") {
-        wrap.hidden = true;
-        return;
-      }
+      if (typeof sys.self_heal_enabled !== "boolean") { wrap.hidden = true; return; }
       wrap.hidden = false;
-      btn.textContent = sys.self_heal_enabled ? "自动修复 · 开" : "自动修复 · 已暂停";
+      btn.textContent = sys.self_heal_enabled ? "开" : "已暂停";
       btn.setAttribute("aria-checked", String(sys.self_heal_enabled));
     }
-
     async function toggleSelfHeal() {
       const btn = $("#self-heal-toggle");
       const enabled = !sys.self_heal_enabled;
@@ -606,35 +403,24 @@
         const result = await api.selfHeal(enabled);
         sys.self_heal_enabled = !!result.enabled;
         renderSelfHeal();
-        toast(enabled ? "自动修复已恢复" : "自动修复已暂停；体检和日志仍会继续", { variant: "success" });
+        toast(enabled ? "自动修复已开启" : "自动修复已暂停", { variant: "success" });
       } catch (e) {
-        const f = fb.friendlyError(e);
-        toast("切换自动修复失败：" + f.title, { variant: "danger" });
-      } finally {
-        btn.disabled = false;
-      }
+        toast("切换失败：" + fb.friendlyError(e).title, { variant: "danger" });
+      } finally { btn.disabled = false; }
     }
     $("#self-heal-toggle").addEventListener("click", toggleSelfHeal);
 
     function render() {
-      const origin = location.origin;          // 如 http://127.0.0.1:42411
+      const origin = location.origin;
       const mport = sys.mihomo_port;
       const endpoint = `127.0.0.1:${mport}`;
       renderSelfHeal();
-
-      // 顶栏 / 侧栏全局态
       $("#nav-count").textContent = chs.length;
-      $("#foot-port").textContent = ":" + mport;
       $("#entry-endpoint").textContent = endpoint;
-      $("#flow-entry").innerHTML = ":" + mport + " · 第二跳<br>分流到 VPN 容器";
       $("#bp-port").textContent = mport;
       $("#sp-port").textContent = endpoint;
-      if (sys.mihomo_status !== "running") {
-        $("#chip-entry").classList.remove("ok");
-        $("#chip-entry").lastChild.textContent = "入口未运行";
-      }
 
-      // 聚合三级开关折叠后的域名 + IP/网段；旧/web 后端无新字段时保持原行为。
+      // 生效规则(折叠全局 / 通道级开关);旧后端无新字段时按规则自身 enabled
       const patterns = [], cidrs = [];
       const routingOn = (c) => typeof sys.routing_off !== "boolean"
         || (!sys.routing_off && c.routing_enabled !== false && c.routing_enabled !== 0);
@@ -649,20 +435,14 @@
       }));
       $("#rules-count").textContent = patterns.length + cidrs.length;
 
-      // 第一步：vpn-router 节点
-      const proxyPlain =
-`- name: vpn-router
-  type: socks5
-  server: 127.0.0.1
-  port: ${mport}`;
+      const proxyPlain = `- name: vpn-router\n  type: socks5\n  server: 127.0.0.1\n  port: ${mport}`;
       $("#code-proxy").innerHTML = [
         `- ${key("name")}: ${str("vpn-router")}`,
         `  ${key("type")}: ${str("socks5")}`,
         `  ${key("server")}: ${str("127.0.0.1")}`,
-        `  ${key("port")}: ${str(String(mport))}   ${cmt("# 本工具 mihomo mixed-port")}`,
+        `  ${key("port")}: ${str(String(mport))}`,
       ].join("\n");
 
-      // ① rule-provider 订阅
       const providerUrl = `${origin}/clash/vpn-rules.yaml`;
       const providerPlain =
 `rule-providers:
@@ -674,76 +454,67 @@
     interval: 3600
     path: ./providers/vpn-rules.yaml
 
-# rules 顶部加一行引用：
+# rules 顶部加一行：
 - RULE-SET,vpn-rules,vpn-router,no-resolve`;
       $("#code-provider").innerHTML = [
         `${key("rule-providers")}:`,
         `  ${key("vpn-rules")}:`,
         `    ${key("type")}: ${str("http")}`,
-        `    ${key("behavior")}: ${str("classical")}   ${cmt("# 一份清单同时放域名 + IP")}`,
+        `    ${key("behavior")}: ${str("classical")}`,
         `    ${key("format")}: ${str("yaml")}`,
         `    ${key("url")}: ${str(providerUrl)}`,
-        `    ${key("interval")}: ${str("3600")}   ${cmt("# 每小时自动同步")}`,
+        `    ${key("interval")}: ${str("3600")}`,
         `    ${key("path")}: ${str("./providers/vpn-rules.yaml")}`,
         ``,
-        `${cmt("# rules 顶部加一行引用：")}`,
+        `${cmt("# rules 顶部加一行：")}`,
         `- ${key("RULE-SET")},${fb.esc("vpn-rules")},${str("vpn-router")},${fb.esc("no-resolve")}`,
       ].join("\n");
 
-      // ② 内联规则
       const rulesPlain = ([
         ...patterns.map((p) => `- DOMAIN-SUFFIX,${p},vpn-router,no-resolve`),
         ...cidrs.map((p) => `- IP-CIDR,${p},vpn-router,no-resolve`),
-      ].join("\n")) || "# （还没绑定任何域名 / IP）";
+      ].join("\n")) || "# （还没有规则）";
       $("#code-rules").innerHTML = (patterns.length + cidrs.length) ? [
         ...patterns.map((p) => `- ${key("DOMAIN-SUFFIX")},${fb.esc(p)},${str("vpn-router")},${fb.esc("no-resolve")}`),
         ...cidrs.map((p) => `- ${key("IP-CIDR")},${fb.esc(p)},${str("vpn-router")},${fb.esc("no-resolve")}`),
-      ].join("\n") : cmt("# （还没绑定任何域名 / IP）");
+      ].join("\n") : cmt("# （还没有规则）");
 
-      // ⑥ 浏览器域名清单
-      const browserPlain = patterns.length ? patterns.join("\n") : "（尚未绑定域名）";
-      $("#code-browser").textContent = browserPlain;
+      $("#code-browser").textContent = patterns.length ? patterns.join("\n") : "（还没有域名规则）";
 
-      // ④ PAC
       const pacUrl = cmds.pac_url || `${origin}/entry/proxy.pac`;
       const pacCmd = (cmds.macos && cmds.macos.pac_on) || `networksetup -setautoproxyurl Wi-Fi ${pacUrl}`;
       $("#code-pac-url").textContent = pacUrl;
       $("#code-pac-cmd").textContent = pacCmd;
 
-      // ③ 系统全局代理
       const sysOn = (cmds.macos && cmds.macos.socks_on) || `networksetup -setsocksfirewallproxy Wi-Fi 127.0.0.1 ${mport}`;
       const sysOff = (cmds.macos && cmds.macos.socks_off) || `networksetup -setsocksfirewallproxystate Wi-Fi off`;
       $("#code-sys").textContent = sysOn + "\n" + sysOff;
 
-      // ⑤ 环境变量
       const envSocks = (cmds.env && cmds.env.socks) || `export ALL_PROXY=socks5h://127.0.0.1:${mport}`;
       const envHttp = (cmds.env && cmds.env.http) || `export HTTPS_PROXY=http://127.0.0.1:${mport} HTTP_PROXY=http://127.0.0.1:${mport}`;
       $("#code-env").textContent = envSocks + "\n" + envHttp;
 
-      // 复制按钮：共享 copyText(text, label)
-      $("#copy-endpoint").addEventListener("click", () => copyText(endpoint, "已复制入口地址"));
-      $("#copy-proxy").addEventListener("click", () => copyText(proxyPlain, "已复制节点"));
-      $("#copy-provider").addEventListener("click", () => copyText(providerPlain, "已复制订阅块"));
-      $("#copy-rules").addEventListener("click", () => copyText(rulesPlain, "已复制内联规则"));
-      $("#copy-browser").addEventListener("click", () => copyText(patterns.join("\n"), "已复制域名清单"));
-      $("#copy-pac").addEventListener("click", () => copyText(pacUrl, "已复制 PAC 地址"));
-      $("#copy-pac-cmd").addEventListener("click", () => copyText(pacCmd, "已复制命令"));
-      $("#copy-sys").addEventListener("click", () => copyText(sysOn + "\n" + sysOff, "已复制命令"));
-      $("#copy-env").addEventListener("click", () => copyText(envSocks, "已复制命令"));
+      $("#copy-endpoint").onclick = () => copyText(endpoint, "已复制");
+      $("#copy-proxy").onclick = () => copyText(proxyPlain, "已复制");
+      $("#copy-provider").onclick = () => copyText(providerPlain, "已复制");
+      $("#copy-rules").onclick = () => copyText(rulesPlain, "已复制");
+      $("#copy-browser").onclick = () => copyText(patterns.join("\n"), "已复制");
+      $("#copy-pac").onclick = () => copyText(pacUrl, "已复制");
+      $("#copy-pac-cmd").onclick = () => copyText(pacCmd, "已复制");
+      $("#copy-sys").onclick = () => copyText(sysOn + "\n" + sysOff, "已复制");
+      $("#copy-env").onclick = () => copyText(envSocks, "已复制");
 
-      // 7c 宿主接管层「真执行」(仅 Tauri/host 后端有这些端点;feature-detect)
       runClashDetect();
       runSystemProxyGet();
-      tunPollLeft = 12;   // 首载给一轮收敛预算(~30s)
+      tunPollLeft = 12;
       runTunGet();
     }
 
-    // ── 接入方式检测 + 推荐:三路探测(Clash / TUN / 系统代理)各自回填后重算 ──
-    // undefined = 检测中,null = 该后端不支持(web 版)或探测失败,对象/布尔 = 探测结果。
+    // ── 接入方式检测 + 推荐:三路探测各自回填后重算。undefined=检测中,null=不支持/失败 ──
     const entryDetect = { clash: undefined, tun: undefined, sys: undefined };
     let entryRecoApplied = false, entryTabTouched = false, entryProgrammaticTab = false;
     $$('[data-od-id="entry-tabs"] .tab').forEach((b) => b.addEventListener("click", () => {
-      if (!entryProgrammaticTab) entryTabTouched = true;   // 用户手选后不再自动切 tab
+      if (!entryProgrammaticTab) entryTabTouched = true;
     }));
     function entryBadge(tab, kind, text) {
       const btn = document.getElementById("etab-" + tab);
@@ -759,71 +530,59 @@
     }
     function updateEntryReco() {
       const t = entryDetect;
-      if (t.clash === undefined || t.tun === undefined || t.sys === undefined) return; // 还有探测在路上
-      // 推荐优先级:已在用的方式 > 本机 Clash 在跑 > 桌面 TUN > 桌面 PAC > web 降级
+      if (t.clash === undefined || t.tun === undefined || t.sys === undefined) return;
       let reco;
       if (t.tun && t.tun.enabled)
-        reco = { tab: "tun", title: "当前经 TUN 路由接管中", why: "绑定的 IP 网段已在路由级接管;要停用或调整,就在「TUN 路由接管」页签操作。" };
+        reco = { tab: "tun", title: "正在通过 TUN 接管", why: "规则里的 IP 网段已在路由级接管。要停用或调整，在「TUN 接管」里操作。" };
       else if (t.sys && t.sys.enabled && t.sys.is_ours)
-        reco = { tab: "pac", title: "当前经 PAC 系统代理接管中", why: "系统自动代理正指向本工具;要停用,点「取消 PAC 系统代理」。" };
+        reco = { tab: "pac", title: "正在通过系统代理接管", why: "系统自动代理已指向本工具。要停用，在「系统代理」里点「取消」。" };
       else if (t.clash)
-        reco = { tab: "rule", title: "推荐:Clash 接入", why: "检测到本机 Clash 正在运行——保持你现有的分流习惯,把 vpn-router 节点挂进去即可,其余流量不受影响。" };
+        reco = { tab: "rule", title: "推荐：接入你现有的 Clash", why: "检测到本机 Clash 正在运行。加一个节点、订阅一份规则即可，其余流量不受影响。" };
       else if (t.tun)
-        reco = { tab: "tun", title: "推荐:TUN 路由接管", why: t.tun.installed
-          ? "桌面版 TUN 可用且助手已装:一键「启用」即是最彻底的接管,终端与不认代理的应用也生效。"
-          : "没检测到 Clash;TUN 路由接管最彻底,首次点「安装助手」输一次管理员密码即可。" };
+        reco = { tab: "tun", title: "推荐：TUN 接管", why: t.tun.installed
+          ? "助手已安装，点「启用」即可，终端和不认代理的程序也生效。"
+          : "没检测到 Clash。TUN 接管最彻底，首次点「安装助手」输入一次管理员密码即可。" };
       else if (t.sys)
-        reco = { tab: "pac", title: "推荐:PAC 系统代理", why: "没检测到 Clash:「一键应用 PAC 系统代理」最省事,命中目标走 VPN、其余直连,无需授权。" };
+        reco = { tab: "pac", title: "推荐：系统代理", why: "没检测到 Clash。点「应用到系统」即可，命中规则的走 VPN、其余直连。" };
       else
-        reco = { tab: "pac", title: "推荐:PAC 自动代理", why: "Web 版无法探测宿主环境:复制 PAC 地址填入系统「自动代理配置」即可;若你有 Clash,用「Clash 接入」页签。" };
+        reco = { tab: "pac", title: "推荐：系统代理", why: "复制 PAC 地址填进系统「自动代理配置」即可；如果你有 Clash，用「已有 Clash」。" };
       $("#entry-reco-title").textContent = reco.title;
       $("#entry-reco-line").textContent = reco.why;
-      // 徽标:每 tab 至多一枚;已在用 > 推荐
       const badges = { tun: null, pac: null, rule: null, proc: null };
       if (t.tun && t.tun.enabled) badges.tun = ["on", "使用中"];
       if (t.sys && t.sys.enabled && t.sys.is_ours) badges.pac = ["on", "使用中"];
-      if (t.clash) badges.rule = ["on", "Clash 运行中"];
+      if (t.clash) badges.rule = ["on", "运行中"];
       if (!badges[reco.tab]) badges[reco.tab] = ["reco", "推荐"];
       Object.entries(badges).forEach(([tab, b]) => entryBadge(tab, b && b[0], b && b[1]));
-      // 首次得出结论时自动切到推荐页签(用户手选过则不打扰)
       if (!entryTabTouched && !entryRecoApplied) {
         entryRecoApplied = true;
         const btn = document.querySelector(`[data-od-id="entry-tabs"] .tab[data-tab="${reco.tab}"]`);
-        if (btn && !btn.classList.contains("active")) {
-          entryProgrammaticTab = true; btn.click(); entryProgrammaticTab = false;
-        }
+        if (btn && !btn.classList.contains("active")) { entryProgrammaticTab = true; btn.click(); entryProgrammaticTab = false; }
       }
     }
 
-    // 检测本机 Clash(9090) + 拉 Verge 导入块。非 host 后端(404)= 不支持,整卡静默隐藏;
-    // host 后端真失败 = 显示卡内可重试错误条(进行中→成功→失败+重试)。
+    // 本机 Clash 检测 + Verge 导入块(host-only;404 = 不支持,整卡隐藏)
     async function runClashDetect() {
       const card = $("#card-detect"), tag = $("#detect-tag"), line = $("#detect-line");
-      // 进行中:亮出卡 + 行内 spinner(克制),让用户知道在检测
       card.style.display = "";
       tag.textContent = "检测中";
-      line.replaceChildren(fb.spinner("正在检测本机 Clash(9090) 并生成导入块…"));
+      line.replaceChildren(fb.spinner("正在检测本机 Clash…"));
       try {
         const [det, merge] = await Promise.all([api.clashDetect(), api.mergeProfile()]);
         tag.classList.remove("ok");
         entryDetect.clash = !!det.running; updateEntryReco();
         if (det.running) {
           tag.textContent = "已检测到"; tag.classList.add("ok");
-          line.innerHTML = `本机有 ${det.meta ? "mihomo/Clash.Meta " : "Clash "}在运行${det.version ? "（" + fb.esc(det.version) + "）" : ""},控制台 <span class="mono">${fb.esc(det.controller || "127.0.0.1:9090")}</span>。推荐用下面的 Verge 导入块,或方式①订阅。`;
+          line.textContent = `本机 Clash 正在运行${det.version ? "（" + det.version + "）" : ""}，可直接用下面的配置块导入。`;
         } else {
           tag.textContent = "未运行";
-          line.textContent = "未检测到运行中的 Clash(9090 无应答)。若你用 Clash 先启动它;否则用「系统代理 / PAC」或「TUN 路由接管」页签。";
+          line.textContent = "没检测到运行中的 Clash。先启动它，或改用「系统代理」/「TUN 接管」。";
         }
         $("#code-merge").textContent = merge;
-        if (!$("#copy-merge").dataset.bound) {
-          $("#copy-merge").addEventListener("click", () => copyText($("#code-merge").textContent, "已复制 Verge 导入块"));
-          $("#copy-merge").dataset.bound = "1";
-        }
+        $("#copy-merge").onclick = () => copyText($("#code-merge").textContent, "已复制");
       } catch (e) {
         entryDetect.clash = null; updateEntryReco();
-        // 404 = 该后端无此能力(feature-detect):还原成隐藏卡,不打扰用户
         if (e && e.status === 404) { card.style.display = "none"; return; }
-        // host 后端真失败:状态行落人话 + 带「重新检测」的失败 toast(避免在 <p> 内嵌 banner)
         const f = fb.friendlyError(e);
         tag.textContent = "检测失败"; tag.classList.remove("ok");
         line.textContent = f.title + "：" + f.message;
@@ -831,7 +590,7 @@
       }
     }
 
-    // PAC 一键应用(host-only):读当前系统代理状态。404/不支持 = 隐藏;真失败 = 卡内可重试错误条。
+    // 系统代理一键应用(host-only)
     async function runSystemProxyGet() {
       const wrap = $("#pac-host-wrap"), status = $("#pac-host-status");
       try {
@@ -839,50 +598,44 @@
         if (!st0 || !st0.supported) { entryDetect.sys = null; updateEntryReco(); wrap.style.display = "none"; return; }
         wrap.style.display = "";
         renderPacHost(st0);
-        if (!$("#pac-apply").dataset.bound) {
-          $("#pac-apply").addEventListener("click", onPacApply);
-          $("#pac-apply").dataset.bound = "1";
-        }
+        $("#pac-apply").onclick = onPacApply;
       } catch (e) {
         entryDetect.sys = null; updateEntryReco();
         if (e && e.status === 404) { wrap.style.display = "none"; return; }
-        // host 后端真失败:状态位落人话 + 带「重新读取」的失败 toast(不在 <span> 内嵌 banner)
         const f = fb.friendlyError(e);
         wrap.style.display = "";
         status.textContent = f.title + "：" + f.message;
         toast("读取系统代理状态失败", { variant: "danger", action: { label: "重新读取", onClick: runSystemProxyGet } });
       }
     }
-
     function renderPacHost(st) {
       const status = $("#pac-host-status"), btn = $("#pac-apply");
       const on = !!(st.enabled && st.is_ours);
       entryDetect.sys = { enabled: !!st.enabled, is_ours: !!st.is_ours }; updateEntryReco();
       status.textContent = on
-        ? `已接管:${st.service} 自动代理 → 本工具 PAC`
-        : (st.enabled ? `${st.service} 自动代理当前指向其它,应用将覆盖` : `${st.service || "默认网络"} 未启用自动代理`);
-      btn.textContent = on ? "取消 PAC 系统代理" : "一键应用 PAC 系统代理";
+        ? `已应用到「${st.service}」`
+        : (st.enabled ? `「${st.service}」的自动代理当前指向其它地址，应用后会覆盖` : `「${st.service || "默认网络"}」未启用自动代理`);
+      btn.textContent = on ? "取消" : "应用到系统";
       btn.dataset.on = on ? "1" : "";
     }
     async function onPacApply() {
       const btn = $("#pac-apply");
       const enable = btn.dataset.on !== "1";
-      const label = btn.textContent;          // 进行中:保留原文案,临时换 spinner
+      const label = btn.textContent;
       btn.disabled = true;
       btn.replaceChildren(fb.spinner(enable ? "正在应用…" : "正在取消…"));
       try {
         const r = await api.systemProxySet(enable);
-        renderPacHost(r.state);               // 成功:刷新状态文案 + 按钮文案
-        toast(enable ? "已应用 PAC 系统代理" : "已取消系统代理", { variant: "success" });
+        renderPacHost(r.state);
+        toast(enable ? "已应用系统代理" : "已取消系统代理", { variant: "success" });
       } catch (e) {
-        btn.textContent = label;              // 失败:还原按钮文案,可再点重试
-        const f = fb.friendlyError(e);
-        toast(f.title, { variant: "danger", action: { label: "重试", onClick: onPacApply } });
+        btn.textContent = label;
+        toast(fb.friendlyError(e).title, { variant: "danger", action: { label: "重试", onClick: onPacApply } });
       } finally { btn.disabled = false; }
     }
 
-    // ── 层3:TUN 路由级入口(host-only;404 = 该后端无此能力 → 整卡隐藏)──────
-    let tunRefreshTimer = null, tunPollLeft = 0;   // 自轮询剩余次数,防不收敛时无限打后端
+    // ── TUN 接管(host-only;404 = 整卡隐藏) ──
+    let tunRefreshTimer = null, tunPollLeft = 0;
     async function runTunGet() {
       const card = $("#card-tun");
       try {
@@ -890,13 +643,10 @@
         if (!st || !st.supported) { entryDetect.tun = null; updateEntryReco(); card.style.display = "none"; return; }
         card.style.display = "";
         const webNote = document.querySelector('[data-od-id="m-tun"]');
-        if (webNote) webNote.hidden = true;   // 桌面版有真实 TUN 卡,Web 降级说明不再展示
+        if (webNote) webNote.hidden = true;
         renderTun(st);
-        if (!$("#tun-action").dataset.bound) {
-          $("#tun-action").addEventListener("click", onTunAction);
-          $("#tun-uninstall").addEventListener("click", onTunUninstall);
-          $("#tun-action").dataset.bound = "1";
-        }
+        $("#tun-action").onclick = onTunAction;
+        $("#tun-uninstall").onclick = onTunUninstall;
       } catch (e) {
         entryDetect.tun = null; updateEntryReco();
         if (e && e.status === 404) { card.style.display = "none"; return; }
@@ -904,23 +654,22 @@
         card.style.display = "";
         $("#tun-tag").textContent = "读取失败";
         $("#tun-status").textContent = f.title + "：" + f.message;
-        toast("读取 TUN 入口状态失败", { variant: "danger", action: { label: "重新读取", onClick: runTunGet } });
+        toast("读取 TUN 状态失败", { variant: "danger", action: { label: "重新读取", onClick: runTunGet } });
       }
     }
-
     function renderTun(st) {
       const tag = $("#tun-tag"), status = $("#tun-status"), btn = $("#tun-action"), un = $("#tun-uninstall");
       const h = st.helper;
       entryDetect.tun = { installed: !!st.installed, enabled: !!st.enabled }; updateEntryReco();
       const desired = (st.desired_v4 || []).length + (st.desired_v6 || []).length;
-      const shadowed = (h && h.shadowed) || 0;  // 已有系统路由、未接管的网段
+      const shadowed = (h && h.shadowed) || 0;
       tag.classList.remove("ok");
       btn.style.display = ""; un.style.display = "none";
       if (!st.installed) {
         tag.textContent = "未安装";
         status.textContent = st.resources
-          ? `助手未安装。安装后即可把 ${desired} 条 IP 网段规则接管进路由。`
-          : "app 资源里缺 helper/mihomo 二进制（dev 态需 export HELPER_RES_DIR,分发版重打 dmg）。";
+          ? `安装助手后即可接管 ${desired} 条 IP 网段规则。`
+          : "当前安装包缺少助手组件，无法启用。";
         btn.textContent = "安装助手"; btn.dataset.mode = "install"; btn.disabled = !st.resources;
         return;
       }
@@ -928,34 +677,29 @@
       un.style.display = "";
       if (!h) {
         tag.textContent = "未应答";
-        status.textContent = "助手已安装但 IPC 未应答（刚装完在启动？systemsettings 后台项被关？）。";
+        status.textContent = "助手已安装但没有响应。刚安装的话稍等几秒；也可能被系统「后台项目」关闭。";
         btn.textContent = "重新检测"; btn.dataset.mode = "recheck";
         return;
       }
       const stale = h.version !== st.expected_version;
       if (st.enabled && h.running) {
-        // 收敛判据:亲手接管 + 已有系统路由(shadowed)合起来覆盖 desired 即算稳定
         const settled = h.alive && (h.applied + shadowed) >= desired;
         tag.textContent = h.alive ? "运行中" : "启动中"; if (settled) tag.classList.add("ok");
-        const shadowHint = shadowed ? ` · ${shadowed} 条网段已有系统路由未接管` : "";
+        const shadowHint = shadowed ? `，${shadowed} 条网段本机已有路由、未接管` : "";
         status.textContent = h.alive
-          ? `已接管 ${st.device} · 路由 ${h.applied}/${desired} 条 · 引擎在跑${shadowHint}${stale ? " · 助手 v" + h.version + " 需升级(重装)" : ""}`
-          : "已启用,引擎正在拉起(约 2~6 秒收敛)…";
+          ? `已接管 ${h.applied}/${desired} 条网段${shadowHint}${stale ? "。助手需升级，请重新安装" : ""}`
+          : "已启用，正在生效…";
         btn.textContent = "停用"; btn.dataset.mode = "disable";
-        // 未收敛时短轮询到位,但只消耗预算(预算在启用/首载时 prime),耗尽即停,避免无限打后端
         if (!settled && tunPollLeft > 0 && !tunRefreshTimer) {
           tunPollLeft--;
           tunRefreshTimer = setTimeout(() => { tunRefreshTimer = null; runTunGet(); }, 2500);
-        } else if (settled) {
-          tunPollLeft = 0;
-        }
+        } else if (settled) { tunPollLeft = 0; }
       } else {
         tag.textContent = "已安装";
-        status.textContent = `助手就绪,入口未启用。${desired} 条 IP 网段规则待接管${stale ? " · 助手 v" + h.version + " 需升级(重装)" : ""}。`;
+        status.textContent = `未启用。启用后接管 ${desired} 条 IP 网段规则${stale ? "。助手需升级，请重新安装" : ""}。`;
         btn.textContent = "启用"; btn.dataset.mode = "enable";
       }
     }
-
     async function onTunAction() {
       const btn = $("#tun-action");
       const mode = btn.dataset.mode;
@@ -964,17 +708,17 @@
       try {
         if (mode === "install") {
           btn.replaceChildren(fb.spinner("等待授权…"));
-          toast("留意系统弹出的管理员密码窗口", { variant: "info" });
+          toast("请在系统弹窗中输入管理员密码", { variant: "info" });
           const r = await api.tunInstall();
           renderTun(r.state);
           toast("助手已安装", { variant: "success" });
         } else if (mode === "enable" || mode === "disable") {
           btn.replaceChildren(fb.spinner(mode === "enable" ? "正在启用…" : "正在停用…"));
           const r = await api.tunSet(mode === "enable");
-          if (mode === "enable") tunPollLeft = 12;   // 启用后给一轮收敛预算
+          if (mode === "enable") tunPollLeft = 12;
           if (r.state && r.state.warning) toast(r.state.warning, { variant: "warning" });
           renderTun(r.state);
-          toast(mode === "enable" ? "TUN 入口已启用,路由收敛中" : "TUN 入口已停用(路由随 utun 自动清除)", { variant: "success" });
+          toast(mode === "enable" ? "TUN 接管已启用" : "TUN 接管已停用", { variant: "success" });
         } else {
           await runTunGet();
           return;
@@ -985,11 +729,8 @@
         toast(f.title + "：" + f.message, { variant: "danger", action: { label: "重试", onClick: onTunAction } });
       } finally { btn.disabled = false; }
     }
-
     async function onTunUninstall() {
-      if (!await fb.confirm("卸载 root 助手？TUN 入口将停用,路由随 utun 自动清除(需管理员密码)。", {
-        title: "卸载 TUN 助手", confirmLabel: "确认卸载", danger: true,
-      })) return;
+      if (!await fb.confirm("卸载助手后 TUN 接管将停用（需要管理员密码）。", { title: "卸载助手", confirmLabel: "确认卸载", danger: true })) return;
       const un = $("#tun-uninstall");
       un.disabled = true;
       try {
@@ -1002,22 +743,57 @@
       } finally { un.disabled = false; }
     }
 
-    // 兼容旧环境页/教程深链：?tab=diag|mirrors|images；运行日志用 #logs 直达。
+    // ── 备份:导出 / 导入配置 ──
+    $("#btn-export").addEventListener("click", async () => {
+      const btn = $("#btn-export"), txt = btn.textContent;
+      btn.disabled = true; btn.replaceChildren(fb.spinner("导出中…"));
+      try {
+        const doc = await api.exportConfig();
+        const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `vpnmgr-config-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast(`已导出 ${doc.channels.length} 条通道`, { variant: "success" });
+      } catch (e) {
+        toast("导出失败：" + fb.friendlyError(e).title, { variant: "danger" });
+      } finally { btn.disabled = false; btn.textContent = txt; }
+    });
+    $("#btn-import").addEventListener("click", () => $("#import-file").click());
+    $("#import-file").addEventListener("change", async (ev) => {
+      const file = ev.target.files[0];
+      ev.target.value = "";
+      if (!file) return;
+      let doc;
+      try { doc = JSON.parse(await file.text()); }
+      catch { toast("文件不是有效的 JSON", { variant: "danger" }); return; }
+      try {
+        const r = await api.importConfig(doc);
+        const parts = [`已导入 ${r.imported.length} 条通道`];
+        if (r.skipped.length) parts.push(`跳过 ${r.skipped.length} 条：` + r.skipped.map(s => `${s.name}（${s.reason}）`).join("、"));
+        toast(parts.join("，"), { variant: r.imported.length ? "success" : "info" });
+      } catch (e) {
+        toast("导入失败：" + fb.friendlyError(e).title, { variant: "danger" });
+      }
+    });
+
+    // 深链:?tab=diag|mirrors|images|backup;运行日志用 #logs
     document.addEventListener("DOMContentLoaded", () => {
       const tabs = [...document.querySelectorAll("#system-tabs > [data-tabs] > [data-tab]")];
       tabs.forEach((tab) => tab.addEventListener("click", () => {
         const url = new URL(location.href);
-        if (tab.dataset.tab === "logs") {
-          url.searchParams.delete("tab");
-          url.hash = "logs";
-        } else {
+        if (tab.dataset.tab === "logs") { url.searchParams.delete("tab"); url.hash = "logs"; }
+        else {
           url.hash = "";
           if (tab.dataset.tab === "entry") url.searchParams.delete("tab");
           else url.searchParams.set("tab", tab.dataset.tab);
         }
         history.replaceState(null, "", url);
       }));
-      const requested = location.hash === "#logs" ? "logs" : new URLSearchParams(location.search).get("tab");
+      let requested = location.hash === "#logs" ? "logs" : new URLSearchParams(location.search).get("tab");
+      const sect = { mirrors: "mirrors-sect", images: "images-sect" }[requested];
+      if (sect) { requested = "diag"; const d = document.getElementById(sect); if (d) d.open = true; }
       const target = tabs.find((tab) => tab.dataset.tab === requested && !tab.hidden);
       if (target) target.click();
     });

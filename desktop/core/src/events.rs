@@ -20,6 +20,8 @@ const CHANNEL_CAPACITY: usize = 1_024;
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const FILE_PREFIX: &str = "vpnmgr-";
 const FILE_SUFFIX: &str = ".jsonl";
+/// 记录开关的持久化标记:文件存在 = 关闭(默认开启)。
+const DISABLED_MARKER: &str = "disabled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -93,6 +95,8 @@ struct Inner {
     ring: VecDeque<Event>,
     next_seq: u64,
     dropped: u64,
+    /// 记录总开关:关闭时内存环与磁盘都不写(开关切换本身除外,走 force 旁路)。
+    enabled: bool,
     data_dir: Option<PathBuf>,
     sender: Option<mpsc::Sender<Event>>,
 }
@@ -103,6 +107,7 @@ impl Default for Inner {
             ring: VecDeque::with_capacity(RING_CAPACITY),
             next_seq: 0,
             dropped: 0,
+            enabled: true,
             data_dir: None,
             sender: None,
         }
@@ -126,7 +131,36 @@ impl EventStore {
         detail: Value,
         persist: bool,
     ) -> Event {
+        self.record_inner(at, level, src, code, msg, detail, persist, false)
+    }
+
+    /// `force=true` 绕过记录总开关——只给开关切换本身用,别处一律走 `record_at`。
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+    fn record_inner(
+        &self,
+        at: DateTime<Local>,
+        level: Level,
+        src: &str,
+        code: &str,
+        msg: impl Into<String>,
+        detail: Value,
+        persist: bool,
+        force: bool,
+    ) -> Event {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !force && !inner.enabled {
+            // 关闭期间既不占 seq 也不进环/磁盘;回一条未记录的占位事件(seq=0)。
+            return Event {
+                seq: 0,
+                ts: at.to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+                ts_ms: at.timestamp_millis().max(0) as u64,
+                level,
+                src: src.to_string(),
+                event: code.to_string(),
+                msg: redact_text(&msg.into()),
+                detail: sanitize_detail(detail),
+            };
+        }
         inner.next_seq = inner.next_seq.saturating_add(1);
         let event = Event {
             seq: inner.next_seq,
@@ -221,6 +255,12 @@ pub fn init(data_dir: &Path) {
     if let Err(e) = cleanup_old_logs(&logs_dir, Local::now().date_naive()) {
         eprintln!("[events] 清理过期日志失败: {e}");
     }
+    {
+        // 记录开关随 data_dir 持久化:标记文件存在 = 上次被关掉,重启后保持关闭。
+        let disabled = logs_dir.join(DISABLED_MARKER).exists();
+        let mut inner = store.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.enabled = !disabled;
+    }
 
     if first_init {
         match load_persisted(&logs_dir, Local::now().date_naive()) {
@@ -247,6 +287,89 @@ pub fn emit(level: Level, src: &str, event: &str, msg: impl Into<String>, detail
 
 fn emit_memory_only(level: Level, src: &str, event: &str, msg: &str, detail: Value) {
     global().record_at(Local::now(), level, src, event, msg, detail, false);
+}
+
+/// 审计事件:每一个改变系统状态的操作留一条,记清「做了什么、对谁、改前是什么、改后是什么」。
+///
+/// detail 约定(缺的字段省略,不写 null 占位):
+/// `target_kind`(channel/rule/rules/note/mirror/config/container/entry/system)、
+/// `target_id`、`target_name`、`before`、`after`、`result`(ok/failed)、`error`。
+/// ⚠️ 命门 #5:`before`/`after` 只放脱敏后的可见字段快照——密码、secret 字段、
+/// vnc_password、备注正文一律不进(备注只记长度)。
+pub fn audit(action: &str, msg: impl Into<String>, detail: Value) -> Event {
+    let message = msg.into();
+    eprintln!("[audit:{action}] {message}");
+    emit(Level::Info, "audit", action, message, detail)
+}
+
+/// 失败的审计记录:同 [`audit`],但落 Error 级——运行日志屏按级别筛选时不该把失败降级成普通信息。
+/// 调用方仍需在 detail 里带 `"result": "failed"` 与 `error` 文本。
+pub fn audit_failed(action: &str, msg: impl Into<String>, detail: Value) -> Event {
+    let message = msg.into();
+    eprintln!("[audit:{action}] {message}");
+    emit(Level::Error, "audit", action, message, detail)
+}
+
+/// 绕过记录总开关写一条审计——只给开关切换本身用。
+fn audit_forced(action: &str, msg: &str, detail: Value) {
+    eprintln!("[audit:{action}] {msg}");
+    global().record_inner(Local::now(), Level::Info, "audit", action, msg, detail, true, true);
+}
+
+/// 记录总开关当前状态(默认开启)。
+pub fn is_enabled() -> bool {
+    global().inner.lock().unwrap_or_else(|e| e.into_inner()).enabled
+}
+
+/// 开/关运行事件记录。关闭后 [`emit`] 既不入内存环也不写盘,**唯一例外是开关切换本身**
+/// ——否则「日志为什么断了」将无从追溯。状态持久化到 `<data_dir>/logs/disabled`。
+pub fn set_enabled(on: bool) {
+    let before = is_enabled();
+    if !on {
+        audit_forced(
+            "logging_disabled",
+            "运行事件记录已关闭(此后只记录重新开启)",
+            json!({
+                "target_kind": "system", "target_name": "event_log",
+                "before": { "enabled": before }, "after": { "enabled": false }, "result": "ok"
+            }),
+        );
+    }
+    {
+        let mut inner = global().inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.enabled = on;
+    }
+    if let Some(marker) = disabled_marker_path() {
+        let written = if on {
+            match std::fs::remove_file(&marker) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            }
+        } else {
+            std::fs::write(&marker, b"")
+        };
+        if let Err(e) = written {
+            eprintln!("[events] 记录开关标记落盘失败: {e}");
+        }
+    }
+    if on {
+        audit_forced(
+            "logging_enabled",
+            "运行事件记录已开启",
+            json!({
+                "target_kind": "system", "target_name": "event_log",
+                "before": { "enabled": before }, "after": { "enabled": true }, "result": "ok"
+            }),
+        );
+    }
+}
+
+fn disabled_marker_path() -> Option<PathBuf> {
+    let inner = global().inner.lock().unwrap_or_else(|e| e.into_inner());
+    inner
+        .data_dir
+        .as_ref()
+        .map(|dir| dir.join("logs").join(DISABLED_MARKER))
 }
 
 pub fn snapshot(since_seq: u64, limit: usize, filter: &Filter) -> (Vec<Event>, u64) {
@@ -362,17 +485,33 @@ fn cleanup_old_logs(logs_dir: &Path, today: NaiveDate) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 闭区间 [from, to] 内的日志文件(按日期升序)。
+fn retained_paths_between(
+    logs_dir: &Path,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths = std::fs::read_dir(logs_dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| file_date(path).is_some_and(|date| date >= from && date <= to))
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
 fn retained_paths(logs_dir: &Path, today: NaiveDate, days: u32) -> std::io::Result<Vec<PathBuf>> {
     let oldest = today
         .checked_sub_days(Days::new(days.saturating_sub(1) as u64))
         .unwrap_or(today);
-    let mut paths = std::fs::read_dir(logs_dir)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| file_date(path).is_some_and(|date| date >= oldest && date <= today))
-        .collect::<Vec<_>>();
-    paths.sort();
-    Ok(paths)
+    retained_paths_between(logs_dir, oldest, today)
+}
+
+/// 保留窗口最早的一天(今天往前 RETAINED_DAYS 天)。
+fn oldest_retained(today: NaiveDate) -> NaiveDate {
+    today
+        .checked_sub_days(Days::new((RETAINED_DAYS - 1) as u64))
+        .unwrap_or(today)
 }
 
 fn load_persisted(logs_dir: &Path, today: NaiveDate) -> std::io::Result<Vec<Event>> {
@@ -396,9 +535,9 @@ fn sanitize_event(mut event: Event) -> Event {
     event
 }
 
-fn export_persisted(logs_dir: &Path, today: NaiveDate, days: u32) -> std::io::Result<String> {
+fn export_persisted(logs_dir: &Path, from: NaiveDate, to: NaiveDate) -> std::io::Result<String> {
     let mut body = String::new();
-    for path in retained_paths(logs_dir, today, days)? {
+    for path in retained_paths_between(logs_dir, from, to)? {
         for line in std::fs::read_to_string(path)?.lines() {
             let Ok(event) = serde_json::from_str::<Event>(line) else {
                 continue;
@@ -426,24 +565,35 @@ fn is_sensitive_key(key: &str) -> bool {
     .any(|needle| key.contains(needle))
 }
 
-fn sanitize_detail(detail: Value) -> Value {
-    let Value::Object(input) = detail else {
-        return json!({});
-    };
-    let mut output = Map::new();
-    for (key, value) in input {
-        let value = if is_sensitive_key(&key) {
-            Value::String("[REDACTED]".into())
-        } else {
-            match value {
-                Value::String(s) => Value::String(redact_text(&s)),
-                Value::Null | Value::Bool(_) | Value::Number(_) => value,
-                Value::Array(_) | Value::Object(_) => Value::String("[unsupported]".into()),
+/// 递归脱敏:嵌套 object / array 任意深度都过一遍,敏感键在任何一层都换成 `[REDACTED]`,
+/// 字符串值走 [`redact_text`]。审计的 before/after 快照本就是嵌套结构,不能再整块丢弃。
+/// (深度由 serde_json 解析期的递归上限兜底,detail 又都是本进程内构造的。)
+fn sanitize_value(value: Value) -> Value {
+    match value {
+        Value::String(s) => Value::String(redact_text(&s)),
+        Value::Array(items) => Value::Array(items.into_iter().map(sanitize_value).collect()),
+        Value::Object(input) => {
+            let mut output = Map::new();
+            for (key, value) in input {
+                let value = if is_sensitive_key(&key) {
+                    Value::String("[REDACTED]".into())
+                } else {
+                    sanitize_value(value)
+                };
+                output.insert(key, value);
             }
-        };
-        output.insert(key, value);
+            Value::Object(output)
+        }
+        other => other,
     }
-    Value::Object(output)
+}
+
+/// detail 顶层恒为 object(JSONL 行结构不变),非 object 一律丢成空 object。
+fn sanitize_detail(detail: Value) -> Value {
+    match detail {
+        Value::Object(_) => sanitize_value(detail),
+        _ => json!({}),
+    }
 }
 
 fn redact_text(input: &str) -> String {
@@ -511,19 +661,74 @@ pub async fn list(Query(query): Query<EventsQuery>) -> Json<Value> {
         "events": events,
         "seq": seq,
         "dropped": dropped(),
+        "enabled": is_enabled(),
         "retained_days": RETAINED_DAYS,
         "file": log_path_today(),
     }))
 }
 
 #[derive(Debug, Deserialize)]
+pub struct EnabledBody {
+    enabled: bool,
+}
+
+/// GET /api/events/enabled —— 读记录总开关。
+pub async fn enabled_get() -> Json<Value> {
+    Json(json!({ "enabled": is_enabled() }))
+}
+
+/// POST /api/events/enabled —— 开/关记录。关闭本身会被记录一条(审计不能自我抹除)。
+pub async fn set_enabled_route(Json(body): Json<EnabledBody>) -> Json<Value> {
+    set_enabled(body.enabled);
+    Json(json!({ "enabled": is_enabled() }))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ExportQuery {
     #[serde(default = "default_days")]
     days: u32,
+    /// 起止日期(YYYY-MM-DD,闭区间)。给了任一个就按区间导,否则沿用 days 语义。
+    /// 收字符串而非 NaiveDate:chrono 没开 serde feature,解析放 export_range 里,失败即 400。
+    from: Option<String>,
+    to: Option<String>,
+}
+
+fn parse_day(value: &Option<String>) -> Result<Option<NaiveDate>, ()> {
+    match value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(text) => NaiveDate::parse_from_str(text, "%Y-%m-%d").map(Some).map_err(|_| ()),
+    }
 }
 
 fn default_days() -> u32 {
     1
+}
+
+/// 把请求区间收敛成实际要导的闭区间:缺 to 补今天、缺 from 补 to;两者都缺则按 days
+/// 往前推。再裁剪到保留窗口(今天往前 RETAINED_DAYS 天)——窗口外没有文件,给个空
+/// 文件不如直说。区间反了或整段落在窗口外都回 None(调用方 400)。
+fn export_range(query: &ExportQuery, today: NaiveDate) -> Option<(NaiveDate, NaiveDate)> {
+    let (Ok(query_from), Ok(query_to)) = (parse_day(&query.from), parse_day(&query.to)) else {
+        return None;
+    };
+    let (from, to) = match (query_from, query_to) {
+        (None, None) => {
+            let days = query.days.clamp(1, RETAINED_DAYS);
+            let from = today
+                .checked_sub_days(Days::new(days.saturating_sub(1) as u64))
+                .unwrap_or(today);
+            (from, today)
+        }
+        (from, to) => {
+            let to = to.unwrap_or(today);
+            (from.unwrap_or(to), to)
+        }
+    };
+    if from > to {
+        return None;
+    }
+    let clamped = (from.max(oldest_retained(today)), to.min(today));
+    (clamped.0 <= clamped.1).then_some(clamped)
 }
 
 pub async fn export(Query(query): Query<ExportQuery>) -> Response {
@@ -535,11 +740,14 @@ pub async fn export(Query(query): Query<ExportQuery>) -> Response {
             .into_response();
     };
     let logs_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let days = query.days.clamp(1, RETAINED_DAYS);
-    let body = tokio::task::spawn_blocking(move || {
-        export_persisted(&logs_dir, Local::now().date_naive(), days)
-    })
-    .await;
+    let Some((from, to)) = export_range(&query, Local::now().date_naive()) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("导出区间非法或不在最近 {RETAINED_DAYS} 天保留窗口内"),
+        )
+            .into_response();
+    };
+    let body = tokio::task::spawn_blocking(move || export_persisted(&logs_dir, from, to)).await;
     let Ok(Ok(body)) = body else {
         return (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -552,10 +760,10 @@ pub async fn export(Query(query): Query<ExportQuery>) -> Response {
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
-    response.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment; filename=\"vpnmgr-events.jsonl\""),
-    );
+    let filename = format!("vpnmgr-events-{from}_{to}.jsonl");
+    if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
+        response.headers_mut().insert(header::CONTENT_DISPOSITION, value);
+    }
     response
 }
 
@@ -697,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_and_message_redact_secrets_and_reject_nested_values() {
+    fn detail_and_message_redact_secrets_at_any_depth() {
         let store = EventStore::default();
         let event = store.record_at(
             at(1),
@@ -705,14 +913,93 @@ mod tests {
             "test",
             "secret",
             "failed password=hunter2 token:abc",
-            json!({"password": "hunter2", "api_secret": "abc", "ok": true, "nested": {"x": 1}}),
+            json!({
+                "password": "hunter2",
+                "api_secret": "abc",
+                "ok": true,
+                "before": { "password": "hunter2", "ok": 1, "deep": [{ "auth_token": "abc" }] },
+            }),
             false,
         );
         let encoded = serde_json::to_string(&event).unwrap();
         assert!(!encoded.contains("hunter2"));
         assert!(!encoded.contains("\"abc\""));
         assert_eq!(event.detail["password"], "[REDACTED]");
-        assert_eq!(event.detail["nested"], "[unsupported]");
+        // 审计的 before/after 是嵌套快照:整块保留,敏感键逐层替换,其余原样。
+        assert_eq!(event.detail["before"]["password"], "[REDACTED]");
+        assert_eq!(event.detail["before"]["ok"], 1);
+        assert_eq!(event.detail["before"]["deep"][0]["auth_token"], "[REDACTED]");
+    }
+
+    #[test]
+    fn disabled_logging_records_nothing_but_the_switch_itself() {
+        let store = EventStore::default();
+        store.record_at(at(1), Level::Info, "test", "before", "before", json!({}), false);
+        store.inner.lock().unwrap().enabled = false;
+        store.record_at(at(2), Level::Info, "test", "muted", "muted", json!({}), false);
+        let (events, seq) = store.snapshot(0, 10, &Filter::default());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "before");
+        assert_eq!(seq, 1, "关闭期间不占 seq");
+        // 开关切换本身走 force 旁路,关闭状态下仍要留痕。
+        store.record_inner(
+            at(3),
+            Level::Info,
+            "audit",
+            "logging_disabled",
+            "off",
+            json!({}),
+            false,
+            true,
+        );
+        let (events, _) = store.snapshot(0, 10, &Filter::default());
+        assert_eq!(
+            events.iter().map(|e| e.event.as_str()).collect::<Vec<_>>(),
+            vec!["before", "logging_disabled"]
+        );
+    }
+
+    #[test]
+    fn export_range_picks_only_the_requested_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 8, 6).unwrap();
+        let line = |code: &str| {
+            let event = Event {
+                seq: 1,
+                ts: "2026-08-06T09:41:07.812+08:00".into(),
+                ts_ms: 1,
+                level: Level::Info,
+                src: "test".into(),
+                event: code.into(),
+                msg: code.into(),
+                detail: json!({}),
+            };
+            format!("{}\n", serde_json::to_string(&event).unwrap())
+        };
+        for (offset, code) in [(2u64, "oldest"), (1, "middle"), (0, "newest")] {
+            let date = today.checked_sub_days(Days::new(offset)).unwrap();
+            std::fs::write(dir.path().join(file_name(date)), line(code)).unwrap();
+        }
+        let middle = today.checked_sub_days(Days::new(1)).unwrap();
+        let exported = export_persisted(dir.path(), middle, middle).unwrap();
+        assert_eq!(exported.lines().count(), 1);
+        assert!(exported.contains("middle"));
+
+        // from/to 缺一补齐;区间反了或整段在保留窗口外 → None(端点 400)。
+        let day = |d: NaiveDate| Some(d.format("%Y-%m-%d").to_string());
+        let q = |days: u32, from: Option<String>, to: Option<String>| ExportQuery { days, from, to };
+        assert_eq!(export_range(&q(1, None, None), today), Some((today, today)));
+        assert_eq!(export_range(&q(1, day(middle), None), today), Some((middle, today)));
+        assert_eq!(export_range(&q(1, None, day(middle)), today), Some((middle, middle)));
+        assert_eq!(export_range(&q(1, day(today), day(middle)), today), None);
+        let ancient = today.checked_sub_days(Days::new(90)).unwrap();
+        assert_eq!(export_range(&q(1, day(ancient), day(ancient)), today), None);
+        assert_eq!(export_range(&q(1, Some("八月六号".into()), None), today), None);
+        // 越界的 days / 未来的 to 都裁回保留窗口。
+        assert_eq!(
+            export_range(&q(999, None, None), today),
+            Some((oldest_retained(today), today))
+        );
     }
 
     #[tokio::test]
@@ -826,7 +1113,7 @@ mod tests {
         assert!(!loaded_text.contains("\"abc\""));
         assert_eq!(loaded[0].detail["api_token"], "[REDACTED]");
 
-        let exported = export_persisted(dir.path(), today, 1).unwrap();
+        let exported = export_persisted(dir.path(), today, today).unwrap();
         assert!(!exported.contains("hunter2"));
         assert!(!exported.contains("plaintext"));
         assert!(!exported.contains("\"abc\""));

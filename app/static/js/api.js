@@ -88,6 +88,10 @@
       return req("GET", `/api/events${suffix ? "?" + suffix : ""}`);
     },
     runtimeEventsExport: (days = 1) => req("GET", `/api/events/export?days=${encodeURIComponent(days)}`),
+    // 日志开关(桌面版;旧版 404 → 前端隐藏开关)与按日期区间导出 URL
+    runtimeEventsEnabled: () => req("GET", "/api/events/enabled"),
+    runtimeEventsSetEnabled: (enabled) => req("POST", "/api/events/enabled", { enabled }),
+    runtimeEventsExportUrl: (from, to) => `/api/events/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
     // 容器管理(桌面版 host-only;web 版 404 → 前端 feature-detect 降级)
     containers: () => req("GET", "/api/containers"),
     containerLogs: (name, tail = 200) => req("GET", `/api/containers/${name}/logs?tail=${tail}`),

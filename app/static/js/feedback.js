@@ -440,13 +440,13 @@
       const gh = sys.gateway_health;
       const running = sys.mihomo_status === "running";
       let ok = false, label;
-      if (sys.vm_egress_dead) label = "VM 对外网络中断";
-      else if (gh === "forward_dead") label = "mihomo 分流链路中断";
-      else if (gh === "container_down") label = "mihomo 未运行";
-      else if (gh === "transport_dead") label = "底座传输中断,修复中";
-      else if (gh === "transport_degraded") { ok = true; label = "分流可用(底座降级)"; }
-      else if (gh === "vm_down") label = "底座(VM)连接断开";
-      else { ok = running; label = running ? "mihomo 运行中" : "mihomo 未运行"; }
+      if (sys.vm_egress_dead) label = "本地引擎断网";
+      else if (gh === "forward_dead") label = "分流链路中断";
+      else if (gh === "container_down") label = "入口未运行";
+      else if (gh === "transport_dead") label = "底座中断，修复中";
+      else if (gh === "transport_degraded") { ok = true; label = "分流可用，底座降级"; }
+      else if (gh === "vm_down") label = "本地引擎断开";
+      else { ok = running; label = running ? "入口运行中" : "入口未运行"; }
       chip.classList.toggle("ok", ok);
       chip.classList.toggle("bad", !ok);
       if (txt) txt.textContent = label;

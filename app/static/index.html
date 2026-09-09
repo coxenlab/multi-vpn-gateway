@@ -3,67 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>通道总览 · VPN 管理网关</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
+  <title>通道 · VPN 管理网关</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body data-page="channels">
   <div class="app">
-    <!-- ════ 侧栏（所有屏一致） ════ -->
-    <aside class="sidebar">
-      <div class="sidebar-logo">
-        <span class="logo-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
-        </span>
-        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
-      </div>
-      <nav class="sidebar-nav">
-        <span class="nav-label">管理</span>
-        <a class="nav-item" data-nav="channels" href="index.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
-          通道总览 <span class="count" id="nav-count">—</span>
-        </a>
-        <a class="nav-item" data-nav="routing" href="routing-table.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/></svg>
-          分流总表
-        </a>
-        <a class="nav-item" data-nav="monitor" href="monitor.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
-          流量监控
-        </a>
-        <a class="nav-item" data-nav="system" href="clash-config.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
-          系统与接入
-        </a>
-        <a class="nav-item" data-nav="containers" href="containers.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
-          容器管理
-        </a>
-      </nav>
-      <div class="sidebar-foot">
-        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
-          <span class="dot"></span>
-          <span>mihomo 运行中</span>
-          <span class="k spacer" id="foot-port">:7899</span>
-        </div>
-        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
-      </div>
-    </aside>
+    <aside class="sidebar"></aside>
 
-    <!-- ════ 主区 ════ -->
     <div class="main">
       <header class="topbar">
         <button class="icon-btn menu-btn" aria-label="菜单">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
-        <h1>通道总览</h1>
+        <h1>通道</h1>
         <span class="spacer"></span>
-        <span class="sys-chip ok hide-mobile" id="chip-clash"><span class="dot"></span>Clash 已接入</span>
-        <button class="btn btn-secondary hide-mobile" id="btn-export">导出配置</button>
-        <button class="btn btn-secondary hide-mobile" id="btn-import">导入配置</button>
-        <input type="file" id="import-file" accept="application/json,.json" hidden />
         <a class="btn btn-primary" href="new-channel.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
           新建通道
@@ -71,65 +24,28 @@
       </header>
 
       <div class="content stack-6">
-        <!-- DNS 命门提示 -->
-        <div class="banner" data-od-id="dns-note">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-          <div>
-            <div class="bt">内网域名在 VPN 侧解析</div>
-            <p>你的 Clash 对客户域名规则带 <span class="mono">no-resolve</span> 透传，本工具 mihomo 开 <span class="mono">respect-rules + sniffer</span>，由 EC / aTrust 隧道侧解析——这是整条链路最易翻车处，每条通道上线务必实测内网域名能打开。</p>
-          </div>
-        </div>
-
-        <!-- 概览统计 -->
         <div class="grid-4" id="stats" data-od-id="overview">
           <div class="stat-tile">
-            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/></svg>通道总数</div>
+            <div class="stat-label">通道</div>
             <div class="stat-num" id="s-total">—</div>
-            <div class="stat-foot">每条 = 一个客户 VPN 容器</div>
           </div>
           <div class="stat-tile ok">
-            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>已连接</div>
+            <div class="stat-label">已连接</div>
             <div class="stat-num" id="s-ok">—</div>
-            <div class="stat-foot">SOCKS5 探活通过</div>
           </div>
           <div class="stat-tile">
-            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>待登录</div>
+            <div class="stat-label">待登录</div>
             <div class="stat-num" id="s-wait">—</div>
-            <div class="stat-foot">容器已起、需过登录</div>
           </div>
           <div class="stat-tile">
-            <div class="stat-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>分流规则</div>
+            <div class="stat-label">分流规则</div>
             <div class="stat-num" id="s-dom">—</div>
-            <div class="stat-foot">域名 + IP，命中即走对应通道</div>
           </div>
         </div>
 
-        <!-- 通道列表 -->
         <div data-od-id="channel-list-section">
-          <div class="row-between" style="margin-bottom:16px;">
-            <h2>通道</h2>
-            <span class="t-sm muted">每 8 秒自动刷新状态 · 共 <span class="num" id="ch-count">—</span> 条</span>
-          </div>
           <div class="grid-2" id="channel-list"></div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 删除确认 -->
-  <div class="overlay" id="del-modal">
-    <div class="modal">
-      <div class="card-head"><h3>删除通道</h3><button class="icon-btn" data-close="del-modal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
-      <div class="card-body stack-4">
-        <p class="muted">将停止并删除容器 <span class="mono" id="del-name"></span>，其 <span class="mono">/root</span> 卷与登录态一并移除，且会从 mihomo 与 Clash 订阅中摘除其域名 / IP 规则（热加载、不断现有连接）。此操作不可撤销。</p>
-        <div class="banner warn">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
-          <p style="color:inherit; margin:0;">删除后重建会用同一 MAC / 卷 / hostname，但深信服仍可能要求重新过验证码。</p>
-        </div>
-      </div>
-      <div class="card-foot" style="justify-content:flex-end;">
-        <button class="btn btn-secondary" data-close="del-modal">取消</button>
-        <button class="btn btn-danger" id="del-confirm">确认删除</button>
       </div>
     </div>
   </div>
@@ -141,7 +57,7 @@
     let chs = [];
     let sys = {};
     let loaded = false;   // 首次加载成功过？决定失败时给整页错误条 or 静默轮询提示
-    const ruleCount = (c) => c.domains.length + (c.ips ? c.ips.length : 0);
+    const ruleCount = (c) => (c.domains || []).length + (c.ips || []).length;
     const routingControlsSupported = () => typeof sys.routing_off === "boolean";
     const routingOn = (c) => !routingControlsSupported() || (c.routing_enabled !== false && c.routing_enabled !== 0);
     const channelBadge = (c) => {
@@ -150,20 +66,17 @@
       return badgeHTML(c.status) + (!routingOn(c) ? `<span class="badge is-stopped">不分流</span>` : "");
     };
 
-    // 静默拉数据(供轮询 / 各动作成功后刷新复用);抛错由调用方处理。
-    // ⚠️ 通道列表与系统状态**不绑死**:/api/system 要探分流口,链路故障时它慢/失败,
-    // 而通道列表是本屏的主体、拿到就该显示。2026-08-04 事故里二者用 Promise.all 捆着,
-    // system 一挂住整页永远停在骨架屏,用户看到的是「通道全没了」。
+    // 通道列表与系统状态不绑死:/api/system 要探分流口,链路故障时它慢/失败,
+    // 而通道列表是本屏主体、拿到就该显示(2026-08-04 事故:二者捆在 Promise.all 里整页停在骨架屏)。
     async function fetchAll() {
       const [chRes, sysRes] = await Promise.allSettled([api.channels(), api.system()]);
       if (chRes.status === "fulfilled") chs = chRes.value;
-      sys = sysRes.status === "fulfilled" ? sysRes.value : {}; // 系统状态失败:概览统计留空,不拦通道
-      if (chRes.status === "rejected") throw chRes.reason;     // 通道拿不到才算本屏加载失败
+      sys = sysRes.status === "fulfilled" ? sysRes.value : {};
+      if (chRes.status === "rejected") throw chRes.reason;
       paint();
       loaded = true;
     }
 
-    // 首次加载:先铺骨架,失败给可重试错误条;轮询失败仅轻提示、页面留旧态。
     async function load(isPoll) {
       if (!loaded && !isPoll) {
         const box = $("#channel-list");
@@ -174,28 +87,19 @@
         await fetchAll();
       } catch (e) {
         if (isPoll) {
-          // 轮询失败:不打断界面,8 秒后自动再试,仅一条带「重试」的轻提示。
-          toast("刷新状态失败,将自动重试", { variant: "danger", action: { label: "立即重试", onClick: () => load(false) } });
+          toast("刷新失败，将自动重试", { variant: "danger", action: { label: "立即重试", onClick: () => load(false) } });
           return;
         }
-        // 首次加载失败:整页错误条 + 重试(重跑 load)。
         const box = $("#channel-list");
         box.innerHTML = "";
         fb.errorBanner(box, { fromError: e, onRetry: () => load(false), retryLabel: "重新加载" });
       }
     }
 
-    // 通道卡片
     function actionsFor(c) {
-      const detail = `<a class="btn btn-sm btn-secondary" href="channel.html?id=${fb.esc(c.id)}">详情</a>`;
-      const del = `<button class="btn btn-sm btn-danger spacer" onclick="askDel('${fb.esc(c.id)}')">删除</button>`;
-      const route = routingControlsSupported()
-        ? `<button class="btn btn-sm btn-secondary" role="switch" aria-checked="${routingOn(c)}" onclick="toggleRouting('${fb.esc(c.id)}',${routingOn(c)},this)">${routingOn(c) ? "参与分流 · 开" : "参与分流 · 关"}</button>`
-        : "";
-      // 停止态:容器没起,登录/探活都无意义 → 只给「启动」(走重建);状态已由右上角徽章表达,不再放死的「已停止」占位钮。
+      const detail = `<a class="btn btn-sm btn-secondary spacer" href="channel.html?id=${fb.esc(c.id)}">详情</a>`;
       if (c.status === "stopped")
-        return `<button class="btn btn-sm btn-primary" onclick="power('${fb.esc(c.id)}','start',this)">启动</button>${route}${detail}${del}`;
-      // 运行态:登录/重新登录(无头通道隐藏)+ 检测连通 + 停止。「重启」属低频操作,留在详情页。
+        return `<button class="btn btn-sm btn-primary" onclick="power('${fb.esc(c.id)}','start',this)">启动</button>${detail}`;
       const headless = c.login_method === "headless";
       const login = headless ? ""
         : (c.status === "logged_in"
@@ -204,192 +108,79 @@
       return `${login}
         <button class="btn btn-sm btn-secondary" onclick="probe('${fb.esc(c.id)}', this)">检测连通</button>
         <button class="btn btn-sm btn-secondary" onclick="power('${fb.esc(c.id)}','stop',this)">停止</button>
-        ${route}${detail}${del}`;
+        ${detail}`;
     }
     function cardHTML(c) {
       const k = kindMeta(c.vpn_type);
-      const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "—";
+      const lat = (c.status === "logged_in" && c.latency_ms != null) ? `${c.latency_ms} ms` : "—";   // 已停止 / 待登录时旧延迟没有意义
       const tags = [];
-      c.domains.forEach(d => tags.push(`<span class="tag mono">${fb.esc(d.pattern)}${d.enabled ? "" : " · 停用"}</span>`));
-      (c.ips || []).forEach(d => tags.push(`<span class="tag mono ip">${fb.esc(d.pattern)}${d.enabled ? "" : " · 停用"}</span>`));
-      const doms = tags.length ? tags.join("") : `<span class="t-sm muted">未绑定规则</span>`;
+      (c.domains || []).forEach(d => tags.push(`<span class="tag mono${d.enabled ? "" : " off"}">${fb.esc(d.pattern)}</span>`));
+      (c.ips || []).forEach(d => tags.push(`<span class="tag mono ip${d.enabled ? "" : " off"}">${fb.esc(d.pattern)}</span>`));
+      const more = tags.length > 6 ? `<span class="tag">+${tags.length - 6}</span>` : "";
+      const doms = tags.length ? tags.slice(0, 6).join("") + more : `<span class="t-sm muted">未绑定规则</span>`;
+      const host = (c.server || "").replace(/^https?:\/\//, "");
       return `<article class="ch-card" data-od-id="ch-${c.id}">
         <div class="ch-top">
           <div class="grow">
             <div class="ch-name">${fb.esc(c.name)}</div>
-            <div class="ch-meta">${fb.esc(k.label)}${c.ec_ver ? " " + fb.esc(c.ec_ver) : ""} · id ${c.id} · ${fb.esc(c.server.replace("https://",""))}</div>
+            <div class="ch-meta">${fb.esc(k.label)}${host ? " · " + fb.esc(host) : ""}</div>
           </div>
           ${channelBadge(c)}
         </div>
         <div class="ch-grid">
-          <div class="kv"><div class="k">SOCKS5 出口</div><div class="v">${fb.esc(c.socks_endpoint)}</div></div>
-          <div class="kv"><div class="k">隧道延迟</div><div class="v">${lat}</div></div>
+          <div class="kv"><div class="k">延迟</div><div class="v">${lat}</div></div>
           <div class="kv"><div class="k">运行时长</div><div class="v">${c.uptime != null ? fb.esc(c.uptime) : "—"}</div></div>
+          <div class="kv"><div class="k">分流规则</div><div class="v">${ruleCount(c)} 条</div></div>
         </div>
         <div class="ch-domains">${doms}</div>
-        <form class="row" style="margin-bottom:14px; gap:8px;" onsubmit="return bindRule('${fb.esc(c.id)}', this)">
-          <input class="input" name="pat" placeholder="绑定域名或 IP/网段，可多个" style="flex:1;" />
-          <button class="btn btn-sm btn-secondary" type="submit">绑定 → 走这条</button>
-        </form>
         <div class="ch-actions">${actionsFor(c)}</div>
       </article>`;
     }
 
     function paint() {
-      $("#channel-list").innerHTML = chs.map(cardHTML).join("");
+      const box = $("#channel-list");
+      box.innerHTML = chs.length ? chs.map(cardHTML).join("")
+        : `<div class="empty card card-pad" style="grid-column:1/-1;">还没有通道。点右上角「新建通道」接入第一家客户的 VPN。</div>`;
       $("#s-total").textContent = chs.length;
       $("#s-ok").textContent = chs.filter(c => c.status === "logged_in").length;
       $("#s-wait").textContent = chs.filter(c => c.status === "running" || c.status === "starting").length;
       $("#s-dom").textContent = chs.reduce((n, c) => n + ruleCount(c), 0);
-      $("#ch-count").textContent = chs.length;
       $("#nav-count").textContent = chs.length;
-      $("#foot-port").textContent = ":" + sys.mihomo_port;
-      const linked = chs.some(c => (c.domains || []).length + (c.ips || []).length > 0);
-      if (!linked) { $("#chip-clash").classList.remove("ok"); $("#chip-clash").lastChild.textContent = "Clash 未接入"; }
     }
 
-    // 交互：检测连通（后端 SOCKS5 探活）—— 命门①：登录成功唯一判据=后端探活,不认 VNC。
+    // 检测连通:唯一判据是后端经容器 SOCKS5 访问验证地址(不认 VNC 连上)。
     window.probe = async function (id, btn) {
-      // load() 会 paint() 整列重绘,btn 随之脱离 DOM;重试时按 id 重新查当前可见的探活按钮。
       const reBtn = () => document.querySelector(`[data-od-id="ch-${id}"] button[onclick*="probe"]`);
-      if (btn) { btn.disabled = true; btn.replaceChildren(fb.spinner("检测中…")); }   // 进行中:克制 spinner
+      if (btn) { btn.disabled = true; btn.replaceChildren(fb.spinner("检测中…")); }
       try {
         const r = await api.status(id);
-        await load();                               // load() 自带 catch,不会外抛
-        if (r.connected)
-          toast(`隧道真通 · ${r.latency_ms ?? "?"} ms · 已登录`, { variant: "success" });
-        else
-          toast("探活失败:未连通(请确认已在登录界面登录成功)", {
-            variant: "danger", action: { label: "重试", onClick: () => probe(id, reBtn()) },
-          });
+        await load();
+        if (r.connected) toast(`已连通 · ${r.latency_ms ?? "?"} ms`, { variant: "success" });
+        else toast("未连通：请先在登录窗口完成登录", {
+          variant: "danger", action: { label: "重试", onClick: () => probe(id, reBtn()) },
+        });
       } catch (e) {
-        const f = fb.friendlyError(e);
-        toast("探活出错:" + f.title, {
+        toast("检测失败：" + fb.friendlyError(e).title, {
           variant: "danger", action: { label: "重试", onClick: () => probe(id, reBtn()) },
         });
       } finally { if (btn) { btn.disabled = false; btn.textContent = "检测连通"; } }
     };
-    // 电源:启动(后端走重建,复用同卷/MAC)/ 停止。成功后 load() 重绘卡片,故无需手动复位按钮。
+    // 启动(后端重建容器,复用同卷 / MAC)/ 停止。成功后 load() 重绘卡片。
     window.power = async function (id, action, btn) {
       const label = action === "start" ? "启动" : "停止";
       btn.disabled = true;
-      btn.replaceChildren(fb.spinner(label + "中…"));   // 进行中:克制 spinner
+      btn.replaceChildren(fb.spinner(label + "中…"));
       try {
         await (action === "start" ? api.start(id) : api.stop(id));
         await load();
-        toast(action === "start" ? "已启动 · 正在重建容器,请稍候登录 / 检测连通" : "容器已停止", { variant: "success" });
+        toast(action === "start" ? "已启动，请登录后检测连通" : "已停止", { variant: "success" });
       } catch (e) {
-        const f = fb.friendlyError(e);
-        toast(label + "出错:" + f.title, {
+        toast(label + "失败：" + fb.friendlyError(e).title, {
           variant: "danger", action: { label: "重试", onClick: () => power(id, action, btn) },
         });
         btn.disabled = false; btn.textContent = label;
       }
     };
-    window.toggleRouting = async function (id, current, btn) {
-      const next = !current;
-      btn.disabled = true;
-      btn.textContent = next ? "恢复中…" : "暂停中…";
-      try {
-        await api.update(id, { routing_enabled: next });
-        await load();
-        toast(next ? "通道已恢复参与分流" : "通道已暂停分流，登录态与探活保持", { variant: "success" });
-      } catch (e) {
-        const f = fb.friendlyError(e);
-        toast("切换分流失败:" + f.title, { variant: "danger" });
-        btn.disabled = false;
-        btn.textContent = current ? "参与分流 · 开" : "参与分流 · 关";
-      }
-    };
-    // 快绑：一次可粘多条，后端自动识别 IP/网段（走 IP-CIDR）与域名（走 DOMAIN-SUFFIX）
-    window.bindRule = async function (id, form) {
-      const toks = parseTokens(form.pat.value);
-      if (!toks.length) { toast("请填写域名或 IP", false); return false; }
-      const sub = form.querySelector('button[type="submit"]');
-      const subTxt = sub ? sub.textContent : "";
-      if (sub) { sub.disabled = true; sub.replaceChildren(fb.spinner("绑定中…")); }   // 进行中
-      try {
-        const r = await api.addRules(id, toks);
-        if (r.added.domain || r.added.ip) {
-          form.pat.value = ""; await load();   // 成功才清空,失败保留输入便于改后重试
-          toast(`已绑定 ${r.added.domain} 域名 / ${r.added.ip} IP → 热加载生效`, { variant: "success" });
-        } else if (r.rejected.length) {
-          toast("格式无法识别:" + r.rejected.join(", "), { variant: "danger" });
-        } else {
-          toast("这些规则已绑定", { variant: "info" });
-        }
-      } catch (e) {
-        const f = fb.friendlyError(e);
-        toast("绑定出错:" + f.title, {
-          variant: "danger", action: { label: "重试", onClick: () => bindRule(id, form) },
-        });
-      } finally {
-        if (sub) { sub.disabled = false; sub.textContent = subTxt; }
-      }
-      return false;
-    };
-    let pendingDel = null;
-    const delErrHost = () => $("#del-modal .card-body");
-    const clearDelErr = () => { const b = $("#del-modal .fb-errbanner"); if (b) b.remove(); };
-    window.askDel = function (id) {
-      pendingDel = id; clearDelErr();
-      $("#del-name").textContent = "vpn-" + id; openOverlay("del-modal");
-    };
-    async function runDel() {
-      clearDelErr();
-      const btn = $("#del-confirm");
-      const txt = btn.textContent;
-      btn.disabled = true; btn.replaceChildren(fb.spinner("删除中…"));   // 进行中
-      const id = pendingDel;
-      try {
-        await api.remove(id); closeOverlay("del-modal"); await load();
-        toast("已删除 vpn-" + id, { variant: "success" });
-      } catch (e) {
-        // 模态保持打开,模态内给可重试错误条(重试重跑删除,参数不变),置顶显示。
-        fb.errorBanner(delErrHost(), { fromError: e, onRetry: runDel, retryLabel: "重新删除", prepend: true });
-      } finally {
-        btn.disabled = false; btn.textContent = txt;
-      }
-    }
-    $("#del-confirm").addEventListener("click", runDel);
-
-    // 配置导出 / 导入:通道 + 规则 + 无头通道注入配置。交互登录密码不在文件里,导入后重新登录;
-    // 导入只落库为「已停止」,不起容器(缺镜像会整批失败),按需逐个「启动」。
-    $("#btn-export").addEventListener("click", async () => {
-      const btn = $("#btn-export"), txt = btn.textContent;
-      btn.disabled = true; btn.replaceChildren(fb.spinner("导出中…"));
-      try {
-        const doc = await api.exportConfig();
-        const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" });
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `vpnmgr-config-${new Date().toISOString().slice(0, 10)}.json`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-        toast(`已导出 ${doc.channels.length} 条通道 · 文件含无头通道凭据,请妥善保管`, { variant: "success" });
-      } catch (e) {
-        toast("导出出错:" + fb.friendlyError(e).title, { variant: "danger" });
-      } finally { btn.disabled = false; btn.textContent = txt; }
-    });
-    $("#btn-import").addEventListener("click", () => $("#import-file").click());
-    $("#import-file").addEventListener("change", async (ev) => {
-      const file = ev.target.files[0];
-      ev.target.value = "";                       // 复位,允许再次选同一文件
-      if (!file) return;
-      let doc;
-      try { doc = JSON.parse(await file.text()); }
-      catch { toast("文件不是有效的 JSON", { variant: "danger" }); return; }
-      try {
-        const r = await api.importConfig(doc);
-        await load();
-        const parts = [`导入 ${r.imported.length} 条(已停止,按需逐个启动)`];
-        if (r.skipped.length)
-          parts.push(`跳过 ${r.skipped.length} 条:` + r.skipped.map(s => `${s.name}(${s.reason})`).join("、"));
-        toast(parts.join(" · "), { variant: r.imported.length ? "success" : "info" });
-      } catch (e) {
-        toast("导入出错:" + fb.friendlyError(e).title, { variant: "danger" });
-      }
-    });
 
     load();
     setInterval(() => load(true), 8000);

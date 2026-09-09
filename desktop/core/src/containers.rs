@@ -192,8 +192,21 @@ pub async fn remove(State(st): State<AppState>, Path(name): Path<String>) -> axu
     }
     match st.docker().as_ref() {
         Some(d) => match crate::docker::rm_force(d, &name).await {
-            Ok(_) => Json(json!({ "ok": true })).into_response(),
-            Err(e) => crate::api::err500(&format!("{e}")),
+            Ok(_) => {
+                crate::events::audit("container_remove", "孤儿容器已删除", json!({
+                    "target_kind": "container", "target_name": name.as_str(), "role": "orphan",
+                    "before": { "present": true }, "after": null, "result": "ok"
+                }));
+                Json(json!({ "ok": true })).into_response()
+            }
+            Err(e) => {
+                crate::events::audit_failed("container_remove", "孤儿容器删除失败", json!({
+                    "target_kind": "container", "target_name": name.as_str(), "role": "orphan",
+                    "before": { "present": true }, "after": null,
+                    "result": "failed", "error": e.to_string()
+                }));
+                crate::api::err500(&format!("{e}"))
+            }
         },
         None => crate::api::err500("docker 连接不可用"),
     }

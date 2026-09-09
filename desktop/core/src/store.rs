@@ -339,6 +339,16 @@ pub fn get_rule(db: &Path, rid: i64) -> anyhow::Result<Option<Rule>> {
     }
 }
 
+/// 按 id 批量读规则(审计 before/after 快照用;只读,不改 schema)。
+/// 结果按 rules 表的插入序,给不出的 id(已删/不存在)直接不出现。
+pub fn rules_by_ids(db: &Path, ids: &[i64]) -> anyhow::Result<Vec<Rule>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let wanted: HashSet<i64> = ids.iter().copied().collect();
+    Ok(all_rules(db)?.into_iter().filter(|r| wanted.contains(&r.id)).collect())
+}
+
 pub fn del_rule(db: &Path, cid: &str, rid: i64) -> anyhow::Result<bool> {
     let conn = Connection::open(db)?;
     let changed = conn.execute(

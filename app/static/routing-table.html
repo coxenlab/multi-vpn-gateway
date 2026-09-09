@@ -3,10 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>分流总表 · VPN 管理网关</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
+  <title>分流规则 · VPN 管理网关</title>
   <link rel="stylesheet" href="css/app.css" />
   <style>
     /* 屏内独有:流量干线图 + 规则健康控制带 + 扁平规则表,全部由 var(--*) 派生 */
@@ -14,7 +11,6 @@
     .grp-name:hover { color: var(--accent); }
     .grp-meta { color: var(--muted); font-size: var(--text-xs); font-family: var(--font-mono); }
     tr.hit-conflict td { background: var(--danger-soft); }
-    tr.hit-dead td { background: var(--warn-soft); }
     tr.off td { color: var(--muted); }
     .note-conflict { color: var(--danger); font-size: var(--text-xs); }
     /* 语义色已是浅底深档,再混白会掉出 4.5:1,一律用本色 */
@@ -58,42 +54,6 @@
     .switch.on::after { left: 18px; background: var(--surface); }
     .switch:disabled { cursor: wait; opacity: .6; }
     .rule-check { width: 16px; height: 16px; accent-color: var(--accent); }
-    /* 流量干线图:入口 → 干线 → DIRECT,分支从干线拉到各通道节点卡 */
-    .trunk-wrap { overflow-x: auto; padding: var(--space-5); }
-    /* 覆盖全局 svg{max-width:100%}：干线图要保持原尺寸让容器横滚，而不是被压扁缩小 */
-    .trunk-svg { display: block; max-width: none; }
-    /* 管道压在白卡上,--border(#e2dfd4)几乎看不见;干线本身就是主图形,要给到中灰 */
-    .trunk-pipe { fill: none; stroke: color-mix(in oklab, var(--muted), transparent 62%); stroke-linecap: round; }
-    .trunk-pipe.dim { stroke: color-mix(in oklab, var(--muted), transparent 80%); }
-    /* 全屏唯一强调:有实时连接的管段上叠一层橙色流动虚线 */
-    .trunk-flow { fill: none; stroke: var(--accent); stroke-linecap: round; stroke-dasharray: 3 13; animation: trunk-flow 1.2s linear infinite; }
-    /* 无连接的管段只是隐去流动层（不是 display:none），动画继续跑，回来时不会跳帧 */
-    .trunk-flow.off { opacity: 0; }
-    @keyframes trunk-flow { to { stroke-dashoffset: -16; } }
-    @media (prefers-reduced-motion: reduce) { .trunk-flow { animation: none; } }
-    .trunk-box { fill: var(--surface-2); stroke: var(--border); }
-    .trunk-box.ghost { fill: none; stroke: color-mix(in oklab, var(--muted), transparent 62%); stroke-dasharray: 4 4; }
-    .trunk-tap { fill: color-mix(in oklab, var(--muted), transparent 45%); }
-    .trunk-tap.live { fill: var(--accent); }
-    .trunk-name { fill: var(--fg); font-family: var(--font-body); font-size: 13px; font-weight: 500; }
-    .trunk-sub { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; }
-    .trunk-cap { fill: var(--muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
-    .trunk-empty { fill: var(--muted); font-family: var(--font-body); font-size: 12px; }
-    .tdot { fill: var(--muted); }
-    .tdot.ok { fill: var(--success); }
-    .tdot.warn { fill: var(--warn); }
-    .tdot.bad { fill: var(--danger); }
-    .trunk-link { cursor: pointer; }
-    .trunk-link:hover .trunk-box { stroke: color-mix(in oklab, var(--border), black 22%); }
-    .trunk-link:hover .trunk-name { fill: var(--accent); }
-    /* 联动选中态:该通道正在筛选下方规则表。入口节点不设常驻选中态,免得首屏就多一处强调 */
-    /* 底色不用 --accent-soft:它 90% 透明,和未选中卡的 book cloth 亮度几乎一样,只剩描边在说话 */
-    .trunk-link[aria-current] .trunk-box { fill: color-mix(in oklab, var(--accent) 14%, var(--surface)); stroke: var(--accent); stroke-width: 1.5; }
-    .trunk-link[aria-current] .trunk-name { fill: var(--accent); }
-    /* SVG 子元素吃不到全局 focus-ring 的 box-shadow,焦点态改用描边 */
-    .trunk-link:focus-visible { outline: none; }
-    .trunk-link:focus-visible .trunk-box { stroke: var(--accent); stroke-width: 2; }
-    .trunk-hint { padding: 0 var(--space-5) var(--space-5); color: var(--muted); font-size: var(--text-xs); }
     .diag-body { border-top: 1px solid var(--border); padding: var(--space-5); }
     /* 穿透图:节点链 = flex 行,每跳一个节点 + 状态灯 */
     .pipe { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 2px 0; }
@@ -123,46 +83,7 @@
 </head>
 <body data-page="routing">
   <div class="app">
-    <!-- ════ 侧栏（所有屏一致） ════ -->
-    <aside class="sidebar">
-      <div class="sidebar-logo">
-        <span class="logo-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
-        </span>
-        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
-      </div>
-      <nav class="sidebar-nav">
-        <span class="nav-label">管理</span>
-        <a class="nav-item" data-nav="channels" href="index.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
-          通道总览 <span class="count" id="nav-count">—</span>
-        </a>
-        <a class="nav-item" data-nav="routing" href="routing-table.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/></svg>
-          分流总表
-        </a>
-        <a class="nav-item" data-nav="monitor" href="monitor.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
-          流量监控
-        </a>
-        <a class="nav-item" data-nav="system" href="clash-config.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
-          系统与接入
-        </a>
-        <a class="nav-item" data-nav="containers" href="containers.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
-          容器管理
-        </a>
-      </nav>
-      <div class="sidebar-foot">
-        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
-          <span class="dot"></span>
-          <span>mihomo 运行中</span>
-          <span class="k spacer" id="foot-port">:7899</span>
-        </div>
-        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
-      </div>
-    </aside>
+    <aside class="sidebar"></aside>
 
     <!-- ════ 主区 ════ -->
     <div class="main">
@@ -170,10 +91,9 @@
         <button class="icon-btn menu-btn" aria-label="菜单">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
-        <h1>分流总表</h1>
+        <h1>分流规则</h1>
         <span class="spacer"></span>
         <button class="btn btn-secondary btn-sm" id="global-routing" type="button" role="switch" aria-checked="true" hidden>分流总开关 · 开</button>
-        <span class="sys-chip hide-mobile"><span class="dot"></span>每 8 秒自动刷新</span>
       </header>
 
       <div class="content stack-6">
@@ -187,34 +107,22 @@
             <span class="health-metric">在线通道 <b id="summary-online">—</b></span>
             <span class="health-metric">启用规则 <b id="summary-enabled">—</b></span>
             <span class="health-metric issue">规则交叠 <b id="summary-conflict">—</b></span>
-            <span class="health-metric issue">失效规则 <b id="summary-dead">—</b></span>
+            <span class="health-metric">随通道停用 <b id="summary-dead">—</b></span>
           </div>
         </div>
         <details class="issue-drawer" id="issue-details" style="display:none;">
-          <summary><span>问题清单</span><span class="t-xs muted">按规则顺序定位冲突与死出口</span></summary>
+          <summary><span>问题清单</span></summary>
           <div class="issue-list" id="issues"></div>
         </details>
-
-        <!-- 流量干线图：一眼看清哪条通道正在承接流量、哪些流量回落直连 -->
-        <div class="card" data-od-id="trunk-map">
-          <div class="card-head">
-            <h3>流量干线图</h3>
-            <span class="t-sm muted" id="trunk-meta">—</span>
-          </div>
-          <div class="trunk-wrap" id="trunk-canvas">
-            <p class="t-sm muted">正在读取通道与实时连接…</p>
-          </div>
-          <p class="trunk-hint">线条粗细 = 实时连接数，流动 = 该管段当前有连接；仅作流量分布展示，通道是否连通仍以后端探活结果为准。点击通道节点可把下方规则表筛到该通道，再点一次或点「入口 vpn-router」恢复全部（⌘/Ctrl + 点击仍打开通道详情）。</p>
-        </div>
 
         <!-- 扁平规则运维表 -->
         <div class="card" data-od-id="master-table">
           <div class="card-head">
-            <h3>分流规则</h3>
-            <span class="t-sm muted">共 <span class="num" id="t-ch">—</span> 条通道 · 当前 <span class="num" id="t-visible">—</span> / <span class="num" id="t-rules">—</span> 条规则</span>
+            <h3>全部规则</h3>
+            <span class="t-sm muted"><span class="num" id="t-visible">—</span> / <span class="num" id="t-rules">—</span> 条</span>
           </div>
           <div class="rule-toolbar">
-            <input class="input rule-search" id="rule-search" type="search" placeholder="搜索规则、通道或接入模式" aria-label="搜索分流规则" />
+            <input class="input rule-search" id="rule-search" type="search" placeholder="搜索规则或通道" aria-label="搜索分流规则" />
             <select class="select channel-filter" id="channel-filter" aria-label="按通道筛选">
               <option value="">全部通道</option>
             </select>
@@ -230,9 +138,8 @@
                 <tr>
                   <th><input class="rule-check" id="select-visible" type="checkbox" aria-label="选择当前筛选结果" /></th>
                   <th>规则</th>
-                  <th>kind</th>
+                  <th>类型</th>
                   <th>所属通道</th>
-                  <th class="hide-sm">模式</th>
                   <th>通道状态</th>
                   <th class="desktop-routing" hidden>备注</th>
                   <th>启停</th>
@@ -248,7 +155,7 @@
 
         <!-- 链路诊断降为按需展开，不与规则运维争首屏 -->
         <details class="diag-drawer" id="diag-drawer" data-od-id="pipe-map">
-          <summary><span>链路诊断</span><span class="t-xs muted">入口 → mihomo → SOCKS → VPN 隧道 → 客户内网</span></summary>
+          <summary><span>链路诊断</span><span class="t-xs muted">通道不通时，看是哪一环断了</span></summary>
           <div class="diag-body">
             <div class="pipe entry-pipe" id="entry-pipe">
               <div class="pipe-node"><span class="pdot"></span><div><div class="pn">检测中…</div><div class="ps">正在读取入口接管状态</div></div></div>
@@ -348,9 +255,6 @@
         fbk.style.display = "";
         fbk.innerHTML = "";
         fb.errorBanner(fbk, { fromError: e, onRetry: () => load(false), retryLabel: "重新加载" });
-        // 首屏就拿不到通道时，干线图别一直停在「正在读取」；trunkSig 清空以便恢复后重建
-        $("#trunk-canvas").innerHTML = `<p class="t-sm muted">通道数据暂不可用，恢复后自动重绘</p>`;
-        trunkSig = "";
       }
     }
 
@@ -397,15 +301,15 @@
       if (tun) bits.push(tun.enabled ? "层3 TUN 开" : tun.installed ? "层3 TUN 关" : "层3 TUN 未安装");
       const active = !!(clash && clash.running) || !!(sp && sp.enabled && sp.is_ours) || !!(tun && tun.enabled);
       const entryDot = entry === null ? "" : active ? "ok" : "warn";
-      const entryPs = entry === null ? "检测中…" : bits.length ? bits.join(" · ") : "接口不可用(旧版 / web 版)";
+      const entryPs = entry === null ? "检测中…" : bits.length ? bits.join(" · ") : "无法探测（Web 版）";
       const mihomoOk = sys.mihomo_status === "running";
       const online = chs.filter((c) => c.status === "logged_in").length;
       $("#entry-pipe").innerHTML = [
-        node("", "本机应用流量", "浏览器 / 终端 / 任意程序"),
+        node("", "本机流量", "浏览器 / 终端 / 任意程序"),
         ARROW,
         node(entryDot, "入口接管", entryPs),
         ARROW,
-        node(mihomoOk ? "ok" : "bad", "vpn-router · mihomo", `127.0.0.1:${sys.mihomo_port || "—"} · ${mihomoOk ? "运行中" : sys.mihomo_status || "未知"}`),
+        node(mihomoOk ? "ok" : "bad", "入口", `127.0.0.1:${sys.mihomo_port || "—"} · ${mihomoOk ? "运行中" : sys.mihomo_status || "未知"}`),
         ARROW,
         node(online ? "ok" : "warn", "按规则分流", `${chs.length} 条通道 · ${online} 在线 · 未命中 → DIRECT`),
       ].join("");
@@ -422,7 +326,7 @@
         const k = kindMeta(c.vpn_type);
         const server = (c.server || (c.config && c.config.server) || "").replace(/^https?:\/\//, "") || "配置内指定";
         const probeHost = (c.probe_url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-        const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "未探活";
+        const lat = c.latency_ms != null ? `${c.latency_ms} ms` : "未检测";
 
         // 容器节点:死循环盖过一切
         let contDot = up ? "ok" : running ? "warn" : "bad";
@@ -462,9 +366,9 @@
         return `<div class="pipe-row${up ? "" : " dim"}">
           <div class="pipe-ch"><a class="grp-name" href="channel.html?id=${fb.esc(c.id)}">${fb.esc(c.name)}</a>${badgeHTML(c.status)}</div>
           <div class="pipe">
-            ${node(en ? "ok" : "", "分流规则", en ? `${doms} 域名 + ${ips} IP 命中走此通道` : (sys.routing_off ? "全直连中 · 规则暂不生效" : !channelRoutingOn(c) ? "通道已暂停分流" : "未绑定 · 不参与分流"))}
+            ${node(en ? "ok" : "", "分流规则", en ? `${doms} 域名 + ${ips} IP 命中走此通道` : (sys.routing_off ? "分流总开关已关" : !channelRoutingOn(c) ? "通道已暂停分流" : "未绑定 · 不参与分流"))}
             ${ARROW}
-            ${node(contDot, "容器 SOCKS 出口", `${c.socks_endpoint} · 仅 docker 内网`, contNotes)}
+            ${node(contDot, "通道容器", `${c.socks_endpoint}`, contNotes)}
             ${ARROW}
             ${node(tunDot, `${k.label} 隧道`, tunPs, tunNotes)}
             ${ARROW}
@@ -472,202 +376,6 @@
           </div>
         </div>`;
       }).join("");
-    }
-
-    /* ── 流量干线图（纯展示层）──
-     * 左「入口 vpn-router」→ 一条粗干线 → 右「DIRECT 兜底直连」；每条有启用规则的通道
-     * 从干线拉一根分支到自己的容器节点卡。粗细与流动只反映 api.connections 的实时连接
-     * 分布，不参与任何登录判定——登录成功的唯一判据仍是后端 SOCKS5 探活（命门 #1）。 */
-    let conns = null;        // null = /connections 暂不可用（不复用旧数据，直接标「—」）
-    let lastSorted = [];
-    let trunkSig = "";
-    const TRUNK_DOT = { logged_in: "ok", running: "warn", starting: "warn", created: "warn" };
-
-    async function loadConns() {
-      try {
-        const d = await api.connections();
-        conns = Array.isArray(d && d.connections) ? d.connections : [];
-      } catch (_) { conns = null; }   // mihomo 半死时静默降级，主表与诊断链不受影响
-      if (loaded) paintTrunk();
-    }
-
-    /* 连接按 chains 归到通道：本工具的 mihomo 规则直接指向 ch-{id}，
-     * 但链上可能还挂着 vpn-router 之类的外层名，故整条 chains 找已知通道，找不到算直连。 */
-    function connBuckets() {
-      const by = {};
-      if (!Array.isArray(conns)) return { by, total: 0, direct: 0, ok: false };
-      const key = {};
-      chs.forEach((c) => { key["ch-" + c.id] = c.id; });
-      let total = 0, direct = 0;
-      conns.forEach((cn) => {
-        total += 1;
-        const chain = Array.isArray(cn.chains) ? cn.chains : [];
-        const hit = chain.find((x) => key[x]);
-        if (hit) by[key[hit]] = (by[key[hit]] || 0) + 1;
-        else direct += 1;
-      });
-      return { by, total, direct, ok: true };
-    }
-
-    const clipText = (s, n) => { const t = String(s == null ? "" : s); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
-    const trunkBox = (x, y, w, h, cls) => `<rect class="trunk-box${cls ? " " + cls : ""}" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"/>`;
-    const trunkTx = (x, y, cls, s) => `<text class="${cls}" x="${x}" y="${y}">${fb.esc(s)}</text>`;
-
-    function trunkGeom(n, availW) {
-      const g = { PAD: 16, EW: 154, EH: 62, DW: 168, NW: 190, NH: 84, GAP: 22, TY: 44, CT: 138 };
-      g.H = g.CT + g.NH + 22;
-      g.first = g.PAD + g.EW + 36;
-      const need = g.first + (n ? n * (g.NW + g.GAP) - g.GAP : 0) + 36 + g.DW + g.PAD;
-      g.W = Math.max(need, Math.max(560, availW));   // 装不下就横向滚，装得下就把干线拉满卡片
-      g.x0 = g.PAD + g.EW;
-      g.x1 = g.W - g.PAD - g.DW;
-      return g;
-    }
-
-    const branchW = (n, max) => 1.5 + 5 * (max > 0 ? Math.sqrt(Math.min(n, max) / max) : 0);
-    const trunkW = (total) => 3 + 7 * Math.min(1, Math.sqrt(total / 40));
-
-    /* 只在「分支集合 / 画布尺寸」变化时重建 DOM；连接数每 3 秒一变，改成就地写回数值，
-     * 否则每拍重建都会把 stroke-dashoffset 动画打回起点，流动看起来一跳一跳。 */
-    function paintTrunk(sorted, force) {
-      if (sorted) lastSorted = sorted;
-      const wrap = $("#trunk-canvas");
-      if (!wrap) return;
-      const rows = lastSorted.filter((c) => enabledRules(c).length > 0);
-      const b = connBuckets();
-      const g = trunkGeom(rows.length, (wrap.clientWidth || 940) - 40);
-      const sig = [g.W, sys.routing_off ? 1 : 0, rows.map((c) => c.id).join(",")].join("#");
-      if (sig !== trunkSig || force) {
-        trunkSig = sig;
-        buildTrunk(wrap, rows, g);
-      }
-      updateTrunk(wrap, rows, b);
-    }
-
-    function updateTrunk(wrap, rows, b) {
-      const svg = wrap.querySelector("svg");
-      if (!svg) return;
-      const pick = (attr) => {
-        const m = {};
-        svg.querySelectorAll("[" + attr + "]").forEach((el) => { m[el.getAttribute(attr)] = el; });
-        return m;
-      };
-      const base = pick("data-branch"), flow = pick("data-flow"), tap = pick("data-tap");
-      const dot = pick("data-dot"), s1 = pick("data-sub1"), s2 = pick("data-sub2");
-      const maxBranch = rows.reduce((m, c) => Math.max(m, b.by[c.id] || 0), 0);
-      rows.forEach((c) => {
-        const n = b.by[c.id] || 0;
-        const w = branchW(n, maxBranch);
-        if (base[c.id]) {
-          base[c.id].setAttribute("stroke-width", w.toFixed(2));
-          base[c.id].classList.toggle("dim", n === 0);
-        }
-        if (flow[c.id]) {
-          flow[c.id].setAttribute("stroke-width", Math.max(1.4, w - 2.2).toFixed(2));
-          flow[c.id].classList.toggle("off", n === 0);
-        }
-        if (tap[c.id]) tap[c.id].classList.toggle("live", n > 0);
-        if (dot[c.id]) dot[c.id].setAttribute("class", "tdot " + (TRUNK_DOT[c.status] || "bad"));
-        if (s1[c.id]) s1[c.id].textContent = `规则 ${enabledRules(c).length} · 连接 ${b.ok ? n : "—"}`;
-        if (s2[c.id]) s2[c.id].textContent = `${statusMeta(c.status).label} · ${c.latency_ms != null ? c.latency_ms + " ms" : "未探活"}`;
-      });
-      const tw = trunkW(b.total);
-      const tBase = svg.querySelector("[data-trunk]"), tFlow = svg.querySelector("[data-trunk-flow]");
-      if (tBase) tBase.setAttribute("stroke-width", tw.toFixed(2));
-      if (tFlow) {
-        tFlow.setAttribute("stroke-width", Math.max(1.6, tw - 3).toFixed(2));
-        tFlow.classList.toggle("off", b.total === 0);
-      }
-      const dsub = svg.querySelector("[data-direct]");
-      if (dsub) dsub.textContent = `未命中 · ${b.ok ? b.direct : "—"}`;
-      $("#trunk-meta").textContent = `${rows.length} 条分支 · 实时连接 ${b.ok ? b.total : "—"}`;
-      markTrunkSel(svg);
-    }
-
-    /* 选中态每拍都重标一次：既接住 buildTrunk 的重建，也接住下拉框改筛选后的同步 */
-    function markTrunkSel(svg) {
-      svg.querySelectorAll("[data-node]").forEach((el) => {
-        const cid = el.getAttribute("data-node");
-        if (cid && cid === filterChannel) el.setAttribute("aria-current", "true");
-        else el.removeAttribute("aria-current");
-      });
-    }
-
-    /* 干线图 ↔ 规则表联动：走的是下拉框那套 filterChannel + paint()，不另开过滤逻辑 */
-    function setChannelFilter(id) {
-      filterChannel = id;
-      $("#channel-filter").value = id;
-      const svg = $("#trunk-canvas").querySelector("svg");
-      if (svg) markTrunkSel(svg);
-      paint();
-    }
-    function trunkPick(target) {
-      const node = target.closest && target.closest("[data-node]");
-      if (!node) return;
-      const cid = node.getAttribute("data-node");
-      setChannelFilter(cid && cid !== filterChannel ? cid : "");
-    }
-    $("#trunk-canvas").addEventListener("click", (e) => {
-      // cmd / ctrl / shift 平击留给 <a> 的原行为（新标签页打开通道详情）
-      if (e.metaKey || e.ctrlKey || e.shiftKey) return;
-      if (!(e.target.closest && e.target.closest("[data-node]"))) return;
-      e.preventDefault();
-      trunkPick(e.target);
-    });
-    // 入口节点是 <g role=button>，回车/空格不会自动派发 click，这里补上
-    $("#trunk-canvas").addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      const node = e.target.closest && e.target.closest("[data-node]");
-      if (!node || node.tagName.toLowerCase() === "a") return;
-      e.preventDefault();
-      trunkPick(e.target);
-    });
-
-    function buildTrunk(wrap, rows, g) {
-      const pipes = [], flows = [], taps = [], nodes = [];
-      rows.forEach((c, i) => {
-        const left = g.first + i * (g.NW + g.GAP);
-        const cx = left + g.NW / 2;
-        const tap = cx - 58;
-        const d = `M${tap},${g.TY} C${tap + 36},${g.TY} ${cx},${g.TY + 36} ${cx},${g.CT}`;
-        const cid = fb.esc(c.id);
-        pipes.push(`<path class="trunk-pipe" data-branch="${cid}" d="${d}" stroke-width="1.5"/>`);
-        flows.push(`<path class="trunk-flow off" data-flow="${cid}" d="${d}" stroke-width="1.4"/>`);
-        taps.push(`<circle class="trunk-tap" data-tap="${cid}" cx="${tap}" cy="${g.TY}" r="3.5"/>`);
-        // href 留着当逃生口:cmd / 中键仍打开通道详情;平击被下面的联动处理器接管为「筛选规则表」
-        nodes.push(`<a class="trunk-link" data-node="${cid}" href="channel.html?id=${cid}">
-          ${trunkBox(left, g.CT, g.NW, g.NH)}
-          <circle class="tdot" data-dot="${cid}" cx="${left + 17}" cy="${g.CT + 23}" r="4.5"/>
-          ${trunkTx(left + 30, g.CT + 27, "trunk-name", clipText(c.name, 11))}
-          <text class="trunk-sub" data-sub1="${cid}" x="${left + 17}" y="${g.CT + 49}"></text>
-          <text class="trunk-sub" data-sub2="${cid}" x="${left + 17}" y="${g.CT + 68}"></text>
-        </a>`);
-      });
-
-      const td = `M${g.x0},${g.TY} L${g.x1},${g.TY}`;
-      // 入口节点 data-node="" ＝ 点它把规则表筛选清回「全部通道」。DIRECT 兜底节点不给
-      // data-node:筛选模型里没有「直连」这一项,不做假联动。
-      const head = `<g class="trunk-link" data-node="" role="button" tabindex="0" aria-label="显示全部通道的规则">` + [
-        trunkBox(g.PAD, g.TY - g.EH / 2, g.EW, g.EH),
-        trunkTx(g.PAD + 16, g.TY - 13, "trunk-cap", "入口"),
-        trunkTx(g.PAD + 16, g.TY + 5, "trunk-name", "vpn-router"),
-        trunkTx(g.PAD + 16, g.TY + 21, "trunk-sub", `127.0.0.1:${sys.mihomo_port || "—"}`),
-      ].join("") + `</g>`;
-      const tail = [
-        trunkBox(g.x1, g.TY - g.EH / 2, g.DW, g.EH, "ghost"),
-        trunkTx(g.x1 + 16, g.TY - 13, "trunk-cap", "兜底"),
-        trunkTx(g.x1 + 16, g.TY + 5, "trunk-name", "DIRECT 直连"),
-        `<text class="trunk-sub" data-direct="1" x="${g.x1 + 16}" y="${g.TY + 21}"></text>`,
-      ].join("");
-      const note = rows.length ? "" : trunkTx(g.first, g.CT + 30, "trunk-empty",
-        sys.routing_off ? "分流总开关已关闭 · 全部流量直连" : "暂无启用规则的通道 · 全部流量直连");
-
-      wrap.innerHTML = `<svg class="trunk-svg" width="${g.W}" height="${g.H}" viewBox="0 0 ${g.W} ${g.H}" aria-label="流量干线图">
-        ${pipes.join("")}${flows.join("")}
-        <path class="trunk-pipe" data-trunk="1" d="${td}" stroke-width="3"/>
-        <path class="trunk-flow off" data-trunk-flow="1" d="${td}" stroke-width="1.6"/>
-        ${taps.join("")}${head}${tail}${nodes.join("")}${note}
-      </svg>`;
     }
 
     function syncChannelFilter(sorted) {
@@ -702,16 +410,15 @@
       const enabledN = chs.reduce((n, c) => n + enabledRules(c).length, 0);
       const hasIssues = conflicts.length > 0 || deadRules.length > 0;
 
-      $("#routing-health").classList.toggle("has-issues", hasIssues);
+      $("#routing-health").classList.toggle("has-issues", conflicts.length > 0);   // 只有交叠才算问题;通道停了规则自动折叠不是异常
       $("#health-title").textContent = hasIssues
-        ? `${conflicts.length} 组交叠 · ${deadRules.length} 条失效`
-        : "规则状态正常";
+        ? (conflicts.length ? `${conflicts.length} 组规则交叠` : "规则正常") + (deadRules.length ? ` · ${deadRules.length} 条随通道停用` : "")
+        : "规则正常";
       $("#summary-online").textContent = `${online}/${chs.length}`;
       $("#summary-enabled").textContent = `${enabledN}/${totalRules}`;
       $("#summary-conflict").textContent = conflicts.length;
       $("#summary-dead").textContent = deadRules.length;
       $("#summary-conflict").parentElement.classList.toggle("active", conflicts.length > 0);
-      $("#summary-dead").parentElement.classList.toggle("active", deadRules.length > 0);
       $("#nav-count").textContent = chs.length;
       $("#foot-port").textContent = ":" + (sys.mihomo_port || "—");
       const globalRouting = $("#global-routing");
@@ -728,11 +435,11 @@
       conflicts.forEach(({ a, b, why }) => issueRows.push(`
         <div class="issue-item"><span class="badge is-down">交叠</span><div>
           <strong>${fb.esc(why)}</strong>：「${fb.esc(a.ch.name)}」<span class="mono">${fb.esc(a.r.pattern)}</span>
-          ↔ 「${fb.esc(b.ch.name)}」<span class="mono">${fb.esc(b.r.pattern)}</span>。命中时走排前规则，另一条轮空。
+          ↔ 「${fb.esc(b.ch.name)}」<span class="mono">${fb.esc(b.r.pattern)}</span>。只有排在前面的那条会生效。
         </div></div>`));
       deadRules.forEach(({ ch, r }) => issueRows.push(`
-        <div class="issue-item"><span class="badge is-running">失效</span><div>
-          「${fb.esc(ch.name)}」<span class="mono">${fb.esc(r.pattern)}</span> 仍启用，但通道已停止——后端已自动折叠该规则，命中流量回落直连；启动通道即自动恢复生效。
+        <div class="issue-item"><span class="badge is-stopped">通道已停</span><div>
+          「${fb.esc(ch.name)}」<span class="mono">${fb.esc(r.pattern)}</span> 仍启用，但通道已停止，命中的流量会直连；启动通道后自动恢复。
         </div></div>`));
       $("#issues").innerHTML = issueRows.join("");
 
@@ -740,23 +447,21 @@
       syncChannelFilter(sorted);
       const flat = [];
       sorted.forEach((c) => {
-        const mode = kindMeta(c.vpn_type);
-        allRules(c).forEach((r) => flat.push({ c, r, mode }));
+        allRules(c).forEach((r) => flat.push({ c, r }));
       });
       const validIds = new Set(flat.map(({ r }) => String(r.id)));
       [...selectedRules].forEach((id) => { if (!validIds.has(id)) selectedRules.delete(id); });
       const q = filterQuery.toLowerCase();
-      const visible = flat.filter(({ c, r, mode }) => {
+      const visible = flat.filter(({ c, r }) => {
         if (filterChannel && c.id !== filterChannel) return false;
         if (!q) return true;
-        return [r.pattern, r.kind, r.note, c.name, mode.label].some((v) => String(v || "").toLowerCase().includes(q));
+        return [r.pattern, r.note, c.name].some((v) => String(v || "").toLowerCase().includes(q));
       });
       visibleRuleIds = visible.map(({ r }) => String(r.id));
 
-      $("#t-ch").textContent = chs.length;
       $("#t-visible").textContent = visible.length;
       $("#t-rules").textContent = totalRules;
-      $("#tbody").innerHTML = visible.map(({ c, r, mode }) => {
+      $("#tbody").innerHTML = visible.map(({ c, r }) => {
         const id = String(r.id);
         const conflictNotes = r.enabled ? (confNote.get(r.id) || []) : [];
         const dead = !!r.enabled && deadRids.has(r.id);
@@ -764,25 +469,24 @@
         const cls = conflictNotes.length ? "hit-conflict" : dead ? "hit-dead" : effective ? "" : "off";
         const badges = [];
         if (conflictNotes.length) badges.push(`<span class="rule-badge conflict" title="${fb.esc(conflictNotes.join("；"))}">冲突 ${conflictNotes.length}</span>`);
-        if (dead) badges.push(`<span class="rule-badge dead" title="通道已停止，规则已自动折叠（命中回落直连），启动通道自动恢复">已折叠</span>`);
+        if (dead) badges.push(`<span class="rule-badge dead" title="通道已停止，命中的流量会直连；启动通道后自动恢复">通道已停</span>`);
         if (!channelRoutingOn(c)) badges.push(`<span class="rule-badge paused">通道暂停</span>`);
-        if (sys.routing_off) badges.push(`<span class="rule-badge paused">全直连</span>`);
+        if (sys.routing_off) badges.push(`<span class="rule-badge paused">分流已关</span>`);
         const metadata = routingControlsSupported() ? `<td><input class="input rule-note-input" data-rule-note="${fb.esc(id)}" data-cid="${fb.esc(c.id)}" value="${fb.esc(r.note || "")}" placeholder="添加备注" aria-label="${fb.esc(r.pattern)} 的备注" ${busy ? "disabled" : ""} /></td>` : "";
         const protection = routingControlsSupported() ? `<td><button class="btn btn-sm btn-ghost rule-lock" type="button" data-rule-lock="${fb.esc(id)}" data-cid="${fb.esc(c.id)}" aria-pressed="${!!r.locked}" ${busy ? "disabled" : ""}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>${r.locked ? "已锁" : "未锁"}</button></td>` : "";
         return `<tr class="${cls}">
           <td><input class="rule-check" type="checkbox" data-select-rule="${fb.esc(id)}" ${selectedRules.has(id) ? "checked" : ""} ${busy ? "disabled" : ""} aria-label="选择 ${fb.esc(r.pattern)}" /></td>
           <td><div class="rule-pattern">${fb.esc(r.pattern)}</div></td>
-          <td>${r.kind === "ip" ? "IP 网段" : "域名后缀"}</td>
-          <td><a class="grp-name" href="channel.html?id=${fb.esc(c.id)}">${fb.esc(c.name)}</a><div class="grp-meta">${fb.esc(c.socks_endpoint || "")}</div></td>
-          <td class="hide-sm">${fb.esc(mode.label)}</td>
+          <td class="muted nowrap">${r.kind === "ip" ? "IP / 网段" : "域名"}</td>
+          <td><a class="grp-name" href="channel.html?id=${fb.esc(c.id)}">${fb.esc(c.name)}</a></td>
           <td>${badgeHTML(c.status)}</td>
           ${metadata}
           <td><button class="switch ${r.enabled ? "on" : ""}" type="button" role="switch" aria-checked="${!!r.enabled}" aria-label="${r.enabled ? "停用" : "启用"} ${fb.esc(r.pattern)}" data-rule-toggle="${fb.esc(id)}" data-cid="${fb.esc(c.id)}" data-enabled="${r.enabled ? "1" : "0"}" ${busy ? "disabled" : ""}></button></td>
           ${protection}
           <td><div class="rule-badges">${badges.join("") || `<span class="muted">—</span>`}</div></td>
         </tr>`;
-      }).join("") || `<tr><td colspan="${routingControlsSupported() ? 10 : 8}"><div class="empty" style="padding:var(--space-6);">${totalRules ? "没有匹配当前筛选的规则" : "还没有分流规则，请先在通道详情绑定域名或 IP 网段"}</div></td></tr>`;
+      }).join("") || `<tr><td colspan="${routingControlsSupported() ? 9 : 7}"><div class="empty" style="padding:var(--space-6);">${totalRules ? "没有匹配当前筛选的规则" : "还没有规则。在通道详情里绑定域名或 IP 网段。"}</div></td></tr>`;
 
       const selectVisible = $("#select-visible");
       const selectedVisible = visibleRuleIds.filter((id) => selectedRules.has(id)).length;
@@ -790,7 +494,6 @@
       selectVisible.checked = visibleRuleIds.length > 0 && selectedVisible === visibleRuleIds.length;
       selectVisible.indeterminate = selectedVisible > 0 && selectedVisible < visibleRuleIds.length;
       updateBulkState();
-      paintTrunk(sorted);
       paintPipes(sorted);
       paintEntry();
     }
@@ -799,10 +502,7 @@
       filterQuery = e.target.value.trim();
       paint();
     });
-    $("#channel-filter").addEventListener("change", (e) => {
-      // 走同一条路,免得下拉改完干线图的选中态要等下一拍轮询才跟上
-      setChannelFilter(e.target.value);
-    });
+    $("#channel-filter").addEventListener("change", (e) => { filterChannel = e.target.value; paint(); });
     $("#select-visible").addEventListener("change", (e) => {
       visibleRuleIds.forEach((id) => e.target.checked ? selectedRules.add(id) : selectedRules.delete(id));
       paint();
@@ -922,8 +622,8 @@
     async function toggleGlobalRouting() {
       if (busy || !routingControlsSupported()) return;
       const turningOff = !sys.routing_off;
-      if (turningOff && !await fb.confirm("开启全直连后，所有分流规则会暂时失效；原始启停状态会保留，恢复分流后继续生效。", {
-        title: "开启全直连", confirmLabel: "开启全直连",
+      if (turningOff && !await fb.confirm("关闭后所有分流规则暂时失效，流量全部直连；规则本身的启停状态会保留。", {
+        title: "关闭分流", confirmLabel: "关闭分流",
       })) return;
       const btn = $("#global-routing");
       busy = true;
@@ -932,7 +632,7 @@
         const result = await api.setRouting(turningOff);
         sys.routing_off = !!result.off;
         await load(false);
-        toast(turningOff ? "已开启全直连，全部分流规则暂不生效" : "已恢复分流，原始规则状态继续生效", { variant: "success" });
+        toast(turningOff ? "分流已关闭，流量全部直连" : "分流已恢复", { variant: "success" });
       } catch (err) {
         const f = fb.friendlyError(err);
         toast("切换分流总开关失败：" + f.title, { variant: "danger" });
@@ -944,20 +644,12 @@
     }
     $("#global-routing").addEventListener("click", toggleGlobalRouting);
 
-    let trunkResizeT;
-    window.addEventListener("resize", () => {
-      clearTimeout(trunkResizeT);
-      trunkResizeT = setTimeout(() => paintTrunk(null, true), 200);
-    });
-
     load();
     loadEntry();
     loadDiag();
-    loadConns();
     setInterval(() => load(true), 8000);
     setInterval(loadEntry, 30000);
     setInterval(loadDiag, 20000);
-    setInterval(loadConns, 3000);
   </script>
 </body>
 </html>

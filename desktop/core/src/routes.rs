@@ -47,15 +47,23 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
         };
         if let Some(e) = restart_err {
             let pre = tunnel_err.map(|e| format!("重建转发失败:{e};")).unwrap_or_default();
-            crate::ev!(error, "api", "heal_failed", "手动修复分流链路失败",
-                { "action": "manual", "error": e.to_string() });
+            crate::events::audit_failed("heal_proxy", "手动修复分流链路失败", json!({
+                "target_kind": "system", "target_name": crate::infra::MIHOMO_CONTAINER,
+                "action": "manual", "before": { "reachable": false }, "after": { "reachable": false },
+                "duration_ms": started.elapsed().as_millis() as u64,
+                "result": "failed", "error": e.to_string()
+            }));
             return Json(json!({"ok": false, "reachable": false,
                 "error": format!("{pre}重启分流路由失败:{e}。建议退出并重新打开 app(将自动重建底座)")}));
         }
         method = "restart";
         if let Err(e) = crate::tunnel::ensure(&st).await {
-            crate::ev!(error, "api", "heal_failed", "手动修复后转发仍未恢复",
-                { "action": "manual", "error": e.to_string() });
+            crate::events::audit_failed("heal_proxy", "手动修复后转发仍未恢复", json!({
+                "target_kind": "system", "target_name": crate::infra::MIHOMO_CONTAINER,
+                "action": "restart", "before": { "reachable": false }, "after": { "reachable": false },
+                "duration_ms": started.elapsed().as_millis() as u64,
+                "result": "failed", "error": e.to_string()
+            }));
             return Json(json!({"ok": false, "reachable": false,
                 "error": format!("分流路由已重启,但转发仍未恢复:{e}。建议退出并重新打开 app")}));
         }
@@ -69,11 +77,18 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
             snap.healing = false;
             snap.gave_up = false;
         }
-        crate::ev!(info, "api", "heal_done", "手动修复分流链路完成",
-            { "action": method, "duration_ms": started.elapsed().as_millis() as u64 });
+        crate::events::audit("heal_proxy", "手动修复分流链路完成", json!({
+            "target_kind": "system", "target_name": crate::infra::MIHOMO_CONTAINER,
+            "action": method, "before": { "reachable": false }, "after": { "reachable": true },
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
+        }));
     } else {
-        crate::ev!(error, "api", "heal_failed", "手动修复动作完成但端到端探活仍失败",
-            { "action": method });
+        crate::events::audit_failed("heal_proxy", "手动修复动作完成但端到端探活仍失败", json!({
+            "target_kind": "system", "target_name": crate::infra::MIHOMO_CONTAINER,
+            "action": method, "before": { "reachable": false }, "after": { "reachable": false },
+            "duration_ms": started.elapsed().as_millis() as u64,
+            "result": "failed", "error": "端到端探活未通过"
+        }));
     }
     Json(json!({"ok": true, "reachable": reachable, "method": method}))
 }

@@ -122,9 +122,81 @@ async fn events_api_is_incremental_capped_and_exportable() {
             .unwrap(),
         "text/plain; charset=utf-8"
     );
+    let disposition = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    // days 模式也按算出来的区间命名,导出文件名自带取数范围。
+    assert!(
+        disposition.starts_with("attachment; filename=\"vpnmgr-events-"),
+        "{disposition}"
+    );
     let exported = response.text().await.unwrap();
     assert!(exported.contains("export_probe"));
     assert!(!exported.contains("hunter2"));
     assert!(!exported.contains("\"abc\""));
+
+    // 区间反了 / 日期解析不出来 → 400,不给一份空文件让人以为「那几天什么都没发生」。
+    for query in ["from=2026-01-02&to=2026-01-01", "from=notadate"] {
+        let bad = client
+            .get(format!("{base}/api/events/export?{query}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST, "{query}");
+    }
+
+    // 记录总开关:关掉后新事件不入环,但「关掉」这件事本身必须留痕。
+    let seq_before = events::snapshot(0, 1, &events::Filter::default()).1;
+    let off: serde_json::Value = client
+        .post(format!("{base}/api/events/enabled"))
+        .json(&serde_json::json!({ "enabled": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(off["enabled"], false);
+    events::emit(
+        events::Level::Info,
+        "api_integration",
+        "muted",
+        "muted",
+        serde_json::json!({}),
+    );
+    let listed: serde_json::Value = client
+        .get(format!("{base}/api/events?since_seq={seq_before}&limit=50"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["enabled"], false);
+    let codes: Vec<&str> = listed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["event"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"logging_disabled"), "{codes:?}");
+    assert!(!codes.contains(&"muted"), "{codes:?}");
+    assert!(dir.path().join("logs").join("disabled").exists());
+
+    let on: serde_json::Value = client
+        .post(format!("{base}/api/events/enabled"))
+        .json(&serde_json::json!({ "enabled": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(on["enabled"], true);
+    assert!(!dir.path().join("logs").join("disabled").exists());
     task.abort();
 }

@@ -82,8 +82,41 @@
     }
   };
 
-  /* ── 侧栏：高亮 + 移动端抽屉 ── */
+  /* ── 侧栏:全站唯一一份,由这里渲染进每页的空 <aside class="sidebar">;
+   *    页面只负责 <body data-page> 高亮。底部状态灯由 /api/system 驱动,不再写死。 ── */
+  const NAV = [
+    ["channels", "index.html", "通道", '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>'],
+    ["routing", "routing-table.html", "分流规则", '<path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/>'],
+    ["monitor", "monitor.html", "流量监控", '<path d="M3 12h4l3 8 4-16 3 8h4"/>'],
+    ["system", "clash-config.html", "设置", '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>'],
+  ];
+  function renderSidebar() {
+    const aside = $(".sidebar");
+    if (!aside || aside.children.length) return;
+    const ic = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${d}</svg>`;
+    aside.innerHTML = `
+      <div class="sidebar-logo">
+        <span class="logo-mark">${ic('<path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/>')}</span>
+        <span class="logo-text">VPN 管理网关</span>
+      </div>
+      <nav class="sidebar-nav">
+        ${NAV.map(([k, href, label, d]) => `<a class="nav-item" data-nav="${k}" href="${href}">${ic(d)}${label}${k === "channels" ? ' <span class="count" id="nav-count">—</span>' : ""}</a>`).join("")}
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sys-chip" id="shell-chip" style="width:100%; justify-content:flex-start;">
+          <span class="dot"></span><span>正在检测…</span><span class="k spacer" id="foot-port"></span>
+        </div>
+      </div>`;
+  }
+  /* 底部端口号;状态灯文字与颜色由 feedback.js 的 syncChip 随 /api/system 轮询同步(全站一处) */
+  async function refreshShellPort() {
+    const fp = $("#foot-port"); if (!fp || !window.api) return;
+    try { const s = await api.system(); fp.textContent = s.mihomo_port ? ":" + s.mihomo_port : ""; } catch (_) {}
+  }
+  // 脚本挂在 body 末尾,此刻 <aside> 已在 DOM:立即渲染,免得各页脚本在 DOMContentLoaded 前就写 #nav-count / #foot-port 时找不到节点。
+  renderSidebar();
   function initShell() {
+    refreshShellPort();
     const page = document.body.dataset.page;
     if (page) $$(".nav-item[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === page));
     const app = $(".app");

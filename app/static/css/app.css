@@ -3,8 +3,8 @@
  * 视觉契约 = Claude / Anthropic 官网浅色暖调（象牙纸底 / 陶土橙 / 衬线标题）。
  *   · 底：暖白三阶 bg #faf9f5（象牙纸）→ surface #ffffff → surface-2 #f0eee6
  *     （book cloth 暖纸色）；边框 #e2dfd4 系暖灰。
- *   · 字：暖黑 --fg #141413（17.5:1），次级 --muted #6a6963（三层底全 ≥4.7:1）；标题
- *     （h1/h2）用衬线 Source Serif 4，正文 Inter，数据用 JetBrains Mono。
+ *   · 字：暖黑 --fg #141413（17.5:1），次级 --muted #6a6963（三层底全 ≥4.7:1）；全站系统
+ *     字体栈（不依赖网络字体），等宽只给 IP / 端口 / id / 命令这类真数据，不给中文与标签。
  *   · 强调：陶土橙 --accent #ac4c22 承接旧钴蓝的全部角色 —— 它同时要当「奶油
  *     底上的文字」和「白字的按钮底」，两头都得过 4.5:1，所以取的是珊瑚橙
  *     #d97757 压暗后的同色相档（奶油底 5.23:1 / 白字 5.51:1）；--accent-on 白。
@@ -52,13 +52,16 @@
   --warn: #7a5c14;
   --danger: #b3372c;
 
-  --font-display: "Source Serif 4", Georgia, "Times New Roman", serif;
-  --font-body: "Inter", -apple-system, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* 系统字体栈:本地工具不依赖网络字体,中英文同一套渲染;等宽只给 IP / 端口 / id / 命令这类真数据 */
+  --font-body: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: var(--font-body);
+  --font-mono: ui-monospace, "SF Mono", Menlo, "JetBrains Mono", Consolas, monospace;
 
-  --text-xs: 12px;
+  /* 字号只用三档:xs 元信息 / sm 正文与控件 / base 标题。等宽行内文字按 em 缩一点,
+   * 等宽字形本身偏大,同 px 放进中文句子里会显得忽大忽小。 */
+  --text-xs: 13px;
   --text-sm: 14px;
-  --text-base: 16px;
+  --text-base: 15px;
   --text-lg: 20px;
   --text-xl: 24px;
   --text-2xl: 32px;
@@ -159,8 +162,7 @@ img, svg { display: block; max-width: 100%; }
 a { color: inherit; text-decoration: none; }
 button { font: inherit; cursor: pointer; color: inherit; }
 h1, h2, h3, h4 { margin: 0; font-family: var(--font-body); font-weight: 600; line-height: var(--leading-tight); }
-/* 衬线只给 h1/h2（display 层）；h3/h4 是组件标题，留在 Inter 上更像操作台 */
-h1, h2 { font-family: var(--font-display); font-weight: 500; letter-spacing: var(--tracking-display); }
+h1, h2 { letter-spacing: -0.01em; }
 h1 { font-size: var(--text-2xl); }
 h2 { font-size: var(--text-xl); }
 h3 { font-size: var(--text-lg); }
@@ -170,9 +172,9 @@ p { margin: 0; text-wrap: pretty; }
 
 /* ─── utilities ───────────────────────────────────────────────────────── */
 .muted { color: var(--muted); }
-.mono { font-family: var(--font-mono); }
+.mono { font-family: var(--font-mono); font-size: 0.92em; }
 .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.eyebrow { font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.eyebrow { font-size: var(--text-xs); font-weight: 500; color: var(--muted); }
 .t-sm { font-size: var(--text-sm); }
 .t-xs { font-size: var(--text-xs); }
 .strong { font-weight: 600; }
@@ -216,10 +218,9 @@ p { margin: 0; text-wrap: pretty; }
 }
 .logo-mark svg { width: 17px; height: 17px; }
 .logo-text { font-weight: 600; font-size: var(--text-base); letter-spacing: -0.01em; line-height: 1.1; }
-.logo-text small { display: block; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; color: var(--muted); text-transform: uppercase; font-weight: 400; }
 
 .sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
-.nav-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: var(--space-4) var(--space-3) var(--space-2); }
+.nav-label { font-size: var(--text-xs); color: var(--muted); padding: var(--space-4) var(--space-3) var(--space-2); }
 .nav-item {
   display: flex; align-items: center; gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
@@ -230,7 +231,7 @@ p { margin: 0; text-wrap: pretty; }
 .nav-item svg { width: 17px; height: 17px; flex: none; }
 .nav-item:hover { background: var(--row-hover); color: var(--fg); }
 .nav-item.active { background: var(--accent-soft); color: var(--accent); }
-.nav-item .count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.nav-item .count { margin-left: auto; font-size: 12px; color: var(--muted); }
 .nav-item.active .count { color: var(--accent); }
 .sidebar-foot { margin-top: auto; padding-top: var(--space-4); border-top: 1px solid var(--border); }
 
@@ -250,7 +251,7 @@ p { margin: 0; text-wrap: pretty; }
 .content { padding: var(--space-8); width: 100%; }
 .content-narrow { max-width: 880px; }
 .page-head { margin-bottom: var(--space-6); }
-.page-head .crumb { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted); margin-bottom: var(--space-2); }
+.page-head .crumb { font-size: var(--text-xs); color: var(--muted); margin-bottom: var(--space-2); }
 .page-head h1 { font-size: var(--text-2xl); }
 .page-head p { color: var(--muted); margin-top: var(--space-2); max-width: 70ch; }
 
@@ -264,7 +265,7 @@ p { margin: 0; text-wrap: pretty; }
 .sys-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .sys-chip.ok .dot { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 .sys-chip.bad .dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
-.sys-chip .k { color: var(--muted); font-family: var(--font-mono); }
+.sys-chip .k { color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
 
 /* ─── buttons ─────────────────────────────────────────────────────────── */
 .btn {
@@ -335,11 +336,12 @@ p { margin: 0; text-wrap: pretty; }
 @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.7); } }
 
 /* ─── pill / tag / chip ───────────────────────────────────────────────── */
-.pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em; }
-.tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: var(--radius-pill); border: 1px solid var(--border); background: var(--surface); font-size: var(--text-xs); color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: var(--radius-pill); border: 1px solid var(--border); background: var(--surface); font-size: var(--text-xs); color: var(--muted); white-space: nowrap; }
 .tag .x { cursor: pointer; opacity: 0.5; } .tag .x:hover { opacity: 1; color: var(--danger); }
-.tag.mono { font-family: var(--font-mono); }
+.tag.mono { font-family: var(--font-mono); font-size: 12px; }
 .tag.ip { border-style: dashed; }   /* IP/网段规则与域名规则的轻量视觉区分 */
+.tag.off { opacity: 0.5; text-decoration: line-through; }   /* 已停用的规则 */
 
 /* 行内说明（图标 + 文字），跨屏共用 */
 .note-line { font-size: var(--text-xs); color: var(--muted); display: flex; gap: var(--space-2); }
@@ -354,46 +356,17 @@ p { margin: 0; text-wrap: pretty; }
 .ch-card:hover { border-color: color-mix(in oklab, var(--accent), transparent 45%); box-shadow: var(--elev-raised); }
 .ch-card .ch-top { display: flex; align-items: flex-start; gap: var(--space-3); }
 .ch-card .ch-name { font-weight: 600; font-size: var(--text-base); }
-.ch-card .ch-meta { color: var(--muted); font-size: var(--text-xs); font-family: var(--font-mono); margin-top: 2px; }
+.ch-card .ch-meta { color: var(--muted); font-size: var(--text-xs); margin-top: 2px; }
 .ch-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); margin: var(--space-4) 0; padding: var(--space-4) 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .ch-grid .kv .k { font-size: var(--text-xs); color: var(--muted); }
 .ch-grid .kv .v { font-family: var(--font-mono); font-size: var(--text-sm); margin-top: 2px; }
 .ch-domains { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--space-4); min-height: 26px; }
 .ch-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 
-/* ─── 通道测速卡片墙（monitor.html，参考 Clash 仪表盘 Proxies 面板） ────── */
-[data-od-id="speedtest"] .card-head { flex-wrap: wrap; }   /* 窄屏下汇总文字 + 按钮换行，不挤压标题 */
-.spd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-3); }
-.spd-card {
-  background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-md);
-  padding: var(--space-4); cursor: pointer; min-width: 0;
-  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), opacity var(--motion-fast);
-}
-.spd-card:hover { border-color: color-mix(in oklab, var(--accent), transparent 45%); box-shadow: var(--elev-raised); }
-.spd-card.is-off { opacity: 0.55; cursor: default; }          /* stopped 通道：降透明度、恢复默认光标，不可点 */
-.spd-card.is-off:hover { border-color: var(--border); box-shadow: none; }
-.spd-top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
-.spd-name { font-weight: 600; font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.spd-meta { color: var(--muted); font-size: var(--text-xs); margin-top: 4px; }
-
-.spd-badge {
-  flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: var(--radius-pill);
-  font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums;
-  border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
-}
-.spd-badge svg { width: 11px; height: 11px; }
-.spd-badge.ok { color: var(--success); border-color: color-mix(in oklab, var(--success), transparent 60%); background: var(--success-soft); }
-.spd-badge.mid { color: var(--warn); border-color: color-mix(in oklab, var(--warn), transparent 55%); background: var(--warn-soft); }
-/* >500ms：warn/danger 各半的混色，比 mid 更「橙」又不到 timeout 的红，仍全部来自既有 token */
-.spd-badge.slow { color: color-mix(in oklab, var(--warn), var(--danger) 50%); border-color: color-mix(in oklab, var(--warn), var(--danger) 50%, transparent 55%); background: color-mix(in oklab, var(--warn-soft), var(--danger-soft)); }
-.spd-badge.timeout { color: var(--danger); border-color: color-mix(in oklab, var(--danger), transparent 60%); background: var(--danger-soft); }
-.spd-badge.off { color: var(--muted); background: var(--surface-2); }
-.spd-badge.testing { color: var(--muted); }
-
 /* ─── table ───────────────────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .table th, .table td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
-.table th { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+.table th { color: var(--muted); font-weight: 500; font-size: var(--text-xs); }
 .table tbody tr:hover { background: var(--row-hover); }
 .table .num-col { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .table .r { text-align: right; }
@@ -401,7 +374,7 @@ p { margin: 0; text-wrap: pretty; }
 /* ─── key/value list ──────────────────────────────────────────────────── */
 .kv-list { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-3) var(--space-6); align-items: baseline; }
 .kv-list dt { color: var(--muted); font-size: var(--text-sm); }
-.kv-list dd { margin: 0; font-family: var(--font-mono); font-size: var(--text-sm); }
+.kv-list dd { margin: 0; font-size: var(--text-sm); }
 
 /* ─── forms ───────────────────────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 6px; }
@@ -468,7 +441,7 @@ p { margin: 0; text-wrap: pretty; }
 /* ─── code block / kbd ────────────────────────────────────────────────── */
 /* 浅色主题下深块自己就切得出来，描边只作收边；描边必须用 --ink-border，
  * 用 --border（浅暖灰）会在深块四周形成一圈光晕 */
-.code { background: var(--ink); color: var(--on-ink); border: 1px solid var(--ink-border); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.65; overflow-x: auto; white-space: pre; }
+.code { background: var(--ink); color: var(--on-ink); border: 1px solid var(--ink-border); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65; overflow-x: auto; white-space: pre; }
 .code .cmt { color: color-mix(in oklab, var(--on-ink), transparent 50%); }
 .code .key { color: var(--ink-accent); }
 .code .str { color: var(--ink-success); }

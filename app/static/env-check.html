@@ -3,54 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>环境诊断 · VPN 管理网关</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
+  <title>常见问题 · VPN 管理网关</title>
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body data-page="system">
   <div class="app">
-    <!-- ════ 侧栏（所有屏一致） ════ -->
-    <aside class="sidebar">
-      <div class="sidebar-logo">
-        <span class="logo-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
-        </span>
-        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
-      </div>
-      <nav class="sidebar-nav">
-        <span class="nav-label">管理</span>
-        <a class="nav-item" data-nav="channels" href="index.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
-          通道总览 <span class="count" id="nav-count">—</span>
-        </a>
-        <a class="nav-item" data-nav="routing" href="routing-table.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/></svg>
-          分流总表
-        </a>
-        <a class="nav-item" data-nav="monitor" href="monitor.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
-          流量监控
-        </a>
-        <a class="nav-item" data-nav="system" href="clash-config.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
-          系统与接入
-        </a>
-        <a class="nav-item" data-nav="containers" href="containers.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
-          容器管理
-        </a>
-      </nav>
-      <div class="sidebar-foot">
-        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
-          <span class="dot"></span>
-          <span>mihomo 运行中</span>
-          <span class="k spacer" id="foot-port">:7899</span>
-        </div>
-        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
-      </div>
-    </aside>
+    <aside class="sidebar"></aside>
 
     <!-- ════ 主区 ════ -->
     <div class="main">
@@ -58,7 +16,7 @@
         <button class="icon-btn menu-btn" aria-label="菜单">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
-        <h1>环境诊断</h1>
+        <h1>常见问题</h1>
         <span class="spacer"></span>
         <a class="btn btn-secondary" href="index.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -69,47 +27,15 @@
       <div class="content content-narrow stack-6">
         <!-- 页头说明 -->
         <div class="page-head">
-          <div class="crumb">设置 / 环境诊断</div>
-          <h1>环境诊断</h1>
-          <p>检测本机 Docker 环境、网络连通性、镜像可达性等依赖条件，发现问题可一键修复。</p>
+          <div class="crumb"><a href="clash-config.html?tab=diag">设置</a> / 常见问题</div>
+          <h1>常见问题</h1>
         </div>
 
         <!-- 卡片 + 两个 tab -->
         <div class="card card-pad">
           <div data-tabscope>
             <div class="tabs" data-tabs>
-              <button class="tab active" data-tab="diag">诊断</button>
-              <button class="tab" data-tab="mirrors">镜像源</button>
-              <button class="tab" data-tab="images">镜像清单</button>
-              <button class="tab" data-tab="trouble">常见报错</button>
-            </div>
-
-            <!-- ─── Tab 诊断 ─── -->
-            <div class="tabpanel active" data-panel="diag" style="padding-top:var(--space-5);">
-              <div style="display:flex; align-items:center; gap:var(--space-3); margin-bottom:var(--space-4); flex-wrap:wrap;">
-                <select id="diag-type" class="input" style="flex:1; min-width:180px; max-width:320px;">
-                  <option value="">(只查环境，不挑类型)</option>
-                </select>
-                <button class="btn btn-primary" id="diag-run">全量体检</button>
-              </div>
-              <div id="diag-host"></div>
-            </div>
-
-            <!-- ─── Tab 镜像源 ─── -->
-            <div class="tabpanel" data-panel="mirrors" style="padding-top:var(--space-5);">
-              <div id="mir-panel">
-                <div class="row" style="gap:var(--space-2); margin-bottom:var(--space-3);">
-                  <input id="mir-host" class="input" placeholder="docker.example.com" style="flex:1;">
-                  <button class="btn btn-primary" id="mir-add">添加</button>
-                </div>
-                <div id="mir-list"></div>
-              </div>
-            </div>
-
-            <!-- ─── Tab 镜像清单 ─── -->
-            <div class="tabpanel" data-panel="images" style="padding-top:var(--space-5);">
-              <p class="t-xs muted" style="margin-bottom:var(--space-3);">本系统用到的全部镜像 + 下载/构建/离线命令。可拉取的支持一键拉取(本机架构);自建镜像需在仓库根构建。</p>
-              <div id="img-list"></div>
+              <button class="tab active" data-tab="trouble">常见报错</button>
             </div>
 
             <!-- ─── Tab 常见报错(图文排查) ─── -->
@@ -134,7 +60,7 @@
               .tb-flow .node.bad { border-color:var(--danger-soft); background:var(--danger-soft); color:var(--danger); }
               .tb-flow .arr { color:var(--muted); }
             </style>
-            <div class="tabpanel" data-panel="trouble" style="padding-top:var(--space-5);">
+            <div class="tabpanel active" data-panel="trouble" style="padding-top:var(--space-5);">
               <p class="t-xs muted" style="margin-bottom:var(--space-4);">起容器 / 登录 / 探活 各环节常见报错的排查与解决。蓝=照指引操作即可,黄=需注意,红=较严重。运行中报错也会经友好提示给出同款建议。</p>
               <div class="tb-list">
 
@@ -145,7 +71,7 @@
                     <div class="tb-title">Docker 引擎未就绪 <span class="tb-tag">cannot connect / not running</span></div>
                     <p class="cause"><span class="lbl">原因</span>底层 colima 虚拟机 / Docker 没起来或连不上,通道无法运行。</p>
                     <p><span class="lbl">解决</span>切到「诊断」跑全量体检,按结果启动引擎。桌面 app 自带并会自启;手动可在终端 <span class="mono">colima start</span>。</p>
-                    <div class="tb-acts"><button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=diag]').click()">去诊断体检</button></div>
+                    <div class="tb-acts"><button class="btn btn-secondary btn-sm" onclick="location.href='clash-config.html?tab=diag'">去环境检查</button></div>
                   </div>
                 </div>
 
@@ -157,8 +83,8 @@
                     <p class="cause"><span class="lbl">原因</span>Docker Hub CDN 直连不稳(常见 EOF 中断)或限流,镜像没下下来。</p>
                     <p><span class="lbl">解决</span>「镜像源」加一个国内源并启用 → 回「镜像清单」一键重拉。<b>切勿手动加 <span class="mono">--platform amd64</span></b>(会拉错架构)。</p>
                     <div class="tb-acts">
-                      <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=mirrors]').click()">去配镜像源</button>
-                      <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=images]').click()">去重拉镜像</button>
+                      <button class="btn btn-secondary btn-sm" onclick="location.href='clash-config.html?tab=mirrors'">去配镜像源</button>
+                      <button class="btn btn-secondary btn-sm" onclick="location.href='clash-config.html?tab=images'">去拉取镜像</button>
                     </div>
                   </div>
                 </div>
@@ -202,7 +128,7 @@
                     <div class="tb-title">Docker 网络缺失 <span class="tb-tag">network not found</span></div>
                     <p class="cause"><span class="lbl">原因</span>通道所需的 Docker 网络(vpnnet)还没建。</p>
                     <p><span class="lbl">解决</span>「诊断」体检后点「创建网络」一键修复。</p>
-                    <div class="tb-acts"><button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-tab=diag]').click()">去诊断修复</button></div>
+                    <div class="tb-acts"><button class="btn btn-secondary btn-sm" onclick="location.href='clash-config.html?tab=diag'">去环境检查</button></div>
                   </div>
                 </div>
 
@@ -236,9 +162,7 @@
   </div>
 
   <script src="js/api.js"></script>
-  <script src="js/preflightPanel.js"></script>
   <script src="js/app.js"></script>
   <script src="js/feedback.js"></script>
-  <script src="js/environment.js"></script>
 </body>
 </html>

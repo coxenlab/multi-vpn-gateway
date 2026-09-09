@@ -47,11 +47,11 @@ pub async fn add_rules(
     Json(b): Json<Value>,
 ) -> axum::response::Response {
     let db = st.cfg.db_path();
-    match store::get_channel(&db, &cid) {
-        Ok(Some(_)) => {}
+    let ch_name = match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) => ch.name,
         Ok(None) => return err404("channel not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
-    }
+    };
     let docker = match st.docker() {
         Some(d) => d,
         None => return err503("docker unavailable"),
@@ -64,24 +64,57 @@ pub async fn add_rules(
         .or_else(|| b.get("pattern").and_then(|v| v.as_str()).map(|s| vec![s.to_string()]))
         .unwrap_or_default();
     let forced = b.get("kind").and_then(|v| v.as_str());
-    let existing: Vec<(String, String)> = match store::list_rules(&db, &cid) {
-        Ok(rules) => rules.into_iter().map(|r| (r.kind, r.pattern)).collect(),
+    let before_rules = match store::list_rules(&db, &cid) {
+        Ok(rules) => rules,
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_rules: {e}")),
+    };
+    let before_ids: std::collections::BTreeSet<i64> = before_rules.iter().map(|r| r.id).collect();
+    let existing: Vec<(String, String)> =
+        before_rules.iter().map(|r| (r.kind.clone(), r.pattern.clone())).collect();
+    let audit_base = || {
+        json!({
+            "target_kind": "rules", "target_id": cid.as_str(), "target_name": ch_name.as_str(),
+            "patterns": patterns.clone(), "forced_kind": forced,
+        })
     };
     let plan = webutil::plan_rules(&patterns, forced, &existing);
     for (kind, pat) in &plan.to_add {
         if let Err(e) = store::add_rule(&db, &cid, kind, pat) {
+            let mut detail = audit_base();
+            detail["result"] = json!("failed");
+            detail["error"] = json!(e.to_string());
+            detail["failed_pattern"] = json!(pat.as_str());
+            crate::events::audit_failed("rules_add", "绑定分流规则失败", detail);
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("add_rule: {e}"));
         }
     }
     let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
     if !reload_ok(&code) {
+        let mut detail = audit_base();
+        detail["result"] = json!("failed");
+        detail["reload_status"] = json!(code.as_str());
+        detail["error"] = json!(format!("mihomo reload failed: {code}"));
+        detail["after"] = json!(store::list_rules(&db, &cid).map(|r| rule_snapshots(&r)).unwrap_or(Value::Null));
+        crate::events::audit_failed("rules_add", "规则已入库但 mihomo 重载未达成", detail);
         return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
     }
     let rs = match store::list_rules(&db, &cid) {
         Ok(rules) => rules,
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_rules: {e}")),
     };
+    {
+        // before 是改前该通道的全部规则,after 只列本次真正新增的几条(回滚时删它们即可)。
+        let added: Vec<store::Rule> =
+            rs.iter().filter(|r| !before_ids.contains(&r.id)).cloned().collect();
+        let mut detail = audit_base();
+        detail["result"] = json!("ok");
+        detail["reload_status"] = json!(code.as_str());
+        detail["before"] = rule_snapshots(&before_rules);
+        detail["after"] = rule_snapshots(&added);
+        detail["added"] = json!(plan.added);
+        detail["rejected"] = json!(plan.rejected);
+        crate::events::audit("rules_add", "分流规则已绑定", detail);
+    }
     let (domains, ips) = crate::routes::split_rules(rs);
     Json(json!({
         "reload_status": code,
@@ -94,24 +127,48 @@ pub async fn add_rules(
 
 pub async fn del_rule(State(st): State<AppState>, Path((cid, rid)): Path<(String, i64)>) -> axum::response::Response {
     let db = st.cfg.db_path();
-    match store::get_channel(&db, &cid) {
-        Ok(Some(_)) => {}
+    let ch_name = match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) => ch.name,
         Ok(None) => return err404("channel not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
-    }
+    };
     let docker = match st.docker() {
         Some(d) => d,
         None => return err503("docker unavailable"),
     };
+    // 改前快照必须在删之前取——删完就再也读不回「删掉的是哪条」了。
+    let before = match store::get_rule(&db, rid) {
+        Ok(Some(rule)) => rule_snapshot(&rule),
+        _ => Value::Null,
+    };
+    let audit_base = || {
+        json!({
+            "target_kind": "rule", "target_id": rid, "channel_id": cid.as_str(),
+            "target_name": ch_name.as_str(), "before": before.clone(), "after": null,
+        })
+    };
     match store::del_rule(&db, &cid, rid) {
         Ok(true) => {}
         Ok(false) => return err404("rule not found"),
-        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_rule: {e}")),
+        Err(e) => {
+            let mut detail = audit_base();
+            detail["result"] = json!("failed");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("rule_delete", "删除分流规则失败", detail);
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_rule: {e}"));
+        }
     }
     let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    let mut detail = audit_base();
+    detail["reload_status"] = json!(code.as_str());
     if !reload_ok(&code) {
+        detail["result"] = json!("failed");
+        detail["error"] = json!(format!("mihomo reload failed: {code}"));
+        crate::events::audit_failed("rule_delete", "规则已删除但 mihomo 重载未达成", detail);
         return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
     }
+    detail["result"] = json!("ok");
+    crate::events::audit("rule_delete", "分流规则已删除", detail);
     Json(json!({ "ok": true, "reload_status": code })).into_response()
 }
 
@@ -121,11 +178,11 @@ pub async fn patch_rule(
     Json(b): Json<Value>,
 ) -> axum::response::Response {
     let db = st.cfg.db_path();
-    match store::get_channel(&db, &cid) {
-        Ok(Some(_)) => {}
+    let ch_name = match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) => ch.name,
         Ok(None) => return err404("channel not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
-    }
+    };
     let enabled = match b.get("enabled") {
         None => None,
         Some(Value::Bool(v)) => Some(*v),
@@ -152,19 +209,48 @@ pub async fn patch_rule(
     } else {
         None
     };
+    let before = match store::get_rule(&db, rid) {
+        Ok(Some(rule)) => rule_snapshot(&rule),
+        _ => Value::Null,
+    };
+    let audit_base = |after: Value| {
+        json!({
+            "target_kind": "rule", "target_id": rid, "channel_id": cid.as_str(),
+            "target_name": ch_name.as_str(), "before": before.clone(), "after": after,
+            "fields": { "enabled": enabled, "note_changed": note.is_some(), "locked": locked },
+        })
+    };
     match store::update_rule(&db, &cid, rid, enabled, note, locked) {
         Ok(true) => {}
         Ok(false) => return err404("rule not found"),
-        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("update_rule: {e}")),
+        Err(e) => {
+            let mut detail = audit_base(Value::Null);
+            detail["result"] = json!("failed");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("rule_update", "编辑分流规则失败", detail);
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("update_rule: {e}"));
+        }
     }
+    let after = match store::get_rule(&db, rid) {
+        Ok(Some(rule)) => rule_snapshot(&rule),
+        _ => Value::Null,
+    };
     let mut response = json!({ "ok": true });
     if let Some(docker) = docker.as_ref() {
         let code = manager::rebuild(&st.cfg, Some(docker), &db).await;
         if !reload_ok(&code) {
+            let mut detail = audit_base(after);
+            detail["result"] = json!("failed");
+            detail["reload_status"] = json!(code.as_str());
+            detail["error"] = json!(format!("mihomo reload failed: {code}"));
+            crate::events::audit_failed("rule_update", "规则已改但 mihomo 重载未达成", detail);
             return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
         }
         response["reload_status"] = json!(code);
     }
+    let mut detail = audit_base(after);
+    detail["result"] = json!("ok");
+    crate::events::audit("rule_update", "分流规则已编辑", detail);
     if let Ok(Some(rule)) = store::get_rule(&db, rid) {
         response["rule"] = json!(rule);
     }
@@ -196,15 +282,38 @@ pub async fn patch_rules(
         None => return err503("docker unavailable"),
     };
     let db = st.cfg.db_path();
+    let before = store::rules_by_ids(&db, &ids).unwrap_or_default();
+    let audit_base = |after: Value| {
+        json!({
+            "target_kind": "rules", "target_id": ids.clone(), "requested_enabled": enabled,
+            "before": rule_snapshots(&before), "after": after,
+        })
+    };
     let result = match store::set_rules_enabled(&db, &ids, enabled) {
         Ok(Some(result)) => result,
         Ok(None) => return err404("one or more rules not found"),
-        Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_rules_enabled: {e}")),
+        Err(e) => {
+            let mut detail = audit_base(Value::Null);
+            detail["result"] = json!("failed");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("rules_batch_update", "批量启停规则失败", detail);
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_rules_enabled: {e}"));
+        }
     };
+    let after = rule_snapshots(&store::rules_by_ids(&db, &ids).unwrap_or_default());
     let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    let mut detail = audit_base(after);
+    detail["updated"] = json!(result.updated);
+    detail["skipped_locked"] = json!(result.skipped_locked);
+    detail["reload_status"] = json!(code.as_str());
     if !reload_ok(&code) {
+        detail["result"] = json!("failed");
+        detail["error"] = json!(format!("mihomo reload failed: {code}"));
+        crate::events::audit_failed("rules_batch_update", "规则已批量改但 mihomo 重载未达成", detail);
         return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
     }
+    detail["result"] = json!("ok");
+    crate::events::audit("rules_batch_update", "分流规则已批量启停", detail);
     Json(json!({
         "ok": true,
         "updated": result.updated,
@@ -231,6 +340,64 @@ fn secret_keys_of(vtype: &str) -> Vec<String> {
 
 fn js(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+}
+
+// ── 审计快照(命门 #5:密码 / vnc_password / secret 字段 / 备注正文绝不进日志) ──
+
+/// 通道字段快照,给审计的 before/after 用。`config` 直接取 `ChannelPublic.config`
+/// ——store 已按 `_secret` 剥过密文字段(与 /api/channels 回前端的是同一份),
+/// 密码与 vnc_password 本就不在 ChannelPublic 的可序列化面上。
+fn channel_snapshot(ch: &store::ChannelPublic) -> Value {
+    json!({
+        "name": ch.name,
+        "vpn_type": ch.vpn_type,
+        "server": ch.server,
+        "ec_ver": ch.ec_ver,
+        "login_method": ch.login_method,
+        "username": ch.username,
+        "probe_url": ch.probe_url,
+        "status": ch.status,
+        "routing_enabled": ch.routing_enabled,
+        "config": ch.config,
+    })
+}
+
+/// 读回通道快照;读不到(已删 / db 错)回 null——审计里 null 即「此刻没有这个对象」。
+fn channel_snapshot_of(db: &std::path::Path, cid: &str) -> Value {
+    match store::get_channel(db, cid) {
+        Ok(Some(ch)) => channel_snapshot(&ch),
+        _ => Value::Null,
+    }
+}
+
+fn rule_snapshot(r: &store::Rule) -> Value {
+    json!({
+        "id": r.id,
+        "channel_id": r.channel_id,
+        "kind": r.kind,
+        "pattern": r.pattern,
+        "enabled": r.enabled != 0,
+        "note": r.note,
+        "locked": r.locked != 0,
+    })
+}
+
+fn rule_snapshots(rules: &[store::Rule]) -> Value {
+    Value::Array(rules.iter().map(rule_snapshot).collect())
+}
+
+fn mirror_snapshot(m: &store::Mirror) -> Value {
+    json!({ "id": m.id, "host": m.host, "priority": m.priority, "enabled": m.enabled != 0 })
+}
+
+/// TUN 入口状态快照:只留判断「改前改后/要不要回滚」需要的几个字段,
+/// 不把整份 helper 明细灌进日志。
+fn tun_snapshot(status: &Value) -> Value {
+    json!({
+        "installed": status.get("installed").cloned().unwrap_or(Value::Null),
+        "enabled": status.get("enabled").cloned().unwrap_or(Value::Null),
+        "config_current": status.get("config_current").cloned().unwrap_or(Value::Null),
+    })
 }
 
 pub(crate) fn err500(msg: &str) -> axum::response::Response {
@@ -343,28 +510,31 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
     };
     let sk = secret_keys_of(&vtype);
     if let Err(e) = store::add_channel(&db, &key, &nc, &cfg_in, &sk) {
-        crate::ev!(error, "api", "channel_create", "通道创建失败", {
-            "cid": cid.as_str(), "name": nc.name.as_str(), "vpn_type": vtype.as_str(),
-            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-        });
+        crate::events::audit_failed("channel_create", "通道创建失败", json!({
+            "target_kind": "channel", "target_id": cid.as_str(), "target_name": nc.name.as_str(),
+            "vpn_type": vtype.as_str(), "before": null, "after": null,
+            "duration_ms": started.elapsed().as_millis() as u64, "result": "failed", "error": e.to_string()
+        }));
         return err500(&format!("add_channel: {e}"));
     }
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(c)) => c,
         Ok(None) => {
-            crate::ev!(error, "api", "channel_create", "通道创建后未能读回", {
-                "cid": cid.as_str(), "name": nc.name.as_str(), "vpn_type": vtype.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error",
+            crate::events::audit_failed("channel_create", "通道创建后未能读回", json!({
+                "target_kind": "channel", "target_id": cid.as_str(), "target_name": nc.name.as_str(),
+                "vpn_type": vtype.as_str(), "before": null, "after": null,
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "failed",
                 "error": "missing after insert"
-            });
+            }));
             return err500("get_channel after add");
         }
         Err(e) => {
-            crate::ev!(error, "api", "channel_create", "通道创建后读回失败", {
-                "cid": cid.as_str(), "name": nc.name.as_str(), "vpn_type": vtype.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error",
+            crate::events::audit_failed("channel_create", "通道创建后读回失败", json!({
+                "target_kind": "channel", "target_id": cid.as_str(), "target_name": nc.name.as_str(),
+                "vpn_type": vtype.as_str(), "before": null, "after": null,
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "failed",
                 "error": e.to_string()
-            });
+            }));
             return err500(&format!("get_channel after add: {e}"));
         }
     };
@@ -373,10 +543,12 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
             let state_persisted = match store::set_container(&db, &cid, &container_id, novnc, "running") {
                 Ok(()) => true,
                 Err(e) => {
-                    crate::ev!(error, "api", "channel_create", "通道容器已创建但状态落库失败", {
-                        "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                        "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-                    });
+                    crate::events::audit_failed("channel_create", "通道容器已创建但状态落库失败", json!({
+                        "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
+                        "vpn_type": ch.vpn_type.as_str(), "before": null, "after": channel_snapshot_of(&db, &cid),
+                        "container_id": container_id.as_str(),
+                        "duration_ms": started.elapsed().as_millis() as u64, "result": "failed", "error": e.to_string()
+                    }));
                     false
                 }
             };
@@ -387,19 +559,21 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
                     { "operation": "create", "cid": cid.as_str(), "error": reload.as_str() });
             }
             if state_persisted {
-                crate::ev!(info, "api", "channel_create", "通道创建完成", {
-                    "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
+                crate::events::audit("channel_create", "通道创建完成", json!({
+                    "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
+                    "vpn_type": ch.vpn_type.as_str(), "before": null, "after": channel_snapshot_of(&db, &cid),
                     "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
-                });
+                }));
             }
             channel_json(&db, &cid)
         }
         Err(e) => {
             let _ = store::set_status(&db, &cid, "error");
-            crate::ev!(error, "api", "channel_create", "通道创建失败", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-            });
+            crate::events::audit_failed("channel_create", "通道创建失败", json!({
+                "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
+                "vpn_type": ch.vpn_type.as_str(), "before": null, "after": channel_snapshot_of(&db, &cid),
+                "duration_ms": started.elapsed().as_millis() as u64, "result": "failed", "error": e.to_string()
+            }));
             err500(&format!("{e}"))
         }
     }
@@ -428,12 +602,31 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
     let sk = secret_keys_of(&ch.vpn_type);
     let touched = ["server", "username", "password", "ec_ver"].iter().any(|k| fields.contains_key(*k));
     let routing_changed = fields.contains_key("routing_enabled");
+    // 审计:改前快照 + 提交了哪些字段。密码只记「改没改」,值绝不进日志(命门 #5)。
+    let before = channel_snapshot(&ch);
+    let password_changed = fields.contains_key("password");
+    let changed_fields: Vec<&str> = fields
+        .keys()
+        .map(String::as_str)
+        .filter(|k| *k != "password")
+        .collect();
+    let audit_detail = |result: &str, after: Value| {
+        json!({
+            "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
+            "vpn_type": ch.vpn_type.as_str(), "changed_fields": changed_fields.clone(),
+            "password_changed": password_changed, "reprovisioned": touched && ch.container_id.is_some(),
+            "before": before.clone(), "after": after, "result": result,
+        })
+    };
     let rollback_routing = || {
         let mut rollback_fields = serde_json::Map::new();
         rollback_fields.insert("routing_enabled".into(), json!(ch.routing_enabled));
         store::update_channel(&db, &key, &cid, &rollback_fields, &sk)
     };
     if let Err(e) = store::update_channel(&db, &key, &cid, &fields, &sk) {
+        let mut detail = audit_detail("failed", Value::Null);
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("channel_update", "通道更新失败", detail);
         return err500(&format!("update_channel: {e}"));
     }
     let provisioned = touched && ch.container_id.is_some();
@@ -462,6 +655,10 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
                     crate::ev!(error, "api", "mihomo_reload_failed", "通道更新失败落 error 后 mihomo 重载未达成",
                         { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
                 }
+                let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
+                detail["error"] = json!(e.to_string());
+                detail["routing_rolled_back"] = json!(routing_changed);
+                crate::events::audit_failed("channel_update", "通道更新后重建容器失败,通道已落 error", detail);
                 return err500(&format!("{e}"));
             }
         }
@@ -472,19 +669,32 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
             crate::ev!(error, "api", "mihomo_reload_failed", "更新通道后 mihomo 重载未达成",
                 { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
             if !routing_changed {
+                // 字段已落库、只是分流面没跟上:仍算改成了,但把 reload_status 记进审计。
+                let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid));
+                detail["reload_status"] = json!(reload.as_str());
+                crate::events::audit("channel_update", "通道已更新(mihomo 重载未达成)", detail);
                 return channel_json(&db, &cid);
             }
             if let Err(error) = rollback_routing() {
-                crate::ev!(error, "api", "routing_toggle", "切换通道分流失败且状态回滚失败",
-                    { "cid": cid.as_str(), "reload_status": reload.as_str(), "rollback_error": error.to_string() });
+                let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
+                detail["reload_status"] = json!(reload.as_str());
+                detail["rollback_error"] = json!(error.to_string());
+                crate::events::audit_failed("channel_update", "切换通道分流失败且状态回滚失败", detail);
                 return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("routing rollback failed: {error}"));
             }
             let rollback = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
-            crate::ev!(error, "api", "routing_toggle", "切换通道分流未生效,已回滚字段",
-                { "cid": cid.as_str(), "reload_status": reload.as_str(), "rollback_status": rollback.as_str() });
+            let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
+            detail["reload_status"] = json!(reload.as_str());
+            detail["rollback_status"] = json!(rollback.as_str());
+            crate::events::audit_failed("channel_update", "切换通道分流未生效,已回滚字段", detail);
             return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {reload}"));
         }
     }
+    crate::events::audit(
+        "channel_update",
+        "通道已更新",
+        audit_detail("ok", channel_snapshot_of(&db, &cid)),
+    );
     channel_json(&db, &cid)
 }
 
@@ -538,12 +748,24 @@ pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp:
         None => return err500("docker unavailable"),
     };
     // 命门 #5:二进制经 put_archive 落数据卷,绝不入 SQLite/回传
+    // 审计只记文件名与大小:安装器内容既不入库也不进日志(命门 #5)。
+    let audit_base = || {
+        json!({
+            "target_kind": "channel", "target_id": cid.as_str(),
+            "filename": filename.as_str(), "size_bytes": blob.len() as u64,
+        })
+    };
     if let Err(e) = crate::docker::put_file(&docker, &format!("vpn-{cid}"), "/root", &filename, blob.as_ref()).await {
-        crate::ev!(error, "api", "put_file_failed", "通道安装文件投递失败",
-            { "cid": cid.as_str(), "error": e.to_string() });
+        let mut detail = audit_base();
+        detail["result"] = json!("failed");
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("channel_upload", "通道安装文件投递失败", detail);
         return err500(&format!("{e}"));
     }
     let _ = store::set_config_field(&db, &key, &cid, "package", &filename, false);
+    let mut detail = audit_base();
+    detail["result"] = json!("ok");
+    crate::events::audit("channel_upload", "安装包已投递到通道数据卷", detail);
     Json(json!({ "ok": true, "package": filename })).into_response()
 }
 
@@ -595,9 +817,27 @@ pub async fn note_put(
     if note.chars().count() > NOTE_MAX {
         return err_detail(StatusCode::BAD_REQUEST, &format!("备注过长(上限 {NOTE_MAX} 字符)"));
     }
+    // ⚠️ 备注正文里通常就是账号密码:审计只记长度变化,正文一个字都不进日志(命门 #5)。
+    let length_before = store::get_config(&db, &key, &cid)
+        .ok()
+        .and_then(|cfg| cfg.get("login_note").and_then(|v| v.as_str()).map(|s| s.chars().count()))
+        .unwrap_or(0);
+    let audit_base = || {
+        json!({
+            "target_kind": "note", "target_id": cid.as_str(),
+            "before": { "length": length_before }, "after": { "length": note.chars().count() },
+        })
+    };
     if let Err(e) = store::set_config_field(&db, &key, &cid, "login_note", note, true) {
+        let mut detail = audit_base();
+        detail["result"] = json!("failed");
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("note_update", "登录信息备注保存失败", detail);
         return err500(&format!("{e}"));
     }
+    let mut detail = audit_base();
+    detail["result"] = json!("ok");
+    crate::events::audit("note_update", "登录信息备注已更新", detail);
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -636,13 +876,21 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
         Err(e) => return err500(&format!("{e}")),
     };
     let started = std::time::Instant::now();
+    let before = channel_snapshot(&ch);
+    let audit_detail = |result: &str, after: Value, mode: &str| {
+        json!({
+            "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
+            "vpn_type": ch.vpn_type.as_str(), "mode": mode,
+            "before": before.clone(), "after": after, "result": result,
+            "duration_ms": started.elapsed().as_millis() as u64,
+        })
+    };
     let docker = match st.docker() {
         Some(d) => d,
         None => {
-            crate::ev!(error, "api", "channel_start", "通道启动失败", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": "docker unavailable"
-            });
+            let mut detail = audit_detail("failed", Value::Null, "unknown");
+            detail["error"] = json!("docker unavailable");
+            crate::events::audit_failed("channel_start", "通道启动失败", detail);
             return err503("docker unavailable");
         }
     };
@@ -650,17 +898,15 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     if runtime == "byo" {
         // byo 客户端装在可写层,扛得住原地重启 → 不重建
         if let Err(e) = manager::start(&docker, &cid).await {
-            crate::ev!(error, "api", "channel_start", "通道启动失败", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-            });
+            let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "in_place");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("channel_start", "通道启动失败", detail);
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("start: {e}"));
         }
         if let Err(e) = store::set_status(&db, &cid, "running") {
-            crate::ev!(error, "api", "channel_start", "通道已启动但状态落库失败", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-            });
+            let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "in_place");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("channel_start", "通道已启动但状态落库失败", detail);
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
         }
         manager::ensure_novnc_bridge(&docker, &cid).await;
@@ -673,10 +919,11 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
             crate::ev!(error, "api", "mihomo_reload_failed", "启动通道后 mihomo 重载未达成",
                 { "operation": "start", "cid": cid.as_str(), "error": reload.as_str() });
         }
-        crate::ev!(info, "api", "channel_start", "通道启动完成", {
-            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-            "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
-        });
+        crate::events::audit(
+            "channel_start",
+            "通道启动完成",
+            audit_detail("ok", channel_snapshot_of(&db, &cid), "in_place"),
+        );
         return Json(json!({ "ok": true })).into_response();
     }
     // hagb/oss:原地 start 扛不住 → 重建。Docker outcome 确认前不改 DB。
@@ -684,10 +931,10 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     match provision_with_docker(&st, &docker, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
             if let Err(e) = store::set_container(&db, &cid, &container_id, novnc, "running") {
-                crate::ev!(error, "api", "channel_start", "通道容器已启动但状态落库失败", {
-                    "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                    "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-                });
+                let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "recreate");
+                detail["error"] = json!(e.to_string());
+                detail["container_id"] = json!(container_id.as_str());
+                crate::events::audit_failed("channel_start", "通道容器已启动但状态落库失败", detail);
                 return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_container: {e}"));
             }
             // 对照 Python start:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
@@ -696,17 +943,17 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
                 crate::ev!(error, "api", "mihomo_reload_failed", "启动通道后 mihomo 重载未达成",
                     { "operation": "start", "cid": cid.as_str(), "error": reload.as_str() });
             }
-            crate::ev!(info, "api", "channel_start", "通道启动完成", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
-            });
+            crate::events::audit(
+                "channel_start",
+                "通道启动完成",
+                audit_detail("ok", channel_snapshot_of(&db, &cid), "recreate"),
+            );
             Json(json!({ "ok": true })).into_response()
         }
         Err(e) => {
-            crate::ev!(error, "api", "channel_start", "通道启动失败", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-            });
+            let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "recreate");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("channel_start", "通道启动失败", detail);
             err500(&format!("{e}"))
         }
     }
@@ -720,29 +967,34 @@ pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
     };
     let started = std::time::Instant::now();
+    let before = channel_snapshot(&ch);
+    let audit_detail = |result: &str, after: Value| {
+        json!({
+            "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
+            "vpn_type": ch.vpn_type.as_str(), "before": before.clone(), "after": after,
+            "result": result, "duration_ms": started.elapsed().as_millis() as u64,
+        })
+    };
     let docker = match st.docker() {
         Some(d) => d,
         None => {
-            crate::ev!(error, "api", "channel_stop", "通道停止失败", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": "docker unavailable"
-            });
+            let mut detail = audit_detail("failed", Value::Null);
+            detail["error"] = json!("docker unavailable");
+            crate::events::audit_failed("channel_stop", "通道停止失败", detail);
             return err503("docker unavailable");
         }
     };
     if let Err(e) = manager::stop(&docker, &cid).await {
-        crate::ev!(error, "api", "channel_stop", "通道停止失败", {
-            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-        });
+        let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("channel_stop", "通道停止失败", detail);
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("stop: {e}"));
     }
     crate::novnc::drop_for(&st, &cid).await;
     if let Err(e) = store::set_status(&db, &cid, "stopped") {
-        crate::ev!(error, "api", "channel_stop", "通道已停止但状态落库失败", {
-            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-        });
+        let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("channel_stop", "通道已停止但状态落库失败", detail);
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
     }
     // 状态联动:停止的通道其规则在 effective_rules 里自动失效,rebuild 一次把分流面
@@ -752,10 +1004,11 @@ pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::
         crate::ev!(error, "api", "mihomo_reload_failed", "停止通道后 mihomo 重载未达成",
             { "operation": "stop", "cid": cid.as_str(), "error": reload.as_str() });
     }
-    crate::ev!(info, "api", "channel_stop", "通道已停止", {
-        "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-        "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
-    });
+    crate::events::audit(
+        "channel_stop",
+        "通道已停止",
+        audit_detail("ok", channel_snapshot_of(&db, &cid)),
+    );
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -767,29 +1020,38 @@ pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
     };
     let started = std::time::Instant::now();
+    // 删除是最需要「事后据此判断怎么回滚」的一步:before 除通道字段外还带全部规则
+    // (删完 db 里就没有了)。密码 / secret 不在快照里,重建仍需用户重新填(命门 #5)。
+    let mut before = channel_snapshot(&ch);
+    before["rules"] = rule_snapshots(&store::list_rules(&db, &cid).unwrap_or_default());
+    let audit_detail = |result: &str| {
+        json!({
+            "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
+            "vpn_type": ch.vpn_type.as_str(), "before": before.clone(), "after": null,
+            "result": result, "duration_ms": started.elapsed().as_millis() as u64,
+        })
+    };
     let docker = match st.docker() {
         Some(d) => d,
         None => {
-            crate::ev!(error, "api", "channel_delete", "通道删除失败", {
-                "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": "docker unavailable"
-            });
+            let mut detail = audit_detail("failed");
+            detail["error"] = json!("docker unavailable");
+            crate::events::audit_failed("channel_delete", "通道删除失败", detail);
             return err503("docker unavailable");
         }
     };
     if let Err(e) = manager::remove(&docker, &cid).await {
-        crate::ev!(error, "api", "channel_delete", "通道删除失败", {
-            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-        });
+        let mut detail = audit_detail("failed");
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("channel_delete", "通道删除失败", detail);
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("remove: {e}"));
     }
     crate::novnc::drop_for(&st, &cid).await;
     if let Err(e) = store::del_channel(&db, &cid) {
-        crate::ev!(error, "api", "channel_delete", "通道容器已删除但配置落库失败", {
-            "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-            "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
-        });
+        let mut detail = audit_detail("failed");
+        detail["error"] = json!(e.to_string());
+        detail["container_removed"] = json!(true);
+        crate::events::audit_failed("channel_delete", "通道容器已删除但配置落库失败", detail);
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_channel: {e}"));
     }
     // 对照 Python delete:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
@@ -798,10 +1060,7 @@ pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum
         crate::ev!(error, "api", "mihomo_reload_failed", "删除通道后 mihomo 重载未达成",
             { "operation": "delete", "cid": cid.as_str(), "error": reload.as_str() });
     }
-    crate::ev!(info, "api", "channel_delete", "通道已删除", {
-        "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
-        "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
-    });
+    crate::events::audit("channel_delete", "通道已删除", audit_detail("ok"));
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -828,20 +1087,28 @@ pub async fn routing_set(
     let applied = reload_ok(&reload);
     if !applied {
         if let Err(error) = store::set_routing_off(&st.cfg.data_dir, previous) {
-            crate::ev!(error, "api", "routing_toggle", "全局分流切换失败且标记回滚失败", {
-                "requested_off": off, "reload_status": reload.as_str(), "rollback_error": error.to_string()
-            });
+            crate::events::audit_failed("routing_toggle", "全局分流切换失败且标记回滚失败", json!({
+                "target_kind": "system", "target_name": "routing",
+                "before": { "off": previous }, "after": { "off": off },
+                "requested_off": off, "reload_status": reload.as_str(),
+                "result": "failed", "error": error.to_string()
+            }));
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("routing rollback failed: {error}"));
         }
         let rollback = manager::rebuild(&st.cfg, st.docker().as_ref(), &st.cfg.db_path()).await;
-        crate::ev!(error, "api", "routing_toggle", "全局分流切换未生效,已回滚标记", {
-            "requested_off": off, "reload_status": reload.as_str(), "rollback_status": rollback.as_str()
-        });
+        crate::events::audit_failed("routing_toggle", "全局分流切换未生效,已回滚标记", json!({
+            "target_kind": "system", "target_name": "routing",
+            "before": { "off": previous }, "after": { "off": previous },
+            "requested_off": off, "reload_status": reload.as_str(), "rollback_status": rollback.as_str(),
+            "result": "failed", "error": format!("mihomo reload failed: {reload}")
+        }));
         return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {reload}"));
     }
-    crate::ev!(info, "api", "routing_toggle", "全局分流状态已切换", {
-        "off": off, "applied": true, "reload_status": reload.as_str()
-    });
+    crate::events::audit("routing_toggle", "全局分流状态已切换", json!({
+        "target_kind": "system", "target_name": "routing",
+        "before": { "off": previous }, "after": { "off": off },
+        "applied": true, "reload_status": reload.as_str(), "result": "ok"
+    }));
     Json(json!({ "off": off, "applied": true, "reload_status": reload })).into_response()
 }
 
@@ -853,8 +1120,12 @@ pub async fn self_heal_set(
         Some(Value::Bool(value)) => *value,
         _ => return err_detail(StatusCode::BAD_REQUEST, "enabled must be boolean"),
     };
+    let previous = st.self_heal_enabled();
     st.set_self_heal_enabled(enabled);
-    crate::ev!(info, "api", "self_heal_toggle", "自动修复状态已切换", { "enabled": enabled });
+    crate::events::audit("self_heal_toggle", "自动修复状态已切换", json!({
+        "target_kind": "system", "target_name": "self_heal",
+        "before": { "enabled": previous }, "after": { "enabled": enabled }, "result": "ok"
+    }));
     Json(json!({ "enabled": enabled })).into_response()
 }
 
@@ -940,25 +1211,68 @@ pub async fn tun_get(State(st): State<AppState>) -> Json<Value> {
 /// 启用/停用 TUN 入口。body `{enable: bool}`。前端按钮显式触发。
 pub async fn tun_set(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
     let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
+    let before = tun_snapshot(&entry::tun_status(&st.cfg).await);
     match entry::tun_apply(&st.cfg, enable).await {
-        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
-        Err(e) => err500(&format!("{e}")),
+        Ok(state) => {
+            crate::events::audit(
+                "tun_toggle",
+                if enable { "TUN 入口已启用" } else { "TUN 入口已停用" },
+                json!({
+                    "target_kind": "entry", "target_name": "tun", "requested_enable": enable,
+                    "before": before, "after": tun_snapshot(&state), "result": "ok"
+                }),
+            );
+            Json(json!({ "ok": true, "state": state })).into_response()
+        }
+        Err(e) => {
+            crate::events::audit_failed("tun_toggle", "TUN 入口切换失败", json!({
+                "target_kind": "entry", "target_name": "tun", "requested_enable": enable,
+                "before": before, "after": null, "result": "failed", "error": e.to_string()
+            }));
+            err500(&format!("{e}"))
+        }
     }
 }
 
 /// 安装/升级 helper(触发一次管理员密码弹窗)。
 pub async fn tun_install(State(st): State<AppState>) -> axum::response::Response {
+    let before = tun_snapshot(&entry::tun_status(&st.cfg).await);
     match entry::tun_install(&st.cfg).await {
-        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
-        Err(e) => err500(&format!("{e}")),
+        Ok(state) => {
+            crate::events::audit("tun_install", "TUN 助手已安装/升级", json!({
+                "target_kind": "entry", "target_name": "tun_helper",
+                "before": before, "after": tun_snapshot(&state), "result": "ok"
+            }));
+            Json(json!({ "ok": true, "state": state })).into_response()
+        }
+        Err(e) => {
+            crate::events::audit_failed("tun_install", "TUN 助手安装失败", json!({
+                "target_kind": "entry", "target_name": "tun_helper",
+                "before": before, "after": null, "result": "failed", "error": e.to_string()
+            }));
+            err500(&format!("{e}"))
+        }
     }
 }
 
 /// 卸载 helper(管理员密码弹窗)。
 pub async fn tun_uninstall(State(st): State<AppState>) -> axum::response::Response {
+    let before = tun_snapshot(&entry::tun_status(&st.cfg).await);
     match entry::tun_uninstall(&st.cfg).await {
-        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
-        Err(e) => err500(&format!("{e}")),
+        Ok(state) => {
+            crate::events::audit("tun_uninstall", "TUN 助手已卸载", json!({
+                "target_kind": "entry", "target_name": "tun_helper",
+                "before": before, "after": tun_snapshot(&state), "result": "ok"
+            }));
+            Json(json!({ "ok": true, "state": state })).into_response()
+        }
+        Err(e) => {
+            crate::events::audit_failed("tun_uninstall", "TUN 助手卸载失败", json!({
+                "target_kind": "entry", "target_name": "tun_helper",
+                "before": before, "after": null, "result": "failed", "error": e.to_string()
+            }));
+            err500(&format!("{e}"))
+        }
     }
 }
 
@@ -1027,8 +1341,21 @@ pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String
                 .to_string();
             match st.docker().as_ref() {
                 Some(d) => match crate::docker::create_bridge_network(d, &name).await {
-                    Ok(_) => Json(json!({ "ok": true })).into_response(),
-                    Err(e) => err500(&format!("{e}")),
+                    Ok(_) => {
+                        crate::events::audit("preflight_fix", "已创建 docker 网络", json!({
+                            "target_kind": "system", "target_name": name.as_str(),
+                            "action": "create_network", "before": null,
+                            "after": { "network": name.as_str() }, "result": "ok"
+                        }));
+                        Json(json!({ "ok": true })).into_response()
+                    }
+                    Err(e) => {
+                        crate::events::audit_failed("preflight_fix", "创建 docker 网络失败", json!({
+                            "target_kind": "system", "target_name": name.as_str(),
+                            "action": "create_network", "result": "failed", "error": e.to_string()
+                        }));
+                        err500(&format!("{e}"))
+                    }
                 },
                 None => err500("docker unavailable"),
             }
@@ -1044,7 +1371,12 @@ pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String
                 None => return err500("docker unavailable"),
             };
             let mirrors = enabled_mirror_hosts(&st);
-            let tid = preflight::start_pull(docker, &image, &registry::host_arch(), mirrors);
+            let tid = preflight::start_pull(docker, &image, &registry::host_arch(), mirrors.clone());
+            // 拉取是后台任务:审计只记「谁在什么时候要拉哪个镜像」,结果由任务状态端点看。
+            crate::events::audit("preflight_fix", "已发起镜像拉取", json!({
+                "target_kind": "system", "target_name": image.as_str(), "action": "pull_image",
+                "task_id": tid.as_str(), "mirrors": mirrors, "result": "ok"
+            }));
             Json(json!({ "task_id": tid })).into_response()
         }
         _ => (StatusCode::BAD_REQUEST, Json(json!({ "error": "unknown action" }))).into_response(),
@@ -1088,22 +1420,84 @@ pub async fn mirrors_add(State(st): State<AppState>, Json(b): Json<Value>) -> ax
     let db = st.cfg.db_path();
     match store::add_mirror(&db, &host) {
         Ok(mid) => match store::list_mirrors(&db).unwrap_or_default().into_iter().find(|m| m.id == mid) {
-            Some(m) => Json(serde_json::to_value(m).unwrap()).into_response(),
+            Some(m) => {
+                crate::events::audit("mirror_add", "已新增镜像源", json!({
+                    "target_kind": "mirror", "target_id": mid, "target_name": m.host.as_str(),
+                    "before": null, "after": mirror_snapshot(&m), "result": "ok"
+                }));
+                Json(serde_json::to_value(m).unwrap()).into_response()
+            }
             None => err500("mirror added but not found"),
         },
-        Err(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "mirror already exists" }))).into_response(),
+        Err(e) => {
+            crate::events::audit_failed("mirror_add", "新增镜像源失败", json!({
+                "target_kind": "mirror", "target_name": host.as_str(),
+                "before": null, "after": null, "result": "failed", "error": e.to_string()
+            }));
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": "mirror already exists" }))).into_response()
+        }
     }
 }
 
+/// 按 id 取一条镜像源快照(审计 before/after 用;没有就 null)。
+fn mirror_snapshot_of(db: &std::path::Path, mid: i64) -> Value {
+    store::list_mirrors(db)
+        .unwrap_or_default()
+        .iter()
+        .find(|m| m.id == mid)
+        .map(mirror_snapshot)
+        .unwrap_or(Value::Null)
+}
+
 pub async fn mirrors_patch(State(st): State<AppState>, Path(mid): Path<i64>, Json(b): Json<Value>) -> Json<Value> {
+    let db = st.cfg.db_path();
     let priority = b.get("priority").and_then(|v| v.as_i64());
     let enabled = b.get("enabled").and_then(|v| v.as_bool());
-    let _ = store::set_mirror(&st.cfg.db_path(), mid, priority, enabled);
+    let before = mirror_snapshot_of(&db, mid);
+    let error = store::set_mirror(&db, mid, priority, enabled).err();
+    let detail = json!({
+        "target_kind": "mirror", "target_id": mid,
+        "target_name": before.get("host").cloned().unwrap_or(Value::Null),
+        "before": before, "after": mirror_snapshot_of(&db, mid),
+    });
+    match error {
+        None => {
+            let mut detail = detail;
+            detail["result"] = json!("ok");
+            crate::events::audit("mirror_update", "镜像源已更新", detail);
+        }
+        Some(e) => {
+            let mut detail = detail;
+            detail["result"] = json!("failed");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("mirror_update", "镜像源更新失败", detail);
+        }
+    }
     Json(json!({ "ok": true }))
 }
 
 pub async fn mirrors_del(State(st): State<AppState>, Path(mid): Path<i64>) -> Json<Value> {
-    let _ = store::del_mirror(&st.cfg.db_path(), mid);
+    let db = st.cfg.db_path();
+    let before = mirror_snapshot_of(&db, mid);
+    let error = store::del_mirror(&db, mid).err();
+    let detail = json!({
+        "target_kind": "mirror", "target_id": mid,
+        "target_name": before.get("host").cloned().unwrap_or(Value::Null),
+        "before": before, "after": null,
+    });
+    match error {
+        None => {
+            let mut detail = detail;
+            detail["result"] = json!("ok");
+            crate::events::audit("mirror_delete", "镜像源已删除", detail);
+        }
+        Some(e) => {
+            let mut detail = detail;
+            detail["result"] = json!("failed");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("mirror_delete", "镜像源删除失败", detail);
+        }
+    }
     Json(json!({ "ok": true }))
 }
 
@@ -1183,6 +1577,14 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
             "rules": rules,
         }));
     }
+    // 导出文档里带着 headless 通道的注入凭据(命门 #5 的有意例外),因此这一步本身
+    // 就是敏感动作:审计记「导出了哪些通道」,不记任何 config 内容。
+    crate::events::audit("config_export", "已导出整站配置", json!({
+        "target_kind": "config", "target_name": "vpnmgr-export",
+        "channel_count": channels.len(),
+        "channels": channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        "result": "ok"
+    }));
     Json(json!({
         "kind": "vpnmgr-export",
         "version": 1,
@@ -1366,9 +1768,22 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
         Err(e) => return err500(&format!("master_key: {e}")),
     };
     if let Err(e) = store::import_channels(&db, &key, &plans) {
+        crate::events::audit_failed("config_import", "导入配置失败", json!({
+            "target_kind": "config", "target_name": "vpnmgr-export",
+            "before": null, "after": null, "planned": imported, "skipped": skipped,
+            "result": "failed", "error": e.to_string()
+        }));
         return err500(&format!("config import: {e}"));
     }
     let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+    // after 只列导入了哪些通道名(全部落 stopped、新 id/MAC/VNC 密码),凭据不进日志。
+    crate::events::audit("config_import", "已导入配置", json!({
+        "target_kind": "config", "target_name": "vpnmgr-export",
+        "before": null,
+        "after": { "imported": imported.clone(), "status": "stopped" },
+        "imported_count": imported.len(), "skipped": skipped.clone(),
+        "reload_status": reload.as_str(), "result": "ok"
+    }));
     Json(json!({
         "ok": true,
         "reload_status": reload,

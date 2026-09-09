@@ -4,7 +4,7 @@
     function loadDiagTypes() {
       const sel = document.getElementById("diag-type");
       sel.disabled = true;
-      const base = sel.options[0];   // 保留首项「(只查环境，不挑类型)」
+      const base = sel.options[0];   // 保留首项「基础环境」
       api.vpnTypes().then(function (list) {
         sel.innerHTML = "";
         sel.appendChild(base);
@@ -30,7 +30,7 @@
       const t = document.getElementById("diag-type").value;
       const host = document.getElementById("diag-host");
       btn.disabled = true; const orig = btn.textContent;
-      btn.replaceChildren(fb.spinner("体检中…"));
+      btn.replaceChildren(fb.spinner("检查中…"));
       // PreflightPanel.run() 自管 host(loading→结果/失败 banner),失败时 resolve(null)。
       Promise.resolve(
         PreflightPanel(host, { vpnType: t || undefined, scope: "full" }).run()
@@ -39,10 +39,9 @@
           // 体检请求本身失败:清掉 preflightPanel 渲染的原始失败行,只留一条可重试的友好条。
           host.innerHTML = "";
           fb.errorBanner(host, {
-            title: "体检未能完成",
-            message: "环境体检请求失败,可能是后端或 Docker 引擎未就绪。",
-            hint: "稍后重试;若反复失败检查 Docker / 引擎状态。",
-            retryLabel: "重新体检", onRetry: runDiag,
+            title: "检查未能完成",
+            message: "后端或 Docker 引擎可能还没就绪。",
+            retryLabel: "重新检查", onRetry: runDiag,
           });
         }
       }).finally(function () {
@@ -50,11 +49,6 @@
       });
     }
     document.getElementById("diag-run").addEventListener("click", runDiag);
-
-    api.system().then(function (sys) {
-      const fp = document.getElementById("foot-port");
-      if (fp && sys.mihomo_port) fp.textContent = ":" + sys.mihomo_port;
-    }).catch(function () {});
 
     async function renderMirrors() {
       const box = document.getElementById("mir-list");
@@ -129,7 +123,10 @@
         .catch(e => toast("添加失败", { variant: "danger", action: { label: "重试", onClick: () => btn.click() } }))
         .finally(() => { btn.disabled = false; btn.textContent = orig; });
     });
-    renderMirrors();
+    // 镜像源折叠区:展开时才拉(兼容旧页的 tab 形态)
+    const mirSect = document.getElementById("mirrors-sect");
+    if (mirSect) mirSect.addEventListener("toggle", function () { if (mirSect.open) renderMirrors(); });
+    else renderMirrors();
 
     /* ── 镜像清单 ── */
     const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>';
@@ -219,7 +216,7 @@
       if (e.kind === "pull") {
         pullBtn = document.createElement("button");
         pullBtn.className = "btn btn-primary btn-sm";
-        pullBtn.textContent = `一键拉取(本机 ${hostArch})`;
+        pullBtn.textContent = "拉取到本机";
         pullBtn.addEventListener("click", function doPull() {
           const image = `${e.repo}:${state.tag}`;
           pullBtn.disabled = true; const orig = pullBtn.textContent; pullBtn.textContent = "拉取中…";
@@ -293,13 +290,15 @@
       if (data.mirrors && !data.mirrors.length) {
         const note = document.createElement("div");
         note.className = "t-xs muted"; note.style.marginTop = "var(--space-2)";
-        note.textContent = "未配置镜像源,「经镜像源」命令已隐藏;可在「镜像源」tab 添加。";
+        note.textContent = "未配置镜像源。";
         box.appendChild(note);
       }
       IMG_LOADING = false;
     }
 
-    document.querySelector('[data-tab="images"]').addEventListener("click", renderImages);
+    const imgSect = document.getElementById("images-sect");
+    if (imgSect) imgSect.addEventListener("toggle", function () { if (imgSect.open) renderImages(); });
+    else document.querySelector('[data-tab="images"]')?.addEventListener("click", renderImages);
 
     if (document.body.dataset.page === "system" && location.pathname.endsWith("/env-check.html")) {
       document.addEventListener("DOMContentLoaded", function () {

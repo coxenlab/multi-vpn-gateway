@@ -3,7 +3,7 @@
 adapters:
   easyconnect:
     label: EasyConnect
-    desc: 深信服 EC,支持账密无头或交互登录
+    desc: 深信服 EasyConnect
     runtime: hagb
     image: "hagb/docker-easyconnect:{version}"
     versioned: true
@@ -28,7 +28,7 @@ adapters:
 
   atrust:
     label: aTrust
-    desc: arm64 原生镜像,仅支持交互登录
+    desc: 深信服 aTrust，在登录窗口手动登录
     runtime: hagb
     image: "hagb/docker-atrust:latest"   # 上游无版本 tag(只有 latest/vncless)
     versioned: false
@@ -50,7 +50,7 @@ adapters:
   # 密钥经 stdin/临时文件注入容器,绝不进命令行(命门 #5)。无 noVNC。
   anyconnect:
     label: Cisco AnyConnect
-    desc: openconnect --protocol=anyconnect,账密/证书无头
+    desc: Cisco AnyConnect，账号密码自动登录
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -67,7 +67,7 @@ adapters:
 
   globalprotect:
     label: GlobalProtect
-    desc: openconnect --protocol=gp,账密无头(SAML/SSO 须改用交互)
+    desc: Palo Alto GlobalProtect，账号密码自动登录（不支持 SAML / SSO）
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -84,7 +84,7 @@ adapters:
 
   fortinet-oc:
     label: Fortinet (openconnect)
-    desc: openconnect --protocol=fortinet,账密无头
+    desc: Fortinet SSL VPN（openconnect），账号密码自动登录
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -101,7 +101,7 @@ adapters:
 
   juniper:
     label: Juniper / Pulse (nc)
-    desc: openconnect --protocol=nc(Network Connect),账密无头
+    desc: Juniper Network Connect，账号密码自动登录
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -118,7 +118,7 @@ adapters:
 
   pulse:
     label: Pulse / Ivanti
-    desc: openconnect --protocol=pulse,账密无头
+    desc: Pulse / Ivanti Secure，账号密码自动登录
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -135,7 +135,7 @@ adapters:
 
   openfortivpn:
     label: openfortivpn
-    desc: Fortinet SSL VPN(openfortivpn),账密经 -c 配置文件注入(密码不进 argv)
+    desc: Fortinet SSL VPN（openfortivpn），账号密码自动登录
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -153,7 +153,7 @@ adapters:
 
   openvpn:
     label: OpenVPN
-    desc: 上传 .ovpn 配置;可选账密
+    desc: 上传 .ovpn 配置文件，可选账号密码
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -170,7 +170,7 @@ adapters:
 
   wireguard:
     label: WireGuard
-    desc: 上传 wg .conf;无内核模块时退 wireguard-go 用户态
+    desc: 上传 WireGuard .conf 配置文件
     runtime: oss
     image: "vpnmgr/oss-vpn:latest"
     versioned: false
@@ -190,7 +190,7 @@ adapters:
   # 不注入凭据(无 connect);登录成功唯一判据仍是 SOCKS5 探活(命门 #1)。尽力而为。
   custom:
     label: 自定义 / BYO
-    desc: 桌面容器,自己装任意 VPN 客户端 GUI(经 noVNC);尽力而为
+    desc: 自带客户端：在远程桌面里自行安装任意 Linux VPN 客户端
     runtime: byo
     image: "vpnmgr/byo-desktop:latest"
     versioned: false
@@ -219,7 +219,7 @@ adapters:
   # 登录仍经 noVNC 在客户端窗口手填(账号密码 / 短信 / 证书),判据只认 SOCKS5 探活(命门 #1)。
   hillstone:
     label: Hillstone Secure Connect
-    desc: 山石网科 SSL VPN,预装官方 x86 客户端(经 noVNC 登录,arm64 走转译)
+    desc: 山石网科 Secure Connect，已预装客户端，在登录窗口手动登录
     notice: >-
       容器已预装 Hillstone Secure Connect 官方 Linux 客户端(5.7.x,x86_64)。
       起容器后在登录窗口里填网关地址(host:port)、账号密码,按需完成短信/证书验证;

@@ -4,9 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>流量监控 · VPN 管理网关</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/app.css" />
   <style>
     /* 屏内独有样式 —— 仅用 var(--*) 或与 black/white/transparent 的 color-mix */
@@ -91,46 +88,7 @@
 </head>
 <body data-page="monitor">
   <div class="app">
-    <!-- ════ 侧栏（所有屏一致） ════ -->
-    <aside class="sidebar">
-      <div class="sidebar-logo">
-        <span class="logo-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5l8-3z"/></svg>
-        </span>
-        <span class="logo-text">VPN 管理网关<small>management gateway</small></span>
-      </div>
-      <nav class="sidebar-nav">
-        <span class="nav-label">管理</span>
-        <a class="nav-item" data-nav="channels" href="index.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
-          通道总览 <span class="count" id="nav-count">—</span>
-        </a>
-        <a class="nav-item" data-nav="routing" href="routing-table.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h.01M3 12h.01M3 18h.01M8 6h13M8 12h13M8 18h13"/></svg>
-          分流总表
-        </a>
-        <a class="nav-item" data-nav="monitor" href="monitor.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
-          流量监控
-        </a>
-        <a class="nav-item" data-nav="system" href="clash-config.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 6H15M6 8.5V14a3.5 3.5 0 003.5 3.5H15"/></svg>
-          系统与接入
-        </a>
-        <a class="nav-item" data-nav="containers" href="containers.html">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
-          容器管理
-        </a>
-      </nav>
-      <div class="sidebar-foot">
-        <div class="sys-chip ok" style="width:100%; justify-content:flex-start;">
-          <span class="dot"></span>
-          <span>mihomo 运行中</span>
-          <span class="k spacer" id="foot-port">:7899</span>
-        </div>
-        <p class="t-xs muted" style="margin-top:10px; padding:0 6px; line-height:1.5;">全部监听 <span class="mono">127.0.0.1</span></p>
-      </div>
-    </aside>
+    <aside class="sidebar"></aside>
 
     <!-- ════ 主区 ════ -->
     <div class="main">
@@ -141,7 +99,6 @@
         <h1>流量监控</h1>
         <span class="spacer"></span>
         <span class="sys-chip" id="feed-pill" title="遥测数据更新状态"><span class="dot"></span><span id="feed-text">连接中…</span></span>
-        <span class="sys-chip hide-mobile" id="ctrl-pill">external-controller 127.0.0.1:9090 · 只读遥测</span>
       </header>
 
       <div class="content stack-6">
@@ -174,7 +131,7 @@
           <div class="mcell">
             <span class="mk">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
-              在线节点
+              在线通道
             </span>
             <span class="mvv">
               <!-- 半圆弧仪表(blume 形态,纯装饰):左红→右绿三段弧 + 指针指向在线率。
@@ -192,30 +149,10 @@
           </div>
         </div>
 
-        <!-- ── 通道测速卡片墙：对齐 Clash 仪表盘 Proxies 面板的卡片+延迟徽章形态。
-             数据只用页面已有轮询变量 chs(/api/channels，含 latency_ms/status)；
-             命门 #1：延迟/连通只认 GET /api/channels/{cid}/status 的 SOCKS5 探活结果，
-             这里刻意不读 /api/proxies 的 alive 字段(nodes 变量在别处已在用，本区块不碰它)。 -->
-        <div class="card" data-od-id="speedtest">
-          <div class="card-head">
-            <h3>通道测速</h3>
-            <span class="row">
-              <span class="t-xs muted" id="spd-summary">— / — 可达</span>
-              <button class="btn btn-secondary btn-sm" id="spd-all" type="button">全部测速</button>
-            </span>
-          </div>
-          <div class="card-body">
-            <div class="spd-grid" id="spd-grid"></div>
-          </div>
-          <div class="card-foot">
-            <span class="t-xs muted">延迟 = 后端经容器 SOCKS5 实测探活 URL 的往返毫秒数，是登录/连通的唯一判据；点卡片单测，数值落库后各屏同步。</span>
-          </div>
-        </div>
-
         <!-- ── 路由决策日志流（主角） ── -->
         <div class="card" data-od-id="log">
           <div class="card-head">
-            <h3>路由决策日志 <span class="t-xs muted" style="font-weight:400;">· mihomo 第二跳</span></h3>
+            <h3>连接记录</h3>
             <span class="row">
               <span class="tag" id="log-state" hidden>已暂停</span>
               <span class="t-xs muted">缓冲 <span class="num" id="log-count">0</span> / 500</span>
@@ -224,9 +161,9 @@
 
           <div class="log-tools">
             <select class="select t-chan" id="f-chan" aria-label="按出口筛选">
-              <option value="all">全部出口</option>
+              <option value="all">全部通道</option>
             </select>
-            <input class="input t-re" id="f-re" type="search" placeholder="正则搜索：域名 / IP / 规则 / 通道名" aria-label="正则搜索" />
+            <input class="input t-re" id="f-re" type="search" placeholder="搜索域名、IP 或通道" aria-label="正则搜索" />
             <span class="t-hint" id="re-hint" hidden>正则无效 · 已按原文匹配</span>
             <span class="t-sep"></span>
             <button class="btn btn-secondary btn-sm" id="btn-pause" type="button">
@@ -246,7 +183,7 @@
           </div>
 
           <div class="card-foot">
-            <span class="t-xs muted">每 1.5 秒对 <span class="mono">/connections</span> 的连接 id 做差分，新出现的连接合成一行。<span class="mono">using DIRECT</span> 是 mihomo 兜底直连、本工具不介入；日志只解释分流走向，<span class="strong">不作为通道登录状态的判据</span>（登录成功只认后端 SOCKS5 探活）。</span>
+            <span class="t-xs muted">每条新连接一行：来源 → 目标，命中了哪条规则，走了哪条通道。<span class="mono">DIRECT</span> 表示未命中规则、直接联网。</span>
           </div>
         </div>
       </div>
@@ -276,16 +213,6 @@
     let paused = false, follow = true;
     let filterChan = "all", filterQ = "", filterRe = null, chanSig = "";
 
-    /* ═══ 通道测速卡片墙 ═══
-     * testing：正在单测/批测中的通道 id 集合。renderSpeedGrid 每次渲染都据此
-     * 现算徽章，测速中的卡永远显示 spinner，不管本帧轮询拿到的 chs 是什么值——
-     * 这就是"防轮询覆盖"的机制，不需要额外的 DOM diff。
-     * results：本页测过的最近一次结果（{ok, ms}），只用来在两次轮询之间立刻
-     * 反映刚测完的数字，且用来区分"探测失败"与"从未有数据"这两种灰/红态。 */
-    let testing = new Set();
-    let results = new Map();
-    let allTesting = false;
-    let allProgress = { done: 0, total: 0 };
 
     const PAUSE_IC = '<path d="M9 5v14M15 5v14"/>';
     const PLAY_IC  = '<path d="M7 4l13 8-13 8V4z"/>';
@@ -346,7 +273,6 @@
         return;
       }
       $("#foot-port").textContent = ":" + sys.mihomo_port;
-      $("#ctrl-pill").textContent = "external-controller " + (sys.controller || "?") + " · 只读遥测";
       // 先起轮询(只起一次)再拉首帧 —— 即便首帧失败,后续仍会每 1.5s 自动重试自愈
       if (!pollTimer) pollTimer = setInterval(tick, 1500);
       await tick();
@@ -415,7 +341,7 @@
       return e.search.toLowerCase().indexOf(filterQ.toLowerCase()) !== -1;
     }
     function filterDesc() {
-      const chan = filterChan === "all" ? "全部出口" : filterChan === "direct" ? "DIRECT" : filterChan;
+      const chan = filterChan === "all" ? "全部通道" : filterChan === "direct" ? "DIRECT" : filterChan;
       return chan + (filterQ ? " · /" + filterQ + "/" : "");
     }
     function readFilters() {
@@ -443,7 +369,7 @@
       d.id = "log-empty";
       d.textContent = buf.length
         ? "当前筛选下没有匹配的日志行"
-        : "等待新连接…命中分流规则的连接一出现就会记到这里";
+        : "等待新连接…";
       v.innerHTML = "";
       v.appendChild(d);
     }
@@ -508,10 +434,9 @@
       const rows = buf.filter(matchEntry);
       if (!rows.length) { toast("当前没有可导出的日志行", { variant: "danger" }); return; }
       const head = [
-        "# VPN 管理网关 · 路由决策日志(mihomo 第二跳)",
+        "# VPN 管理网关 · 连接记录",
         "# 导出于 " + new Date().toLocaleString(),
         "# 共 " + rows.length + " 行 · 缓冲 " + buf.length + "/" + MAX_LINES + " · 筛选 " + filterDesc(),
-        "# 仅反映分流走向,不作为通道登录状态判据",
         "",
       ];
       const text = head.concat(rows.map(e => e.ts + "  " + e.text)).join("\n") + "\n";
@@ -534,7 +459,7 @@
       const sel = $("#f-chan");
       const cur = sel.value || "all";
       sel.innerHTML =
-        '<option value="all">全部出口</option>' +
+        '<option value="all">全部通道</option>' +
         '<option value="direct">DIRECT 兜底直连</option>' +
         chs.map(c => '<option value="ch-' + fb.esc(c.id) + '">ch-' + fb.esc(c.id) + " · " + fb.esc(c.name) + "</option>").join("");
       const has = Array.from(sel.options).some(o => o.value === cur);
@@ -559,99 +484,6 @@
       $("#m-needle").style.transform = `rotate(${ratio * 180}deg)`;
     }
 
-    /* ───────── 通道测速：卡片渲染 + 单测 + 全部测速（worker 池并发 4） ───────── */
-    function badgeFor(ch) {
-      if (testing.has(ch.id)) return { cls: "testing", label: "测速中…", spin: true };
-      if (ch.status === "stopped") return { cls: "off", label: "已停止" };
-      // 本页测过就以本页结果为准(立刻反映,不等下一帧轮询);但只在短窗内有效——
-      // 永不过期会压住轮询快照:测出绿 120ms 后通道掉线,卡片却永远绿(红队 M13)。
-      let r = results.get(ch.id);
-      if (r && Date.now() - r.t > 30000) { results.delete(ch.id); r = null; }
-      const connected = r ? r.ok : (ch.status === "logged_in");
-      const ms = r ? r.ms : ch.latency_ms;
-      if (connected && typeof ms === "number") {
-        const cls = ms <= 150 ? "ok" : ms <= 500 ? "mid" : "slow";
-        return { cls, label: ms + " ms" };
-      }
-      // 不通：本页测过或后端已标记 error 才算"探测失败"；否则只是还没数据
-      return (r || ch.status === "error") ? { cls: "timeout", label: "超时" } : { cls: "off", label: "—" };
-    }
-    function renderSpeedGrid() {
-      const grid = $("#spd-grid");
-      if (!grid) return;
-      if (!chs.length) {
-        grid.innerHTML = '<div class="log-empty">暂无通道，先去「通道总览」新建一个</div>';
-      } else {
-        grid.innerHTML = chs.map(ch => {
-          const b = badgeFor(ch);
-          const off = ch.status === "stopped";
-          const spin = b.spin ? window.fb.SVG.spin : "";
-          return '<div class="spd-card' + (off ? " is-off" : "") + '" data-id="' + fb.esc(ch.id) + '">' +
-            '<div class="spd-top">' +
-              '<span class="spd-name" title="' + fb.esc(ch.name) + '">' + fb.esc(ch.name) + '</span>' +
-              '<span class="spd-badge ' + b.cls + '">' + spin + '<span>' + fb.esc(b.label) + '</span></span>' +
-            '</div>' +
-            '<div class="spd-meta">' + fb.esc(ch.vpn_type || "—") + ' · socks5</div>' +
-          '</div>';
-        }).join("");
-      }
-      syncSpeedSummary();
-    }
-    function syncSpeedSummary() {
-      const targets = chs.filter(c => c.status !== "stopped");
-      const ok = chs.filter(c => c.status === "logged_in" && typeof c.latency_ms === "number").length;
-      $("#spd-summary").textContent = ok + "/" + targets.length + " 可达";
-    }
-    function syncAllBtn() {
-      const btn = $("#spd-all");
-      btn.disabled = allTesting;
-      btn.textContent = allTesting ? "测速中 " + allProgress.done + "/" + allProgress.total : "全部测速";
-    }
-    // 单测一个通道：opts.silent 供"全部测速"复用，失败不单独 toast（由汇总 toast 统一报）
-    async function testSpeed(id, opts) {
-      opts = opts || {};
-      if (testing.has(id)) return null;   // 同卡测速中忽略再次点击（防重入）
-      testing.add(id);
-      renderSpeedGrid();
-      let result;
-      try {
-        const r = await api.status(id);
-        const ch = chs.find(c => c.id === id);
-        if (ch) { ch.status = r.status; ch.latency_ms = r.latency_ms; }
-        result = { ok: !!r.connected, ms: r.latency_ms, t: Date.now() };
-      } catch (e) {
-        result = { ok: false, ms: null, t: Date.now() };
-        if (!opts.silent) toast("测速失败：" + (e.message || "未知错误"), { variant: "danger" });
-      }
-      results.set(id, result);
-      testing.delete(id);
-      renderSpeedGrid();
-      return result;
-    }
-    // 全部测速：简单 worker 池，并发上限 4；每个 worker 从共享游标顺序取任务
-    async function testAllSpeed() {
-      if (allTesting) return;
-      const targets = chs.filter(c => c.status !== "stopped");
-      if (!targets.length) { toast("没有可测速的通道", { variant: "danger" }); return; }
-      allTesting = true;
-      allProgress = { done: 0, total: targets.length };
-      syncAllBtn();
-      let ok = 0, idx = 0;
-      async function worker() {
-        while (idx < targets.length) {
-          const ch = targets[idx++];
-          const r = await testSpeed(ch.id, { silent: true });
-          if (r && r.ok) ok++;
-          allProgress.done++;
-          syncAllBtn();
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker));
-      allTesting = false;
-      syncAllBtn();
-      toast("测速完成：" + ok + "/" + targets.length + " 可达", { variant: ok === targets.length ? "success" : "default" });
-    }
-
     /* ───────── tick：拉真实遥测 → 差分出新连接 → 合成日志行 ───────── */
     async function tick() {
       let data;
@@ -674,7 +506,6 @@
       setFeed("live", "更新于 " + nowHHMMSS());
       $("#nav-count").textContent = chs.length;
       syncChanFilter();
-      renderSpeedGrid();   // testing 集合非空的卡在函数内部自己保持"测速中…"，这里放心整块重渲
 
       // 速率 = 总量差分 / 时间差；累计值变小 = mihomo 重载/重启归零，本帧不计差分（避免负值突刺）
       const now = Date.now();
@@ -712,13 +543,6 @@
     }
 
     /* ───────── 事件绑定 ───────── */
-    // 卡片墙用事件委托挂在容器上一次即可，避免每次 renderSpeedGrid 重渲都要重新绑定
-    $("#spd-grid").addEventListener("click", (e) => {
-      const card = e.target.closest(".spd-card");
-      if (!card || card.classList.contains("is-off")) return;   // stopped 卡不可点
-      testSpeed(card.dataset.id);
-    });
-    $("#spd-all").addEventListener("click", testAllSpeed);
     $("#f-chan").addEventListener("change", () => { readFilters(); renderAll(); });
     $("#f-re").addEventListener("input", () => { readFilters(); renderAll(); });
     $("#btn-pause").addEventListener("click", togglePause);

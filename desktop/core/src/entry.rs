@@ -260,8 +260,11 @@ pub async fn system_proxy_park_all(ui_port: &str) -> usize {
             && run("networksetup", &["-setautoproxystate", svc, "off"]).await.is_ok()
         {
             parked += 1;
-            crate::ev!(info, "entry", "system_proxy_changed", "退出清理:系统自动代理已关闭",
-                { "enabled": false, "service": svc });
+            crate::events::audit("system_proxy_set", "退出清理:系统自动代理已关闭", serde_json::json!({
+                "target_kind": "entry", "target_name": "system_proxy", "target_id": svc,
+                "before": { "enabled": true, "is_ours": true }, "after": { "enabled": false },
+                "operation": "park", "result": "ok"
+            }));
         }
     }
     parked
@@ -273,18 +276,36 @@ pub async fn system_proxy_apply(ui_port: &str, enable: bool) -> anyhow::Result<S
     if !cfg!(target_os = "macos") {
         anyhow::bail!("系统代理一键应用仅支持 macOS");
     }
-    let svc = primary_service().await.ok_or_else(|| anyhow::anyhow!("找不到默认网络服务"))?;
-    if enable {
-        let url = pac_url(ui_port);
-        run("networksetup", &["-setautoproxyurl", &svc, &url]).await?;
-        run("networksetup", &["-setautoproxystate", &svc, "on"]).await?;
-    } else {
-        run("networksetup", &["-setautoproxystate", &svc, "off"]).await?;
+    // 审计要能回答「改前是什么」:先取一份现状,失败路径也据此说明什么都没变。
+    let before = system_proxy_status(ui_port).await;
+    let snapshot = |st: &SystemProxyState| serde_json::to_value(st).unwrap_or(serde_json::Value::Null);
+    let applied = async {
+        let svc = primary_service().await.ok_or_else(|| anyhow::anyhow!("找不到默认网络服务"))?;
+        if enable {
+            let url = pac_url(ui_port);
+            run("networksetup", &["-setautoproxyurl", &svc, &url]).await?;
+            run("networksetup", &["-setautoproxystate", &svc, "on"]).await?;
+        } else {
+            run("networksetup", &["-setautoproxystate", &svc, "off"]).await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    if let Err(e) = applied {
+        crate::events::audit_failed("system_proxy_set", "系统自动代理设置失败", serde_json::json!({
+            "target_kind": "entry", "target_name": "system_proxy", "requested_enable": enable,
+            "before": snapshot(&before), "after": null, "result": "failed", "error": e.to_string()
+        }));
+        return Err(e);
     }
     let state = system_proxy_status(ui_port).await;
-    crate::ev!(info, "entry", "system_proxy_changed",
+    crate::events::audit("system_proxy_set",
         if enable { "系统自动代理已启用" } else { "系统自动代理已关闭" },
-        { "enabled": state.enabled, "service": state.service.as_deref().unwrap_or("") });
+        serde_json::json!({
+            "target_kind": "entry", "target_name": "system_proxy",
+            "target_id": state.service.clone(), "requested_enable": enable,
+            "before": snapshot(&before), "after": snapshot(&state), "result": "ok"
+        }));
     Ok(state)
 }
 

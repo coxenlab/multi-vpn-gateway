@@ -16,7 +16,7 @@
   };
   const state = {
     events: [], history: [], seq: 0, dropped: 0, retainedDays: 14,
-    paused: false, healOnly: false, busy: false, expanded: new Set(),
+    paused: false, auditOnly: false, busy: false, expanded: new Set(), enabled: null,
   };
 
   function featureVisible(visible) {
@@ -103,7 +103,7 @@
 
     const since = Date.now() - 24 * 60 * 60 * 1000;
     const heals = feed.filter((event) => event.src === "watchdog" && event.event === "heal_start" && Number(event.ts_ms) >= since).length;
-    byId("runtime-heals").textContent = `自动修复 ${heals} 次 · 日志保留 ${state.retainedDays} 天`;
+    byId("runtime-heals").textContent = `自动修复 ${heals} 次 · 保留 ${state.retainedDays} 天`;
   }
 
   function filteredEvents() {
@@ -114,7 +114,7 @@
       const level = rank[event.level] == null ? rank.info : rank[event.level];
       if (level < rank[minLevel]) return false;
       if (source && event.src !== source) return false;
-      if (state.healOnly && !["watchdog", "tunnel"].includes(event.src)) return false;
+      if (state.auditOnly && event.src !== "audit") return false;
       if (query && !String(event.msg || "").toLowerCase().includes(query)) return false;
       return true;
     });
@@ -126,6 +126,18 @@
     const sources = [...new Set(state.events.map((event) => event.src).filter(Boolean))].sort();
     select.replaceChildren(new Option("全部来源", ""), ...sources.map((source) => new Option(source, source)));
     if (sources.includes(selected)) select.value = selected;
+  }
+
+  // 操作记录一眼看到对象:目标名 + 规则 pattern(其余细节在展开的 detail 里)
+  function auditTail(event) {
+    if (event.src !== "audit" || !event.detail) return "";
+    const d = event.detail;
+    const bits = [];
+    if (d.target_name) bits.push(d.target_name);
+    const pat = (d.after && d.after.pattern) || (d.before && d.before.pattern);
+    if (pat) bits.push(pat);
+    if (d.result === "failed") bits.push("失败");
+    return bits.length ? ` <span class="muted">· ${esc(bits.join(" · "))}</span>` : "";
   }
 
   function renderRows() {
@@ -141,7 +153,7 @@
           <td class="runtime-time">${esc(formatTime(event))}</td>
           <td><span class="runtime-level ${level}">${esc(level)}</span></td>
           <td class="runtime-src">${esc(event.src || "—")}</td>
-          <td><button class="runtime-msg-btn" type="button" data-seq="${event.seq}" data-detail="${detailId}" aria-expanded="${expanded}" aria-controls="${detailId}">${esc(event.msg || event.event || "—")}</button></td>
+          <td><button class="runtime-msg-btn" type="button" data-seq="${event.seq}" data-detail="${detailId}" aria-expanded="${expanded}" aria-controls="${detailId}">${esc(event.msg || event.event || "—")}${auditTail(event)}</button></td>
         </tr>
         <tr class="runtime-detail" id="${detailId}" ${expanded ? "" : "hidden"}><td colspan="4"><pre>${esc(JSON.stringify(event.detail || {}, null, 2))}</pre></td></tr>`;
     }).join("");
@@ -155,8 +167,9 @@
     }));
     byId("runtime-empty").hidden = events.length !== 0;
     const paused = state.paused ? "已暂停 · " : "";
-    const dropped = state.dropped ? ` · 写盘队列丢弃 ${state.dropped} 条` : "";
-    byId("runtime-meta").textContent = `${paused}显示 ${events.length} / ${state.events.length} 条 · 游标 ${state.seq}${dropped}`;
+    const dropped = state.dropped ? ` · ${state.dropped} 条未能写入磁盘` : "";
+    const off = state.enabled === false ? "日志记录已关闭 · " : "";
+    byId("runtime-meta").textContent = `${off}${paused}显示 ${events.length} / ${state.events.length} 条${dropped}`;
     if (follow) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
   }
 
@@ -166,7 +179,17 @@
     renderRows();
   }
 
+  function renderEnabled() {
+    const btn = byId("runtime-enabled");
+    if (!btn) return;
+    if (state.enabled === null) { btn.hidden = true; return; }
+    btn.hidden = false;
+    btn.textContent = state.enabled ? "日志记录 · 开" : "日志记录 · 关";
+    btn.setAttribute("aria-checked", String(state.enabled));
+  }
+
   function applyResponse(response) {
+    if (typeof response.enabled === "boolean") { state.enabled = response.enabled; renderEnabled(); }
     mergeEvents(response.events || []);
     state.seq = Number(response.seq || state.seq);
     state.dropped = Number(response.dropped || 0);
@@ -197,10 +220,39 @@
   function bindControls() {
     ["runtime-level", "runtime-source"].forEach((id) => byId(id).addEventListener("change", renderRows));
     byId("runtime-search").addEventListener("input", renderRows);
-    byId("runtime-heal-only").addEventListener("click", (event) => {
-      state.healOnly = !state.healOnly;
-      event.currentTarget.setAttribute("aria-pressed", String(state.healOnly));
+    byId("runtime-audit-only").addEventListener("click", (event) => {
+      state.auditOnly = !state.auditOnly;
+      event.currentTarget.setAttribute("aria-pressed", String(state.auditOnly));
       renderRows();
+    });
+    // 日志开关(桌面版新后端才有;缺端点则隐藏按钮)
+    byId("runtime-enabled").addEventListener("click", async (event) => {
+      const btn = event.currentTarget;
+      const next = !state.enabled;
+      if (!next && !await window.fb.confirm("关闭后不再记录任何运行与操作日志，直到重新开启。", { title: "关闭日志记录", confirmLabel: "关闭" })) return;
+      btn.disabled = true;
+      try {
+        const r = await window.api.runtimeEventsSetEnabled(next);
+        state.enabled = !!r.enabled;
+        renderEnabled();
+        window.toast(state.enabled ? "日志记录已开启" : "日志记录已关闭", { variant: "success" });
+      } catch (error) {
+        window.toast("切换失败：" + (error?.reason || error?.message || error), { variant: "danger" });
+      } finally { btn.disabled = false; }
+    });
+    // 按日期导出:默认区间 = 今天;from/to 由后端裁到保留窗口内
+    const today = new Date(); const pad = (n) => String(n).padStart(2, "0");
+    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    byId("runtime-to").value = iso(today);
+    byId("runtime-from").value = iso(new Date(today.getTime() - 24 * 60 * 60 * 1000));
+    byId("runtime-export").addEventListener("click", () => {
+      const from = byId("runtime-from").value, to = byId("runtime-to").value;
+      if (!from || !to) return window.toast("请选择日期范围", { variant: "info" });
+      if (from > to) return window.toast("开始日期不能晚于结束日期", { variant: "info" });
+      const a = document.createElement("a");
+      a.href = window.api.runtimeEventsExportUrl(from, to);
+      a.download = `vpnmgr-events-${from}_${to}.jsonl`;
+      document.body.appendChild(a); a.click(); a.remove();
     });
     byId("runtime-pause").addEventListener("click", (event) => {
       state.paused = !state.paused;
@@ -219,6 +271,7 @@
   async function init() {
     if (!byId("runtime-logs-tab") || !window.api?.runtimeEvents) return;
     bindControls();
+    renderEnabled();
     const [eventsResult, historyResult] = await Promise.allSettled([
       window.api.runtimeEvents({ limit: 1000 }),
       window.api.runtimeEventsExport(2),
