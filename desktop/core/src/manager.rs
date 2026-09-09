@@ -308,6 +308,22 @@ pub async fn create_channel(
 
     let id = crate::docker::create_from_plan(docker, &plan, dns).await?;
 
+    if spec.runtime == "hagb" {
+        // aTrust 的 DNS 对内网域名优先回 IPv6 假地址(fdff:5341:4e47:464f::/64),而其
+        // Linux 客户端的 IPv6 代理通路会 RST 一切连接(v4 假地址 198.18.x 通路正常),
+        // 致 dante 按域名出站必败、按 IP 正常。glibc 侧强制 IPv4 优先即修;best-effort,
+        // 失败不阻断建通道(EC 无此症状,同写无害)。
+        let name = format!("vpn-{}", ch.id);
+        if let Err(e) = crate::docker::exec_capture(
+            docker,
+            &name,
+            vec!["sh", "-c", "echo 'precedence ::ffff:0:0/96 100' > /etc/gai.conf"],
+        )
+        .await
+        {
+            crate::ev!(warn, "manager", "gai_conf_failed", "写入容器 gai.conf(IPv4 优先)失败", { "channel": ch.id.clone(), "error": e.to_string() });
+        }
+    }
     if spec.runtime == "oss" {
         // 凭据注入(oss_connect)在调用方紧随其后做;这里只起容器。
         return Ok((id, None));

@@ -54,6 +54,16 @@ def create_channel(ch, vnc_pwd):
 
     c = dc.containers.run(**kw)
     c.reload()
+    if spec.get("runtime") == "hagb":
+        # aTrust 的 DNS 对内网域名优先回 IPv6 假地址(fdff:5341:4e47:464f::/64),而其
+        # Linux 客户端的 IPv6 代理通路会 RST 一切连接(v4 假地址 198.18.x 通路正常),
+        # 致 dante 按域名出站必败、按 IP 正常。glibc 侧强制 IPv4 优先即修;best-effort,
+        # 失败不阻断建通道(EC 无此症状,同写无害)。
+        try:
+            c.exec_run(["sh", "-c", "echo 'precedence ::ffff:0:0/96 100' > /etc/gai.conf"],
+                       user="root")
+        except docker.errors.APIError:
+            pass
     if spec.get("runtime") == "oss":
         oss_connect(c, spec, store.get_config(ch["id"]))
         return c.id, None
@@ -301,7 +311,7 @@ def rebuild():
     """按当前所有通道+规则重写 mihomo 配置并热加载(force reload,不断现有连接)。"""
     with _REBUILD_LOCK:
         chs = store.list_channels()
-        rules = store.all_rules()
+        rules = store.effective_rules()   # 停止/error 通道的规则折叠为不生效(关容器即关分流)
         try:
             with open(CFG) as f:
                 base = yaml.safe_load(f) or {}

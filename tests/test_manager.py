@@ -52,10 +52,12 @@ def test_create_channel_uses_adapter_kwargs(monkeypatch):
     import manager, adapters, registry
 
     captured = {}
+    execs = []
 
     class FakeContainer:
         id = "deadbeef"
         def reload(self): pass
+        def exec_run(self, cmd, **kw): execs.append((cmd, kw))
         ports = {"8080/tcp": [{"HostPort": "18080"}]}
 
     class FakeContainers:
@@ -78,6 +80,8 @@ def test_create_channel_uses_adapter_kwargs(monkeypatch):
     # 起容器入参 == 适配器合成结果
     assert captured == adapters.build_run_kwargs(
         ch, registry.get("easyconnect"), "vncpw01", manager.VPN_NET)
+    # hagb 起容器后写 gai.conf 强制 IPv4 优先(aTrust IPv6 假地址通路损坏的规避)
+    assert any("gai.conf" in " ".join(cmd) for cmd, _kw in execs)
 
 
 def test_create_channel_oss_connects_via_stdin(monkeypatch):
