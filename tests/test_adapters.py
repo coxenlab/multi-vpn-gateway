@@ -128,3 +128,20 @@ def test_byo_no_sysctls_when_empty():
     kw = adapters.build_run_kwargs(ch, registry.get("custom"), "v", VNET)
     # custom manifest sysctls: {} → 不应出现 sysctls 键(同 hagb 空 sysctls 行为)
     assert "sysctls" not in kw
+
+
+def test_dns_opts_manifest_drives_docker_dns_opt():
+    """dns_opts 是 manifest 驱动的容器解析器策略(= docker --dns-opt),三家族同一条通路。
+
+    byo 成员声明 no-aaaa(第三方客户端 DNS 代理丢 AAAA 致双栈查询超时);未声明的家族不带键。
+    """
+    for t in ("custom", "hillstone"):
+        kw = adapters.build_run_kwargs(_ch(vpn_type=t, ec_ver=""), registry.get(t), "v", VNET)
+        assert kw["dns_opt"] == ["no-aaaa"], t
+    for t in ("easyconnect", "anyconnect"):
+        kw = adapters.build_run_kwargs(_ch(vpn_type=t), registry.get(t), "v", VNET)
+        assert "dns_opt" not in kw, t
+    # 声明为空 → 不带键(同空 sysctls)
+    spec = dict(registry.get("custom")); spec["dns_opts"] = []
+    kw = adapters.build_run_kwargs(_ch(vpn_type="custom", ec_ver=""), spec, "v", VNET)
+    assert "dns_opt" not in kw

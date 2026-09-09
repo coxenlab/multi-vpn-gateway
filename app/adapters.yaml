@@ -204,3 +204,37 @@ adapters:
     caps: [NET_ADMIN, MKNOD]
     devices: ["/dev/net/tun:/dev/net/tun:rwm"]
     sysctls: {}
+    # 容器解析器策略(写进初始 resolv.conf 的 options,= docker --dns-opt;两栈同源)。
+    # 第三方 GUI 客户端登录后常把 DNS 换成自带代理(Hillstone 实测:只答 A、AAAA 丢包,
+    # glibc 双栈查询等到超时 → 按域名走 SOCKS5 必败、按 IP 正常)。企业内网为纯 IPv4,
+    # no-aaaa 让 glibc 只发 A 查询即修;是 run 参数而非镜像改动,客户端追加 nameserver 时保留。
+    dns_opts: [no-aaaa]
+
+  # ── byo 家族专用成员:Hillstone Secure Connect(山石网科 SSL VPN / ZTNA)──
+  # 官方只出 x86_64 Linux 客户端(Qt GUI + root 守护进程),无开源实现可用
+  # (openconnect 不支持;hilldust 为 2022 停更 PoC 且只有 3DES)。自建镜像
+  # vpnmgr/hillstone-desktop(images/hillstone/)预装客户端:镜像按宿主原生架构构建
+  # (桌面/VNC 栈原生),只有 Hillstone 两个 x86_64 二进制在 arm64 宿主上经 binfmt 转译,
+  # 依赖库走 Debian multiarch :amd64 —— 与 aTrust「必须原生 arm64」不同,这里没有原生可选。
+  # 登录仍经 noVNC 在客户端窗口手填(账号密码 / 短信 / 证书),判据只认 SOCKS5 探活(命门 #1)。
+  hillstone:
+    label: Hillstone Secure Connect
+    desc: 山石网科 SSL VPN,预装官方 x86 客户端(经 noVNC 登录,arm64 走转译)
+    notice: >-
+      容器已预装 Hillstone Secure Connect 官方 Linux 客户端(5.7.x,x86_64)。
+      起容器后在登录窗口里填网关地址(host:port)、账号密码,按需完成短信/证书验证;
+      客户端记住的网关落在数据卷,重建通道不丢。官方无 arm64 构建,Apple Silicon 上客户端本身
+      经转译运行(桌面与 VNC 栈原生),GUI 响应稍慢。登录成功最终只认 SOCKS5 探活。
+    runtime: byo
+    image: "vpnmgr/hillstone-desktop:latest"
+    versioned: false
+    arch: [amd64, arm64]
+    login_modes: [byo]
+    inputs: []
+    env:
+      USE_NOVNC: "1"
+      PASSWORD: "{vnc_password}"
+    caps: [NET_ADMIN, MKNOD]
+    devices: ["/dev/net/tun:/dev/net/tun:rwm"]
+    sysctls: {}
+    dns_opts: [no-aaaa]   # 守护进程 DNS 代理丢 AAAA(见 custom 注释),2026-09-09 实测

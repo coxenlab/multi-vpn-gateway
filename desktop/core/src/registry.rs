@@ -50,6 +50,12 @@ pub struct AdapterSpec {
     pub sysctls: HashMap<String, String>,
     #[serde(default)]
     pub device_cgroup_rules: Vec<String>,
+    /// 容器解析器策略(docker --dns-opt → 初始 resolv.conf 的 options 行),如 `no-aaaa`。
+    #[serde(default)]
+    pub dns_opts: Vec<String>,
+    /// 向导里替代通用 byo 告警的专属提示(可选;如 hillstone 预装客户端说明)。
+    #[serde(default)]
+    pub notice: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -62,6 +68,7 @@ pub struct AdapterSummary {
     pub arch: Vec<String>,
     pub login_modes: Vec<String>,
     pub inputs: Vec<InputField>,
+    pub notice: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +98,7 @@ pub fn list_adapters() -> Result<Vec<AdapterSummary>> {
             arch: spec.arch.clone(),
             login_modes: spec.login_modes.clone(),
             inputs: spec.inputs.clone(),
+            notice: spec.notice.clone(),
             key,
         })
         .collect())
@@ -114,7 +122,10 @@ mod tests {
     fn manifest_parses_and_is_ordered() {
         let list = list_adapters().unwrap();
         assert_eq!(list[0].key, "easyconnect");
-        assert_eq!(list.len(), 11);
+        assert_eq!(list.len(), 12);
+        let hs = list.iter().find(|a| a.key == "hillstone").expect("hillstone adapter");
+        assert_eq!(hs.runtime, "byo");
+        assert!(hs.notice.as_deref().unwrap_or("").contains("Hillstone"));
         let ec = &list[0];
         assert_eq!(ec.runtime, "hagb");
         assert!(ec.versioned);

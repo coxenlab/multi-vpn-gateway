@@ -34,7 +34,7 @@ fn parse_device(s: &str) -> DeviceMapping {
     }
 }
 
-/// 共有 HostConfig:caps/devices/sysctls/network/restart(unless-stopped)/device_cgroup_rules。
+/// 共有 HostConfig:caps/devices/sysctls/dns_opts/network/restart(unless-stopped)/device_cgroup_rules。
 fn base_host_config(spec: &AdapterSpec, vpn_net: &str) -> HostConfig {
     HostConfig {
         cap_add: Some(spec.caps.clone()),
@@ -54,6 +54,8 @@ fn base_host_config(spec: &AdapterSpec, vpn_net: &str) -> HostConfig {
         } else {
             Some(spec.device_cgroup_rules.clone())
         },
+        // manifest dns_opts → --dns-opt(容器解析器策略,如 no-aaaa;对照 Python _apply_spec_hostcfg)
+        dns_options: if spec.dns_opts.is_empty() { None } else { Some(spec.dns_opts.clone()) },
         ..Default::default()
     }
 }
@@ -217,6 +219,19 @@ mod tests {
         // 命门 #6:PPP 字符设备放行 + MKNOD
         assert_eq!(h.device_cgroup_rules, Some(vec!["c 108:* rwm".to_string()]));
         assert!(h.cap_add.as_ref().unwrap().contains(&"MKNOD".to_string()));
+    }
+
+    #[test]
+    fn dns_opts_manifest_drives_host_dns_options() {
+        // manifest dns_opts → HostConfig.dns_options(= docker --dns-opt);byo 成员 no-aaaa,其余不带
+        for t in ["custom", "hillstone"] {
+            let p = build_run_kwargs("d1", "", None, &registry::get(t).unwrap(), "v", "net").unwrap();
+            assert_eq!(hc(&p).dns_options, Some(vec!["no-aaaa".to_string()]), "{t}");
+        }
+        for t in ["easyconnect", "anyconnect"] {
+            let p = build_run_kwargs("d2", "02:00:00:00:00:01", None, &registry::get(t).unwrap(), "v", "net").unwrap();
+            assert!(hc(&p).dns_options.is_none(), "{t}");
+        }
     }
 
     #[test]

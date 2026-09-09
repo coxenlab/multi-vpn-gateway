@@ -17,6 +17,25 @@ def _ctx(ch, vnc_pwd):
     }
 
 
+def _apply_spec_hostcfg(kw, spec):
+    """manifest 驱动的 HostConfig 附加项(三家族共用):sysctls / dns_opts / device_cgroup_rules。
+
+    - dns_opts → docker `--dns-opt`(初始 resolv.conf 的 options 行):容器解析器策略,如
+      `no-aaaa`(内网纯 IPv4;第三方客户端自带 DNS 代理常丢 AAAA 致双栈查询超时)。
+    - 空值不写键(对齐 legacy:空 sysctls 不带 sysctls 键)。
+    """
+    sysctls = spec.get("sysctls") or {}
+    if sysctls:
+        kw["sysctls"] = dict(sysctls)
+    dns_opts = spec.get("dns_opts") or []
+    if dns_opts:
+        kw["dns_opt"] = list(dns_opts)
+    dcr = spec.get("device_cgroup_rules")     # openfortivpn:放行 /dev/ppp(major 108)
+    if dcr:
+        kw["device_cgroup_rules"] = list(dcr)
+    return kw
+
+
 def _build_hagb(ch, spec, vnc_pwd, vpn_net):
     """合成 hagb 家族(EC/aTrust)的 dc.containers.run 入参。纯函数。"""
     ctx = _ctx(ch, vnc_pwd)
@@ -37,10 +56,7 @@ def _build_hagb(ch, spec, vnc_pwd, vpn_net):
         "network": vpn_net,
         "restart_policy": {"Name": "unless-stopped"},
     }
-    sysctls = spec.get("sysctls") or {}
-    if sysctls:
-        kw["sysctls"] = dict(sysctls)
-    return kw
+    return _apply_spec_hostcfg(kw, spec)
 
 
 def _build_oss(ch, spec, vnc_pwd, vpn_net):
@@ -62,13 +78,7 @@ def _build_oss(ch, spec, vnc_pwd, vpn_net):
         "network": vpn_net,
         "restart_policy": {"Name": "unless-stopped"},
     }
-    sysctls = spec.get("sysctls") or {}
-    if sysctls:
-        kw["sysctls"] = dict(sysctls)
-    dcr = spec.get("device_cgroup_rules")     # openfortivpn:放行 /dev/ppp(major 108)
-    if dcr:
-        kw["device_cgroup_rules"] = list(dcr)
-    return kw
+    return _apply_spec_hostcfg(kw, spec)
 
 
 def _build_byo(ch, spec, vnc_pwd, vpn_net):
@@ -93,10 +103,7 @@ def _build_byo(ch, spec, vnc_pwd, vpn_net):
         "network": vpn_net,
         "restart_policy": {"Name": "unless-stopped"},
     }
-    sysctls = spec.get("sysctls") or {}
-    if sysctls:
-        kw["sysctls"] = dict(sysctls)
-    return kw
+    return _apply_spec_hostcfg(kw, spec)
 
 
 _BUILDERS = {"hagb": _build_hagb, "oss": _build_oss, "byo": _build_byo}

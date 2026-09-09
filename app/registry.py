@@ -27,7 +27,7 @@ def get(key):
 
 
 def list_adapters():
-    """返回 [{key, label, desc, runtime, versioned, arch, login_modes, inputs}]。"""
+    """返回 [{key, label, desc, runtime, versioned, arch, login_modes, inputs, notice}]。"""
     out = []
     for key, spec in _ADAPTERS.items():
         out.append({
@@ -39,6 +39,7 @@ def list_adapters():
             "arch": spec.get("arch", []),
             "login_modes": spec.get("login_modes", []),
             "inputs": spec.get("inputs", []),
+            "notice": spec.get("notice"),
         })
     return out
 
