@@ -1,35 +1,60 @@
 /* ──────────────────────────────────────────────────────────────────────────
  * VPN 管理网关 — 共享设计系统
- * 视觉契约 = Neutral Modern（浅色 / 钴蓝 / Inter）。所有屏幕只组合此文件里的
- * 类，不要发明新的全局调色或裸 hex；屏内独有元素用 var(--*) 派生即可。
+ * 视觉契约 = Claude / Anthropic 官网浅色暖调（象牙纸底 / 陶土橙 / 衬线标题）。
+ *   · 底：暖白三阶 bg #faf9f5（象牙纸）→ surface #ffffff → surface-2 #f0eee6
+ *     （book cloth 暖纸色）；边框 #e2dfd4 系暖灰。
+ *   · 字：暖黑 --fg #141413（17.5:1），次级 --muted #6a6963（三层底全 ≥4.7:1）；标题
+ *     （h1/h2）用衬线 Source Serif 4，正文 Inter，数据用 JetBrains Mono。
+ *   · 强调：陶土橙 --accent #ac4c22 承接旧钴蓝的全部角色 —— 它同时要当「奶油
+ *     底上的文字」和「白字的按钮底」，两头都得过 4.5:1，所以取的是珊瑚橙
+ *     #d97757 压暗后的同色相档（奶油底 5.23:1 / 白字 5.51:1）；--accent-on 白。
+ *     hover/active 在浅底上一律「压暗」而非提亮。
+ *   · 深色不是全灭：代码块 / 终端 / noVNC 舞台（--ink 系）仍是暖黑块 —— 奶油
+ *     底上的深色终端块正是 Claude Code 的签名元素。原始珊瑚橙 #d97757 活在
+ *     --ink-accent 里，只在这些深底上出现（深底 5.33:1）。
+ *   · 语义色为浅底重新压暗（success/warn/danger 都同时要能当文字和白字底色），
+ *     soft 底＝同色 10% 透明混合，不另开实色 token。
+ *   · 克制：无渐变、无发光、无彩色阴影；每屏至多一处强调。
+ * 所有屏幕只组合此文件里的类，不要发明新的全局调色或裸 hex；裸 hex 只允许出现
+ * 在下面的 :root 契约块内（含 --select-caret 的 data-URI），屏内独有元素一律
+ * 用 var(--*) 或与 black/white/transparent 的 color-mix 派生。
  * ────────────────────────────────────────────────────────────────────────── */
 
-/* ─── Neutral Modern token 契约（逐字粘贴，勿改值） ─────────────────────── */
+/* ─── Claude 浅色暖调 token 契约（逐字粘贴，勿改值） ─────────────────────── */
 :root {
-  --bg: #fafafa;
-  --surface: #ffffff;
-  --surface-warm: var(--surface);
+  color-scheme: light;  /* 原生控件（select 弹层 / 滚动条 / 输入框）跟随浅色 */
+  accent-color: var(--accent);   /* 原生 checkbox/radio 默认蓝 → 陶土橙，全站兜底 */
 
-  --fg: #111111;
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --surface-2: #f0eee6;
+  --surface-warm: var(--surface-2);
+
+  --fg: #141413;
   --fg-2: var(--fg);
-  --muted: #6b6b6b;
+  /* #6e6d66 在 --bg 上够（4.93:1），但压到 --surface-2 的 book cloth 上只有 4.47:1；
+   * 压深一档让三层底（bg / surface / surface-2）全过 4.5:1 */
+  --muted: #6a6963;
   --meta: var(--muted);
 
-  --border: #e5e5e5;
-  --border-soft: var(--border);
+  --border: #e2dfd4;
+  --border-soft: #edebe3;
 
-  --accent: #2f6feb;
+  /* #ac4c22 = 珊瑚橙 #d97757 同色相压暗档。别改回 #d97757：那个值在奶油底上
+   * 只有 2.96:1（当文字不合格）、白字压在它上面只有 3.12:1（当按钮底也不合格）。 */
+  --accent: #ac4c22;
   --accent-on: #ffffff;
-  --accent-hover: color-mix(in oklab, var(--accent), black 8%);
-  --accent-active: color-mix(in oklab, var(--accent), black 14%);
+  --accent-hover: color-mix(in oklab, var(--accent), black 12%);
+  --accent-active: color-mix(in oklab, var(--accent), black 22%);
 
-  --success: #17a34a;
-  --warn: #eab308;
-  --danger: #dc2626;
+  /* 三个语义色都要两用（当文字 + 当白字底），故取的都是深档 */
+  --success: #35682f;
+  --warn: #7a5c14;
+  --danger: #b3372c;
 
-  --font-display: "Inter", -apple-system, system-ui, sans-serif;
+  --font-display: "Source Serif 4", Georgia, "Times New Roman", serif;
   --font-body: "Inter", -apple-system, system-ui, sans-serif;
-  --font-mono: ui-monospace, "JetBrains Mono", monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --text-xs: 12px;
   --text-sm: 14px;
@@ -61,13 +86,25 @@
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+  --radius-xl: 20px;
   --radius-pill: 9999px;
+
+  /* 原始珊瑚橙的第二个合法出口:仅装饰性图形(卡头短杠 / 仪表弧段 / 通知圆点),
+   * 永不当文字色、永不当可点击底色 —— 文字/实底角色仍归压暗档 --accent。 */
+  --coral: #d97757;
 
   --elev-flat: none;
   --elev-ring: 0 0 0 1px var(--border);
-  --elev-raised: 0 2px 8px color-mix(in oklab, var(--fg), transparent 92%);
+  /* 浅底阴影要极浅、两层：近处一层定形，远处一层给浮起感。混 --fg 会带暖色偏，用纯黑 */
+  --elev-raised: 0 1px 2px color-mix(in oklab, black, transparent 92%),
+                 0 4px 12px color-mix(in oklab, black, transparent 94%);
+  --shadow-md: 0 12px 32px color-mix(in oklab, black, transparent 88%);
 
-  --focus-ring: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 70%);
+  /* 浅底上半透明橙掉得同样快：实测 45% 透明只有 2.1:1，要过 WCAG 非文本 3:1 得压到 25%（3.31:1） */
+  --focus-ring: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 25%);
+
+  /* select 箭头：data-URI 里无法用 var()，整条 url() 收成 token 以免屏内出现裸 hex */
+  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236a6963' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 
   --motion-fast: 150ms;
   --motion-base: 200ms;
@@ -77,22 +114,36 @@
   --container-gutter-tablet: 16px;
   --container-gutter-phone: 12px;
 
-  /* ── 派生便利值（仅由上面 token + black/white/transparent 混合而来） ── */
+  /* ── 派生便利值（仅由上面 token + black/white/transparent 混合而来） ──
+   * soft 底在浅底上统一取 10%：再浓一点，压在上面的同色文字就掉到 4.5:1 以下。 */
   --accent-soft: color-mix(in oklab, var(--accent), transparent 90%);
-  --success-soft: color-mix(in oklab, var(--success), transparent 88%);
-  --warn-soft: color-mix(in oklab, var(--warn), transparent 86%);
+  --success-soft: color-mix(in oklab, var(--success), transparent 90%);
+  --warn-soft: color-mix(in oklab, var(--warn), transparent 90%);
   --danger-soft: color-mix(in oklab, var(--danger), transparent 90%);
-  --row-hover: color-mix(in oklab, var(--fg), transparent 96%);
-  --surface-2: color-mix(in oklab, var(--bg), var(--surface) 50%);
-  --ink: color-mix(in oklab, var(--fg) 88%, black);          /* 数据/终端深底 */
-  --ink-soft: color-mix(in oklab, var(--fg) 78%, black);
-  --on-ink: color-mix(in oklab, var(--surface), transparent 8%);
+  --row-hover: color-mix(in oklab, var(--fg), transparent 95%);   /* 浅底 hover ＝ 压暗 */
+
+  /* ── 深色终端块：奶油底上的暖黑块是 Claude Code 的签名元素，不跟随浅色反转。
+   * 这几个值不能再由 --bg 混黑派生（--bg 已经是奶油色，混黑只会得到暖灰），必须写死。 */
+  --ink: #1f1e1d;            /* 代码块 / 日志 / noVNC 舞台的深底 */
+  --ink-soft: #2a2927;       /* code-head / vnc-bar 标题条，比 ink 浅一档 */
+  --on-ink: #f5f4ef;         /* ink 上的字（15.3:1） */
+  --ink-border: color-mix(in oklab, var(--ink), white 12%);  /* 深块自身的描边；--border 是浅灰，压在深块上会成光晕 */
+  /* 深底上的语义色 —— 浅底那三个深档在 ink 上只有 3:1 左右，代码高亮要用亮档。
+   * 原始珊瑚橙 #d97757 就活在这里（ink 上 5.33:1）。 */
+  --ink-accent: #d97757;
+  --ink-success: #7fb069;
+  --ink-warn: #d9a441;
+
+  --text-secondary: var(--muted);   /* feedback.js 内联样式的兜底引用，须有定义 */
   --sidebar-w: 248px;
   --topbar-h: 60px;
 }
 
 /* ─── reset & base ─────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
+/* [hidden] 全局收口:.btn 等 display 声明会盖掉 UA 的 [hidden](红队低级项:
+ * routing-table 的 #global-routing 在 web 栈藏不掉),统一用 !important 兜底。 */
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -107,11 +158,14 @@ body {
 img, svg { display: block; max-width: 100%; }
 a { color: inherit; text-decoration: none; }
 button { font: inherit; cursor: pointer; color: inherit; }
-h1, h2, h3, h4 { margin: 0; font-family: var(--font-display); font-weight: 600; line-height: var(--leading-tight); }
-h1 { font-size: var(--text-2xl); letter-spacing: var(--tracking-display); }
-h2 { font-size: var(--text-xl); letter-spacing: var(--tracking-display); }
+h1, h2, h3, h4 { margin: 0; font-family: var(--font-body); font-weight: 600; line-height: var(--leading-tight); }
+/* 衬线只给 h1/h2（display 层）；h3/h4 是组件标题，留在 Inter 上更像操作台 */
+h1, h2 { font-family: var(--font-display); font-weight: 500; letter-spacing: var(--tracking-display); }
+h1 { font-size: var(--text-2xl); }
+h2 { font-size: var(--text-xl); }
 h3 { font-size: var(--text-lg); }
 p { margin: 0; text-wrap: pretty; }
+::selection { background: color-mix(in oklab, var(--accent), transparent 65%); color: var(--fg); }
 :focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
 
 /* ─── utilities ───────────────────────────────────────────────────────── */
@@ -215,7 +269,7 @@ p { margin: 0; text-wrap: pretty; }
 /* ─── buttons ─────────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
-  padding: 9px 16px; border-radius: var(--radius-sm);
+  padding: 9px 16px; border-radius: var(--radius-md);
   border: 1px solid transparent; background: transparent;
   font-size: var(--text-sm); font-weight: 500; white-space: nowrap;
   transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), transform var(--motion-fast);
@@ -226,28 +280,35 @@ p { margin: 0; text-wrap: pretty; }
 .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-primary:active { background: var(--accent-active); }
 .btn-secondary { border-color: var(--border); color: var(--fg); background: var(--surface); }
-.btn-secondary:hover { border-color: var(--fg); }
+/* 浅底：hover ＝ 边框压暗 + 底面沉一阶到暖纸色 */
+.btn-secondary:hover { border-color: color-mix(in oklab, var(--border), black 14%); background: var(--surface-2); }
 .btn-ghost { color: var(--muted); }
 .btn-ghost:hover { color: var(--fg); background: var(--row-hover); }
 .btn-danger { color: var(--danger); border-color: transparent; }
 .btn-danger:hover { background: var(--danger-soft); }
-.btn-sm { padding: 6px 11px; font-size: var(--text-xs); border-radius: 7px; }
+/* tint 档(blume「Preview」形态):软橙底 + 深橙字,做「次级里的主操作」。 */
+.btn-tint { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.btn-tint:hover { background: color-mix(in oklab, var(--accent), transparent 82%); }
+.btn-sm { padding: 6px 11px; font-size: var(--text-xs); border-radius: 9px; }
 .btn-block { width: 100%; }
 .btn[disabled] { opacity: 0.5; pointer-events: none; }
-.icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface); color: var(--muted); }
-.icon-btn:hover { color: var(--fg); border-color: var(--fg); }
+.icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); }
+.icon-btn:hover { color: var(--fg); border-color: color-mix(in oklab, var(--border), black 14%); background: var(--surface-2); }
 .icon-btn svg { width: 16px; height: 16px; }
 
 /* ─── card / panel ────────────────────────────────────────────────────── */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); }
+/* 软卡:边框退到最浅一档 + 极浅浮起阴影,靠光影而非线框定形(blume 形态)。 */
+.card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--elev-raised); }
 .card-pad { padding: var(--space-5); }
-.card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); }
-.card-head h3 { font-size: var(--text-base); }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border-soft); }
+.card-head h3 { font-size: var(--text-base); display: inline-flex; align-items: center; gap: 10px; }
+/* 签名元素:卡头珊瑚短杠。纯装饰(coral 契约),标记一个区块的起点。 */
+.card-head h3::before { content: ""; width: 18px; height: 3px; border-radius: var(--radius-pill); background: var(--coral); flex: none; }
 .card-body { padding: var(--space-5); }
-.card-foot { padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border); display: flex; align-items: center; gap: var(--space-3); }
+.card-foot { padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border-soft); display: flex; align-items: center; gap: var(--space-3); }
 
 /* ─── stat tile（概览） ──────────────────────────────────────────────────── */
-.stat-tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-5); }
+.stat-tile { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--elev-raised); padding: var(--space-5); }
 .stat-tile .stat-label { display: flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--text-sm); }
 .stat-tile .stat-label svg { width: 15px; height: 15px; }
 .stat-tile .stat-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--text-2xl); font-weight: 600; letter-spacing: -0.02em; margin-top: var(--space-3); line-height: 1; }
@@ -265,7 +326,7 @@ p { margin: 0; text-wrap: pretty; }
 }
 .badge .bdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
 .badge.is-logged_in { color: var(--success); border-color: color-mix(in oklab, var(--success), transparent 60%); background: var(--success-soft); }
-.badge.is-running { color: color-mix(in oklab, var(--warn), black 18%); border-color: color-mix(in oklab, var(--warn), transparent 55%); background: var(--warn-soft); }
+.badge.is-running { color: var(--warn); border-color: color-mix(in oklab, var(--warn), transparent 55%); background: var(--warn-soft); }
 .badge.is-starting { color: var(--accent); border-color: color-mix(in oklab, var(--accent), transparent 60%); background: var(--accent-soft); }
 .badge.is-created { color: var(--muted); }
 .badge.is-down, .badge.is-error { color: var(--danger); border-color: color-mix(in oklab, var(--danger), transparent 60%); background: var(--danger-soft); }
@@ -275,7 +336,7 @@ p { margin: 0; text-wrap: pretty; }
 
 /* ─── pill / tag / chip ───────────────────────────────────────────────── */
 .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em; }
-.tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface); font-size: var(--text-xs); color: var(--muted); }
+.tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: var(--radius-pill); border: 1px solid var(--border); background: var(--surface); font-size: var(--text-xs); color: var(--muted); }
 .tag .x { cursor: pointer; opacity: 0.5; } .tag .x:hover { opacity: 1; color: var(--danger); }
 .tag.mono { font-family: var(--font-mono); }
 .tag.ip { border-style: dashed; }   /* IP/网段规则与域名规则的轻量视觉区分 */
@@ -286,11 +347,11 @@ p { margin: 0; text-wrap: pretty; }
 .note-line .mono { color: var(--fg); }
 .kind-tag { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-xs); font-weight: 500; padding: 3px 9px; border-radius: var(--radius-sm); }
 .kind-tag.ec { color: var(--accent); background: var(--accent-soft); }
-.kind-tag.atrust { color: color-mix(in oklab, var(--warn), black 22%); background: var(--warn-soft); }
+.kind-tag.atrust { color: var(--warn); background: var(--warn-soft); }
 
 /* ─── channel row/card ────────────────────────────────────────────────── */
-.ch-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-5); transition: border-color var(--motion-fast), box-shadow var(--motion-fast); }
-.ch-card:hover { border-color: color-mix(in oklab, var(--accent), transparent 55%); box-shadow: var(--elev-raised); }
+.ch-card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--elev-raised); padding: var(--space-5); transition: border-color var(--motion-fast), box-shadow var(--motion-fast); }
+.ch-card:hover { border-color: color-mix(in oklab, var(--accent), transparent 45%); box-shadow: var(--elev-raised); }
 .ch-card .ch-top { display: flex; align-items: flex-start; gap: var(--space-3); }
 .ch-card .ch-name { font-weight: 600; font-size: var(--text-base); }
 .ch-card .ch-meta { color: var(--muted); font-size: var(--text-xs); font-family: var(--font-mono); margin-top: 2px; }
@@ -299,6 +360,35 @@ p { margin: 0; text-wrap: pretty; }
 .ch-grid .kv .v { font-family: var(--font-mono); font-size: var(--text-sm); margin-top: 2px; }
 .ch-domains { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--space-4); min-height: 26px; }
 .ch-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+/* ─── 通道测速卡片墙（monitor.html，参考 Clash 仪表盘 Proxies 面板） ────── */
+[data-od-id="speedtest"] .card-head { flex-wrap: wrap; }   /* 窄屏下汇总文字 + 按钮换行，不挤压标题 */
+.spd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-3); }
+.spd-card {
+  background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius-md);
+  padding: var(--space-4); cursor: pointer; min-width: 0;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), opacity var(--motion-fast);
+}
+.spd-card:hover { border-color: color-mix(in oklab, var(--accent), transparent 45%); box-shadow: var(--elev-raised); }
+.spd-card.is-off { opacity: 0.55; cursor: default; }          /* stopped 通道：降透明度、恢复默认光标，不可点 */
+.spd-card.is-off:hover { border-color: var(--border); box-shadow: none; }
+.spd-top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
+.spd-name { font-weight: 600; font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.spd-meta { color: var(--muted); font-size: var(--text-xs); margin-top: 4px; }
+
+.spd-badge {
+  flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: var(--radius-pill);
+  font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+}
+.spd-badge svg { width: 11px; height: 11px; }
+.spd-badge.ok { color: var(--success); border-color: color-mix(in oklab, var(--success), transparent 60%); background: var(--success-soft); }
+.spd-badge.mid { color: var(--warn); border-color: color-mix(in oklab, var(--warn), transparent 55%); background: var(--warn-soft); }
+/* >500ms：warn/danger 各半的混色，比 mid 更「橙」又不到 timeout 的红，仍全部来自既有 token */
+.spd-badge.slow { color: color-mix(in oklab, var(--warn), var(--danger) 50%); border-color: color-mix(in oklab, var(--warn), var(--danger) 50%, transparent 55%); background: color-mix(in oklab, var(--warn-soft), var(--danger-soft)); }
+.spd-badge.timeout { color: var(--danger); border-color: color-mix(in oklab, var(--danger), transparent 60%); background: var(--danger-soft); }
+.spd-badge.off { color: var(--muted); background: var(--surface-2); }
+.spd-badge.testing { color: var(--muted); }
 
 /* ─── table ───────────────────────────────────────────────────────────── */
 .table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
@@ -320,14 +410,14 @@ p { margin: 0; text-wrap: pretty; }
 .field .req { color: var(--danger); }
 .input, .select, .textarea {
   width: 100%; padding: 9px 12px;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  border: 1px solid var(--border); border-radius: 10px;
   background: var(--surface); color: var(--fg); font: inherit; font-size: var(--text-sm);
   transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
 }
-.input::placeholder, .textarea::placeholder { color: color-mix(in oklab, var(--muted), transparent 30%); }
+.input::placeholder, .textarea::placeholder { color: color-mix(in oklab, var(--muted), transparent 25%); }
 .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
 .textarea { min-height: 84px; resize: vertical; line-height: 1.5; font-family: var(--font-mono); }
-.select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b6b6b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 34px; }
+.select, select.input { appearance: none; background-image: var(--select-caret); background-repeat: no-repeat; background-position: right 12px center; padding-right: 34px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-4) var(--space-5); }
 .form-grid .col-span { grid-column: 1 / -1; }
 .input-affix { display: flex; align-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
@@ -356,7 +446,9 @@ p { margin: 0; text-wrap: pretty; }
 
 /* ─── tabs ────────────────────────────────────────────────────────────── */
 .tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); }
-.tab { padding: 9px 14px; font-size: var(--text-sm); color: var(--muted); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+/* .tab 是 <button>：必须显式清掉 UA 的 buttonface 底和外框，
+ * 否则会渲染成一块灰色按钮，而不是下划线式 tab */
+.tab { padding: 9px 14px; font-size: var(--text-sm); color: var(--muted); font-weight: 500; background: transparent; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tab:hover { color: var(--fg); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tabpanel { display: none; } .tabpanel.active { display: block; }
@@ -367,32 +459,37 @@ p { margin: 0; text-wrap: pretty; }
 .banner .bt { font-weight: 600; }
 .banner p { color: var(--muted); margin-top: 2px; }
 .banner.warn { border-color: color-mix(in oklab, var(--warn), transparent 55%); background: var(--warn-soft); }
-.banner.warn .bicon { color: color-mix(in oklab, var(--warn), black 22%); }
+.banner.warn .bicon { color: var(--warn); }
 .banner.info { border-color: color-mix(in oklab, var(--accent), transparent 60%); background: var(--accent-soft); }
 .banner.info .bicon { color: var(--accent); }
 .banner.danger { border-color: color-mix(in oklab, var(--danger), transparent 55%); background: var(--danger-soft); }
 .banner.danger .bicon { color: var(--danger); }
 
 /* ─── code block / kbd ────────────────────────────────────────────────── */
-.code { background: var(--ink); color: var(--on-ink); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.65; overflow-x: auto; white-space: pre; }
-.code .cmt { color: color-mix(in oklab, var(--on-ink), transparent 45%); }
-.code .key { color: color-mix(in oklab, var(--accent), white 30%); }
-.code .str { color: color-mix(in oklab, var(--success), white 35%); }
-.code-head { display: flex; align-items: center; justify-content: space-between; background: var(--ink-soft); color: var(--on-ink); padding: var(--space-2) var(--space-4); border-radius: var(--radius-md) var(--radius-md) 0 0; font-family: var(--font-mono); font-size: var(--text-xs); }
-.code-head + .code { border-radius: 0 0 var(--radius-md) var(--radius-md); }
+/* 浅色主题下深块自己就切得出来，描边只作收边；描边必须用 --ink-border，
+ * 用 --border（浅暖灰）会在深块四周形成一圈光晕 */
+.code { background: var(--ink); color: var(--on-ink); border: 1px solid var(--ink-border); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.65; overflow-x: auto; white-space: pre; }
+.code .cmt { color: color-mix(in oklab, var(--on-ink), transparent 50%); }
+.code .key { color: var(--ink-accent); }
+.code .str { color: var(--ink-success); }
+.code-head { display: flex; align-items: center; justify-content: space-between; background: var(--ink-soft); color: var(--on-ink); padding: var(--space-2) var(--space-4); border: 1px solid var(--ink-border); border-bottom: 0; border-radius: var(--radius-md) var(--radius-md) 0 0; font-family: var(--font-mono); font-size: var(--text-xs); }
+.code-head + .code { border-top: 0; border-radius: 0 0 var(--radius-md) var(--radius-md); }
 .copy-btn { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid color-mix(in oklab, var(--on-ink), transparent 72%); border-radius: var(--radius-sm); background: transparent; color: var(--on-ink); font-size: var(--text-xs); line-height: 1; }
 .copy-btn svg { width: 13px; height: 13px; }
 .copy-btn:hover { background: color-mix(in oklab, var(--on-ink), transparent 86%); border-color: color-mix(in oklab, var(--on-ink), transparent 45%); }
-kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; background: var(--surface); }
+kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; background: var(--surface-2); }
 
 /* ─── toast ───────────────────────────────────────────────────────────── */
 .toast-host { position: fixed; right: var(--space-6); bottom: var(--space-6); z-index: 100; display: flex; flex-direction: column; gap: var(--space-2); }
-.toast { display: flex; align-items: center; gap: var(--space-2); padding: 10px 14px; border-radius: var(--radius-sm); background: var(--ink); color: var(--on-ink); font-size: var(--text-sm); box-shadow: var(--elev-raised); animation: toast-in var(--motion-base) var(--ease-standard); }
-.toast svg { width: 16px; height: 16px; color: color-mix(in oklab, var(--success), white 20%); }
+/* toast 留在浅底（白卡 + 描边 + 重阴影）而不是做成深块：它的图标要带 success /
+ * danger / accent 语义色，那三个色是为浅底挑的，压到 ink 上只剩 3:1 左右。 */
+.toast { display: flex; align-items: center; gap: var(--space-2); padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); border: 1px solid var(--border); font-size: var(--text-sm); box-shadow: var(--shadow-md); animation: toast-in var(--motion-base) var(--ease-standard); }
+.toast svg { width: 16px; height: 16px; color: var(--success); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ─── modal / drawer ──────────────────────────────────────────────────── */
-.overlay { position: fixed; inset: 0; background: color-mix(in oklab, var(--fg), transparent 55%); z-index: 80; display: none; align-items: center; justify-content: center; padding: var(--space-6); }
+/* 遮罩混 black（混 --fg 会带暖色偏）。浅底上 68% 黑太重，压到 45% 就够把页面推远 */
+.overlay { position: fixed; inset: 0; background: color-mix(in oklab, black, transparent 55%); z-index: 80; display: none; align-items: center; justify-content: center; padding: var(--space-6); }
 .overlay.open { display: flex; }
 .modal { background: var(--surface); border-radius: var(--radius-lg); border: 1px solid var(--border); max-width: 560px; width: 100%; box-shadow: var(--elev-raised); max-height: 86vh; overflow: auto; }
 .fb-confirm { max-width: 440px; }
@@ -401,12 +498,13 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 .fb-confirm-actions { display: flex; justify-content: flex-end; gap: var(--space-2); padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border); background: var(--surface-2); }
 
 /* ─── noVNC remote frame（仿真壳） ──────────────────────────────────────── */
-.vnc-frame { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; background: var(--ink); }
+.vnc-frame { border: 1px solid var(--ink-border); border-radius: var(--radius-md); overflow: hidden; background: var(--ink); }
 .vnc-bar { display: flex; align-items: center; gap: var(--space-3); padding: 8px 12px; background: var(--ink-soft); color: var(--on-ink); font-family: var(--font-mono); font-size: var(--text-xs); }
-.vnc-bar .vdot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklab, var(--success), transparent 70%); }
+/* 深条上的状态灯要用 ink 档语义色，浅底那档压在 #2a2927 上只剩 3:1 */
+.vnc-bar .vdot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-success); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ink-success), transparent 70%); }
 .vnc-bar .vbtns { margin-left: auto; display: flex; gap: 6px; }
 .vnc-bar .vbtns span { width: 11px; height: 11px; border-radius: 50%; background: color-mix(in oklab, var(--on-ink), transparent 70%); }
-.vnc-stage { background: var(--surface-2); min-height: 360px; display: grid; place-items: center; padding: var(--space-6); }
+.vnc-stage { background: var(--ink); min-height: 360px; display: grid; place-items: center; padding: var(--space-6); }
 
 /* ─── monitor widgets ─────────────────────────────────────────────────── */
 .metric { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); }
@@ -433,7 +531,8 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 
 /* ─── empty state ─────────────────────────────────────────────────────── */
 .empty { text-align: center; padding: var(--space-12) var(--space-6); border: 1px dashed var(--border); border-radius: var(--radius-md); color: var(--muted); }
-.empty svg { width: 36px; height: 36px; color: var(--border); margin: 0 auto var(--space-3); }
+/* --border 在浅底上几乎看不见，空态图标要压到 muted 的半透明档才有形 */
+.empty svg { width: 36px; height: 36px; color: color-mix(in oklab, var(--muted), transparent 55%); margin: 0 auto var(--space-3); }
 
 /* ─── responsive ──────────────────────────────────────────────────────── */
 @media (max-width: 1080px) {
@@ -449,7 +548,7 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
     box-shadow: var(--elev-raised);
   }
   .app.nav-open .sidebar { transform: none; }
-  .app.nav-open::after { content: ""; position: fixed; inset: 0; background: color-mix(in oklab, var(--fg), transparent 55%); z-index: 50; }
+  .app.nav-open::after { content: ""; position: fixed; inset: 0; background: color-mix(in oklab, black, transparent 55%); z-index: 50; }
   .menu-btn { display: inline-grid; }
   .content { padding: var(--space-5); }
   .topbar { padding: 0 var(--space-5); }
@@ -465,7 +564,8 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 
 /* ─── preflight check panel ───────────────────────────────────────────────── */
 .chk { display: flex; gap: var(--space-3); align-items: flex-start; padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: var(--space-2); background: var(--surface); }
-.chk-ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; flex: none; color: #fff; }
+/* 图标底色（success/warn/danger/muted）都是深档实色块，字用 --accent-on（白），逐个 >5:1 */
+.chk-ic { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; flex: none; color: var(--accent-on); }
 .chk-pass .chk-ic { background: var(--success); }
 .chk-warn .chk-ic { background: var(--warn); }
 .chk-fail .chk-ic { background: var(--danger); }
@@ -473,11 +573,11 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 .chk-body { flex: 1; }
 .chk-title { font-size: var(--text-sm); font-weight: 500; }
 .chk-detail { font-size: var(--text-xs); color: var(--muted); margin-top: 2px; }
-.chk-tip { font-size: var(--text-xs); color: color-mix(in oklab, var(--warn), black 18%); }
+.chk-tip { font-size: var(--text-xs); color: var(--warn); }
 .chk-loading { font-size: var(--text-sm); color: var(--muted); padding: var(--space-4); }
 
 /* ─── 反馈层(feedback.js) ─────────────────────────────────────────────────
- * 全站共享:stepper / 错误条 / spinner / skeleton / 富 toast。Neutral Modern,克制动画。 */
+ * 全站共享:stepper / 错误条 / spinner / skeleton / 富 toast。Claude Code 暗色,克制动画。 */
 
 /* 旋转 spinner —— 唯一允许的旋转,仅作 loading 指示(克制:1px stroke 圆弧,匀速) */
 .fb-spin { animation: fb-rotate 0.8s linear infinite; transform-origin: center; }
@@ -487,13 +587,14 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 .fb-spinner-ic { display: inline-grid; place-items: center; color: var(--accent); }
 .fb-spinner-ic svg { width: 16px; height: 16px; }
 
-/* skeleton shimmer —— 浅灰底,横向高光扫过(opacity/位移,无闪烁) */
+/* skeleton shimmer —— 暖纸底,横向高光扫过(opacity/位移,无闪烁)
+ * 浅主题下 surface-2 已经很亮,高光要往 white 走足 60% 才看得出扫动。 */
 .fb-skeleton { display: flex; flex-direction: column; gap: var(--space-2); }
 .fb-sk-line {
   height: 12px; border-radius: var(--radius-sm); width: 100%;
   background: linear-gradient(90deg,
     var(--surface-2) 0%,
-    color-mix(in oklab, var(--surface-2), var(--bg) 60%) 50%,
+    color-mix(in oklab, var(--surface-2), white 60%) 50%,
     var(--surface-2) 100%);
   background-size: 200% 100%;
   animation: fb-shimmer 1.4s var(--ease-standard) infinite;
@@ -528,8 +629,19 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 
 /* 友好错误条(errorBanner)—— 复用 .banner.danger,补折叠细节 + 操作区 */
 .fb-errbanner .bicon svg { width: 18px; height: 18px; }
+/* errorBanner 会被塞进任意容器,包括深底的 .code(channel 的 docker logs 面板)。
+ * .banner.danger 的底是 90% 透明,压在 ink 上等于没底,红字只剩 2.8:1 —— 深块里的
+ * 条子先把底重新压回 --surface(不透明同色浅底),文字色也接回 --fg。 */
+.code > .fb-errbanner {
+  background: color-mix(in oklab, var(--danger) 10%, var(--surface));
+  color: var(--fg);
+  white-space: normal;
+  font-family: var(--font-body); font-size: var(--text-sm);
+}
+.code > .fb-errbanner .fb-eb-toggle { color: var(--muted); }
 .fb-eb-body { flex: 1; min-width: 0; }
-.fb-eb-hint { color: color-mix(in oklab, var(--danger), black 14%) !important; }
+/* 浅底上再往 white 混会掉出 4.5:1；提示行直接用本色 */
+.fb-eb-hint { color: var(--danger) !important; }
 .fb-eb-toggle {
   margin-top: var(--space-2); padding: 0; background: none; border: 0;
   color: var(--muted); font-size: var(--text-xs); cursor: pointer;
@@ -544,8 +656,8 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 .fb-eb-toggle:hover { color: var(--fg); }
 .fb-eb-detail {
   margin-top: var(--space-2); padding: var(--space-3);
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted);
+  background: var(--ink); border: 1px solid var(--ink-border); border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: var(--text-xs); color: color-mix(in oklab, var(--on-ink), transparent 22%);
   white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto;
   animation: fb-fade-in var(--motion-fast) var(--ease-standard);
 }
@@ -557,13 +669,13 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 .toast-ic { display: inline-grid; place-items: center; flex: none; }
 .toast-ic svg { width: 16px; height: 16px; }
 .toast-msg { flex: 1; }
-.toast-success .toast-ic { color: color-mix(in oklab, var(--success), white 20%); }
-.toast-danger  .toast-ic { color: color-mix(in oklab, var(--danger), white 28%); }
-.toast-info    .toast-ic { color: color-mix(in oklab, var(--accent), white 28%); }
+.toast-success .toast-ic { color: var(--success); }
+.toast-danger  .toast-ic { color: var(--danger); }
+.toast-info    .toast-ic { color: var(--accent); }
 .toast-act {
   flex: none; margin-left: var(--space-2); padding: 4px 10px;
-  background: transparent; border: 1px solid color-mix(in oklab, var(--on-ink), transparent 70%);
-  border-radius: var(--radius-sm); color: var(--on-ink); font: inherit; font-size: var(--text-xs);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--fg); font: inherit; font-size: var(--text-xs);
   cursor: pointer; transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
-.toast-act:hover { background: color-mix(in oklab, var(--on-ink), transparent 86%); border-color: color-mix(in oklab, var(--on-ink), transparent 40%); }
+.toast-act:hover { background: var(--row-hover); border-color: color-mix(in oklab, var(--border), black 18%); }

@@ -6,7 +6,7 @@
   <title>新建通道 · VPN 管理网关</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/app.css" />
   <style>
     /* 屏内独有样式 —— 仅用 var(--*) 或与 black/white/transparent 的 color-mix */
@@ -26,8 +26,9 @@
     /* 进度日志流：在深底 .code 上逐行追加 */
     .log-stream { max-height: 168px; overflow-y: auto; }
     .log-stream .ln { display: block; }
-    .log-stream .ln.warn { color: color-mix(in oklab, var(--warn), white 24%); }
-    .log-stream .ln.ok { color: color-mix(in oklab, var(--success), white 32%); }
+    /* 深底(.code)上的语义色取 ink 档,浅底那两个深档压上去只有 3:1 */
+    .log-stream .ln.warn { color: var(--ink-warn); }
+    .log-stream .ln.ok { color: var(--ink-success); }
 
     /* noVNC 加载占位（真 iframe 加载后被替换） */
     .vnc-placeholder {
@@ -446,6 +447,7 @@
   <script src="js/preflightPanel.js"></script>
   <script src="js/app.js"></script>
   <script src="js/feedback.js"></script>
+  <script type="module" src="js/vncText.js"></script>
   <script>
     // ── 派生新通道的稳定标识（仅 docker-run 预览展示用；真实端口/MAC/卷由后端创建时分配落库）──
     function randMac() {
@@ -582,15 +584,22 @@
         && spec.login_modes.length === 1 && spec.login_modes[0] === "byo";
       if (byo) {
         const b = document.createElement("div");
-        b.id = "byo-warn"; b.className = "banner warn";
-        b.innerHTML =
-          '<svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' +
-          '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>' +
-          '<div><div class="bt">尽力而为:并非所有客户端都能在容器里跑通</div>' +
-          '<p>适用于「自带 tun、纯网络认证」的普通 Linux GUI/CLI 客户端。' +
-          '<b>不支持</b>:依赖 systemd/dbus 守护进程的客户端(AnyConnect vpnagentd、' +
-          'GlobalProtect panGPS)、需 host 缺失内核模块的、硬件令牌/智能卡/TPM 绑定的、' +
-          '仅 Windows/macOS 的。登录成功最终只认 SOCKS5 探活。</p></div>';
+        b.id = "byo-warn";
+        // 预装客户端的 byo 成员(如 hillstone)带 manifest notice:说明性 info,不是"自己装"告警
+        const notice = typeof spec.notice === "string" && spec.notice.trim();
+        b.className = notice ? "banner info" : "banner warn";
+        b.innerHTML = notice
+          ? '<svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' +
+            '<circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>' +
+            '<div><div class="bt">已预装客户端:' + fb.esc(spec.label || spec.key) + '</div>' +
+            '<p>' + fb.esc(notice) + '</p></div>'
+          : '<svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' +
+            '<path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>' +
+            '<div><div class="bt">尽力而为:并非所有客户端都能在容器里跑通</div>' +
+            '<p>适用于「自带 tun、纯网络认证」的普通 Linux GUI/CLI 客户端。' +
+            '<b>不支持</b>:依赖 systemd/dbus 守护进程的客户端(AnyConnect vpnagentd、' +
+            'GlobalProtect panGPS)、需 host 缺失内核模块的、硬件令牌/智能卡/TPM 绑定的、' +
+            '仅 Windows/macOS 的。登录成功最终只认 SOCKS5 探活。</p></div>';
         $("#dyn-fields").after(b);
       }
       syncSummary();
@@ -897,6 +906,21 @@
     $("#go-3").addEventListener("click", () => { gotoStep(3); loadVnc(); });
 
     // ── ③ 登录验证：账密无头跳过；交互登录拉真 noVNC iframe ──
+    let wizVncUrl = null; // 当前登录窗 url,供「键入到容器」的第二路 RFB 连接复用
+    // 「键入到容器」自动留档到该通道的「登录信息备注」(详情页概览可见/可编辑);
+    // 同文本只记一次;旧后端无 /note 端点 → 静默跳过。
+    async function wizRecordTyped(text) {
+      const t = text.trim();
+      if (!t || !window.createdId) return;
+      try {
+        const { note } = await api.noteGet(window.createdId);
+        if ((note || "").includes(t)) return;
+        const ts = new Date().toLocaleString("zh-CN", { hour12: false });
+        await api.noteSet(window.createdId,
+          (note ? note.replace(/\n*$/, "\n") : "") + `[${ts}] 键入：${t}`);
+        toast("已自动记入登录备注（通道详情 · 概览可查看）");
+      } catch (_e) { /* 旧后端不支持,留档跳过 */ }
+    }
     async function loadVnc() {
       if (model.login === "password" || model.login === "headless") return;  // 无头无 noVNC
       const ph = document.getElementById("vnc-placeholder");
@@ -915,6 +939,15 @@
           if (p) p.replaceWith(f); else $("#login-interactive").prepend(f);
         }
         f.src = url;
+        wizVncUrl = url;
+        // 宿主 ↔ 容器复制粘贴:登录窗下方装「键入到容器」输入条(vncText.js)
+        let sh = document.getElementById("vnc-sendbar");
+        if (!sh) {
+          sh = document.createElement("div");
+          sh.id = "vnc-sendbar";
+          f.insertAdjacentElement("afterend", sh);
+        }
+        window.vncText?.mountBar(sh, () => wizVncUrl, wizRecordTyped);
       } catch (e) {
         if (ph) ph.textContent = "拉取登录窗失败,请重试。";
         // 友好错误条:登录界面未就绪类文案 + 「重新加载」(重跑 loadVnc)

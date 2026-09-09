@@ -6,7 +6,7 @@
   <title>容器管理 · VPN 管理网关</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/app.css" />
   <style>
     /* 屏内独有:容器状态灯 + 角色说明,全部由 var(--*) 派生 */
@@ -21,7 +21,7 @@
     tr.crash td { background: var(--danger-soft); }
     tr.orphan-row td { background: var(--warn-soft); }
     .stat-tile.alert .stat-num { color: var(--danger); }
-    .stat-tile.mind .stat-num { color: color-mix(in oklab, var(--warn), black 25%); }
+    .stat-tile.mind .stat-num { color: var(--warn); }
   </style>
 </head>
 <body data-page="containers">

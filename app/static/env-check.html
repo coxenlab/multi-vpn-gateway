@@ -6,7 +6,7 @@
   <title>环境诊断 · VPN 管理网关</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body data-page="system">
@@ -119,12 +119,12 @@
               .tb-ic { flex:none; width:40px; height:40px; border-radius:var(--radius-sm); display:grid; place-items:center; }
               .tb-ic svg { width:21px; height:21px; }
               .tb-ic.sev-danger { background:var(--danger-soft); color:var(--danger); }
-              .tb-ic.sev-warn   { background:var(--warn-soft);   color:color-mix(in oklab, var(--warn), black 18%); }
+              .tb-ic.sev-warn   { background:var(--warn-soft);   color:var(--warn); }
               .tb-ic.sev-info   { background:var(--accent-soft); color:var(--accent); }
               .tb-body { flex:1; min-width:0; }
               .tb-title { font-weight:600; font-size:var(--text-sm); display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap; }
               .tb-tag { font-weight:500; font-size:var(--text-xs); color:var(--muted); border:1px solid var(--border); border-radius:var(--radius-pill); padding:1px 8px; }
-              .tb-tag.wip { color:color-mix(in oklab, var(--warn), black 20%); border-color:var(--warn-soft); background:var(--warn-soft); }
+              .tb-tag.wip { color:var(--warn); border-color:var(--warn-soft); background:var(--warn-soft); }
               .tb-card p { font-size:var(--text-sm); color:var(--fg); margin:var(--space-2) 0 0; line-height:1.6; }
               .tb-card p .lbl { color:var(--muted); margin-right:6px; }
               .tb-card p.cause { color:var(--muted); }

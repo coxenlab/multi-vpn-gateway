@@ -6,7 +6,7 @@
   <title>通道详情 · VPN 管理网关</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/app.css" />
   <style>
     /* ── 屏内独有样式：只用 var(--*) 或与 black/white/transparent 的 color-mix ── */
@@ -18,7 +18,7 @@
     .kv-list dd .copyable { display: inline-flex; align-items: center; gap: 6px; }
     .kv-list dd .icon-copy { width: 26px; height: 26px; }
     .kv-list dd .icon-copy svg { width: 13px; height: 13px; }
-    .note { font-size: var(--text-xs); color: var(--muted); margin-top: 3px; line-height: 1.5; }
+    .note { display: block; font-size: var(--text-xs); color: var(--muted); margin-top: 3px; line-height: 1.5; }
     .pw-mask { letter-spacing: 0.12em; }
 
     /* 仿深信服企业登录页（高保真，纯 CSS 占位，不调外网） */
@@ -50,16 +50,20 @@
     .seg button { background: var(--surface); border: 0; padding: 5px 12px; font-size: var(--text-xs); color: var(--muted); }
     .seg button + button { border-left: 1px solid var(--border); }
     .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-    .switch { position: relative; width: 38px; height: 22px; border-radius: var(--radius-pill); background: var(--surface-2); border: 1px solid var(--border); flex: none; transition: background var(--motion-fast); cursor: pointer; }
+    /* 与 routing-table 同款:关态轨道中灰,拨钮两态都是白 */
+    .switch { position: relative; width: 38px; height: 22px; border-radius: var(--radius-pill); background: color-mix(in oklab, var(--muted), transparent 55%); border: 1px solid transparent; flex: none; transition: background var(--motion-fast); cursor: pointer; }
     .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: var(--elev-raised); transition: left var(--motion-fast) var(--ease-standard); }
     .switch.on { background: var(--success); border-color: var(--success); }
     .switch.on::after { left: 18px; }
     .rule-note-input { min-width: 150px; height: 32px; padding: 5px 8px; font-size: var(--text-xs); }
     .rule-lock { min-width: 58px; }
     .rule-lock svg { width: 14px; height: 14px; }
-    .code .ts { color: color-mix(in oklab, var(--on-ink), transparent 45%); }
-    .code .ok { color: color-mix(in oklab, var(--success), white 35%); }
-    .code .wn { color: color-mix(in oklab, var(--warn), white 30%); }
+    /* noVNC 深底外框浮在奶油底上,只补一层阴影;描边用 app.css 的 --ink-border,别混 --border */
+    .vnc-frame { box-shadow: var(--elev-raised); }
+    /* 容器日志跑在 .code 深底上,语义色一律取 ink 档(浅底那三个深档压在 #1f1e1d 上只有 3:1) */
+    .code .ts { color: color-mix(in oklab, var(--on-ink), transparent 50%); }
+    .code .ok { color: var(--ink-success); }
+    .code .wn { color: var(--ink-warn); }
   </style>
 </head>
 <body data-page="channels">
@@ -200,18 +204,37 @@
                 </div>
               </div>
 
-              <div class="card" data-od-id="ch-health">
-                <div class="card-head"><h3>健康状态</h3><button class="icon-btn" id="health-refresh" aria-label="刷新"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/></svg></button></div>
-                <div class="card-body">
-                  <div class="metric" style="margin-bottom:var(--space-4);">
-                    <div class="ml">隧道延迟（SOCKS5 探活）</div>
-                    <div class="mv" id="h-lat">— <span class="unit">ms</span></div>
-                    <div class="lat-bar" id="h-lat-bar" style="margin-top:10px;"><i style="width:0;"></i></div>
+              <div class="stack-6">
+                <div class="card" data-od-id="ch-health">
+                  <div class="card-head"><h3>健康状态</h3><button class="icon-btn" id="health-refresh" aria-label="刷新"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 4v4h4"/></svg></button></div>
+                  <div class="card-body">
+                    <div class="metric" style="margin-bottom:var(--space-4);">
+                      <div class="ml">隧道延迟（SOCKS5 探活）</div>
+                      <div class="mv" id="h-lat">— <span class="unit">ms</span></div>
+                      <div class="lat-bar" id="h-lat-bar" style="margin-top:10px;"><i style="width:0;"></i></div>
+                    </div>
+                    <div class="health-row"><span class="hl">当前状态</span><span class="hv" id="h-status">—</span></div>
+                    <div class="health-row"><span class="hl">运行时长</span><span class="hv" id="h-uptime">—</span></div>
+                    <div class="health-row"><span class="hl">上次探活</span><span class="hv" id="h-last">刚刚</span></div>
+                    <div class="health-row"><span class="hl">判据</span><span class="hv">SOCKS5 探活</span></div>
                   </div>
-                  <div class="health-row"><span class="hl">当前状态</span><span class="hv" id="h-status">—</span></div>
-                  <div class="health-row"><span class="hl">运行时长</span><span class="hv" id="h-uptime">—</span></div>
-                  <div class="health-row"><span class="hl">上次探活</span><span class="hv" id="h-last">刚刚</span></div>
-                  <div class="health-row"><span class="hl">判据</span><span class="hv">SOCKS5 探活</span></div>
+                </div>
+
+                <div class="card" data-od-id="ch-note" hidden>
+                  <div class="card-head"><h3>登录信息备注</h3><button class="btn btn-sm btn-ghost" id="note-copy" type="button" style="margin-left:auto;">复制汇总</button></div>
+                  <div class="card-body">
+                    <dl class="kv-list" id="note-summary"></dl>
+                    <div class="field" style="margin-top:var(--space-3);">
+                      <label>备注（多行文本）</label>
+                      <textarea class="input mono" id="note-text" rows="6" spellcheck="false"
+                        placeholder="记录这条 VPN 的登录信息：账号 / 密码 / 验证码接收方式 / 网关联系人…&#10;交互式登录时照着这里抄，不用翻聊天记录。"></textarea>
+                    </div>
+                    <p class="note" style="margin-top:var(--space-2);">加密存储在本机数据库；登录窗「键入到容器」发送的文本（如密码）会自动记到这里，输入一次即留档。</p>
+                    <div style="display:flex; align-items:center; gap:var(--space-2); margin-top:var(--space-3);">
+                      <button class="btn btn-primary btn-sm" id="note-save" type="button">保存备注</button>
+                      <span class="note" id="note-state"></span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -427,6 +450,7 @@
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
   <script src="js/feedback.js"></script>
+  <script type="module" src="js/vncText.js"></script>
   <script>
     // ── 选通道：?id= 命中 channels，缺省取第一个；数据来自真实后端 ──
     const params = new URLSearchParams(location.search);
@@ -496,6 +520,8 @@
       $("#cfg-kind").textContent = kindLabel;
       renderConfig();
       renderHealth();
+      renderNoteSummary();
+      loadNote();
       renderLoginPanel();
       renderRuleTables();
       $$(".desktop-routing").forEach((el) => { el.hidden = !routingControlsSupported(); });
@@ -541,6 +567,60 @@
 
     function setLastProbe() { $("#h-last").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false }); }
 
+    // ── 登录信息备注：汇总(自动) + 多行备注(手记/键入自动留档),加密落库 ──
+    // 旧后端无 /note 端点 → loadNote 失败,卡片保持 hidden(feature-detect 降级)。
+    const noteCard = document.querySelector('[data-od-id="ch-note"]');
+    let noteLoaded = false;
+    function renderNoteSummary() {
+      $("#note-summary").innerHTML = [
+        ["VPN 网关", `<span class="mono">${fb.esc(hostName)}</span>`],
+        ["账号", ch.username ? `<span class="mono">${fb.esc(ch.username)}</span>` : "—"],
+        ["类型 / 版本", fb.esc(kindLabel)],
+        ["登录方式", fb.esc(methodLabel)],
+      ].map(([dt, dd]) => `<dt>${dt}</dt><dd>${dd}</dd>`).join("");
+    }
+    function noteSummaryText() {
+      return [`通道：${ch.name}（${kindLabel}）`, `网关：${hostName}`,
+              `账号：${ch.username || "—"}`, `登录方式：${methodLabel}`].join("\n");
+    }
+    async function loadNote() {
+      if (noteLoaded) return;
+      try {
+        const { note } = await api.noteGet(ch.id);
+        noteLoaded = true;
+        const ta = $("#note-text");
+        if (!ta.value) ta.value = note || "";   // 不覆盖用户正在输入的内容
+        noteCard.hidden = false;
+      } catch (_e) { /* 旧后端无此端点:卡片保持隐藏 */ }
+    }
+    async function saveNote(silent = false) {
+      try {
+        await api.noteSet(ch.id, $("#note-text").value);
+        $("#note-state").textContent = "已保存 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+        if (!silent) toast("登录备注已保存");
+      } catch (e) {
+        toast("备注保存失败：" + (e?.message || e), { variant: "danger" });
+      }
+    }
+    // 「键入到容器」成功后的自动留档:同文本只记一次(密码反复键入不刷屏)。
+    async function recordTyped(text) {
+      if (!noteLoaded) await loadNote();
+      if (!noteLoaded) return;                  // 后端不支持,静默跳过
+      const t = text.trim();
+      const ta = $("#note-text");
+      if (!t || ta.value.includes(t)) return;
+      const ts = new Date().toLocaleString("zh-CN", { hour12: false });
+      ta.value = (ta.value ? ta.value.replace(/\n*$/, "\n") : "") + `[${ts}] 键入：${t}`;
+      await saveNote(true);
+      toast("已自动记入登录备注");
+    }
+    $("#note-save").addEventListener("click", () => saveNote());
+    $("#note-copy").addEventListener("click", () => {
+      const body = $("#note-text").value;
+      copyText(noteSummaryText() + (body ? "\n---\n" + body : ""),
+               body ? "已复制汇总(含备注,注意其中可能有密码)" : "已复制通道信息汇总");
+    });
+
     // ── 登录面板填充 ──
     function renderLoginPanel() {
       $("#vnc-addr").textContent = `${sys.bound_ip}:${ch.novnc_port}`;
@@ -558,6 +638,7 @@
 
     // ── 登录 tab：真 noVNC iframe（进入 login tab 时拉 url）──
     let loadVncGen = 0; // 后台自动加载的代数票据:重载/重进作废旧等待
+    let vncUrl = null;  // 当前登录窗 url,供「键入到容器」的第二路 RFB 连接复用
     async function loadVnc() {
       const fbHost = $("#vnc-feedback");
       fbHost.replaceChildren(fb.spinner("正在拉取登录窗口…"));   // 进行中:克制 spinner
@@ -586,6 +667,15 @@
             if (portal) portal.replaceWith(f);   // 用 iframe 替换仿真 portal 容器
           }
           f.src = u;
+          vncUrl = u;
+          // 宿主 ↔ 容器复制粘贴:登录窗下方装「键入到容器」输入条(vncText.js)
+          let sh = document.getElementById("vnc-sendbar");
+          if (!sh) {
+            sh = document.createElement("div");
+            sh.id = "vnc-sendbar";
+            document.querySelector('[data-od-id="vnc"]')?.insertAdjacentElement("afterend", sh);
+          }
+          window.vncText?.mountBar(sh, () => vncUrl, recordTyped);
         };
         const ready = await window.waitNovncReady(url);
         if (!ready) {
@@ -979,7 +1069,10 @@
       // 兑现 index.html「登录/重新登录」跳转 channel.html?id=X#login 的意图
       if (location.hash === "#login") goLogin();
       refreshStatus();                    // 打开即探活一次（徽章不再卡在“待登录”）
-      setInterval(refreshStatus, 8000);   // 之后每 8s 自愈：登录态变化 / 掉线都跟得上
+      // 每 8s 自愈:登录态变化 / 掉线都跟得上。每次探活都会在 VM 里起一个一次性容器,
+      // 页面不可见时暂停(红队 F3:probe churn 刷 docker events,首启资源紧张时放大)。
+      setInterval(() => { if (!document.hidden) refreshStatus(); }, 8000);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshStatus(); });
     });
   </script>
 </body>

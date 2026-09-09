@@ -341,7 +341,7 @@
       host.className = "fb-gw-host";
       host.style.cssText =
         "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:90;" +
-        "width:min(680px,calc(100vw - 32px));box-shadow:var(--shadow-md,0 6px 24px rgba(0,0,0,.12));";
+        "width:min(680px,calc(100vw - 32px));box-shadow:var(--shadow-md);";
       document.body.appendChild(host);
       return host;
     }
@@ -360,7 +360,7 @@
            </div>
            ${closable ? `<button class="fb-gw-close" type="button" title="收起(状态变化时会再提醒)"
              style="border:0;background:none;cursor:pointer;font-size:16px;line-height:1;
-                    color:var(--text-secondary,#6b7280);padding:2px 4px;align-self:flex-start;">×</button>` : ""}
+                    color:var(--text-secondary);padding:2px 4px;align-self:flex-start;">×</button>` : ""}
          </div>`;
       const c = h.querySelector(".fb-gw-close");
       if (c) c.addEventListener("click", () => { dismissedKey = currentKey; clear(); });
@@ -440,7 +440,8 @@
       const gh = sys.gateway_health;
       const running = sys.mihomo_status === "running";
       let ok = false, label;
-      if (gh === "forward_dead") label = "mihomo 分流链路中断";
+      if (sys.vm_egress_dead) label = "VM 对外网络中断";
+      else if (gh === "forward_dead") label = "mihomo 分流链路中断";
       else if (gh === "container_down") label = "mihomo 未运行";
       else if (gh === "transport_dead") label = "底座传输中断,修复中";
       else if (gh === "transport_degraded") { ok = true; label = "分流可用(底座降级)"; }
@@ -473,7 +474,8 @@
       // (转发器半僵死:TCP 能连、无响应)。芯片会红,横幅若不接手就无处可点(2026-07-16)。
       const ctrlDown = gh === "healthy" && sys && sys.mihomo_status !== "running";
       const routingOff = !!(sys && sys.routing_off);
-      currentKey = (gh || "healthy") + "|" + (ctrlDown ? 1 : 0) + "|" + (routingOff ? 1 : 0);
+      const egressDead = !!(sys && sys.vm_egress_dead);
+      currentKey = (gh || "healthy") + "|" + (ctrlDown ? 1 : 0) + "|" + (routingOff ? 1 : 0) + "|" + (egressDead ? 1 : 0);
       if (dismissedKey !== null && dismissedKey !== currentKey) dismissedKey = null; // 状态变化 → 复位收起记忆
       const dismissed = dismissedKey === currentKey;
       if (routingOff) {
@@ -483,6 +485,17 @@
           "所有分流规则暂时失效，mihomo、TUN 路由、PAC 与 Clash 规则均只走 DIRECT；通道和登录态仍保持。",
           routingActions(), false);
         bindRoutingRestore();
+        return;
+      }
+      // VM 出站僵死(usernet):与 gateway_health 正交——分流口/容器探测全绿,但容器
+      // 出不了网,通道表现为「已登录但探活不过」。手动修复(重建转发/重启 mihomo)救不了,
+      // 唯一解是重开 app 重建 VM,故不给修复按钮、只给指引(2026-09-01 换网僵死实测)。
+      if (egressDead) {
+        wasBroken = true; healing = false;
+        if (dismissed) { clear(); return; }
+        banner("danger", SVG.cross, "本地引擎(VM)对外网络中断",
+          "常见于切换 Wi-Fi / 睡眠唤醒后,不会自行恢复:通道会显示已登录但探活不过、网页打不开。" +
+          "请从托盘菜单退出并重新打开 app(将重建 VM 网络)。", logOnly());
         return;
       }
       // 后端无此字段(老版本)或健康 → 收横幅;若刚从坏态恢复,提示一声。

@@ -6,52 +6,86 @@
   <title>流量监控 · VPN 管理网关</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/app.css" />
   <style>
     /* 屏内独有样式 —— 仅用 var(--*) 或与 black/white/transparent 的 color-mix */
-    .metric .ml svg { width: 14px; height: 14px; }
-    .metric.up .mv .num, .legend-up { color: var(--accent); }
-    .metric.down .mv .num, .legend-down { color: var(--success); }
-    .spark path { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
-    /* 大面积图 */
-    .flow-chart { position: relative; }
-    .flow-chart .grid line { stroke: var(--border); stroke-width: 1; }
-    .flow-chart .line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .flow-chart .fill-up { fill: color-mix(in oklab, var(--accent), transparent 88%); stroke: none; }
-    .flow-chart .fill-down { fill: color-mix(in oklab, var(--success), transparent 88%); stroke: none; }
-    .legend-row { display: flex; gap: var(--space-5); align-items: center; }
-    .legend { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--muted); }
-    .legend .num { font-size: var(--text-xs); }
+    /* ─── 紧凑指标带：一行四格，日志流才是主角，这里只做瘦身读数 ─── */
+    .mband { display: grid; grid-template-columns: repeat(4, 1fr); }
+    .mcell { display: flex; align-items: baseline; gap: var(--space-3); padding: var(--space-3) var(--space-5); border-left: 1px solid var(--border); min-width: 0; }
+    .mcell:first-child { border-left: 0; }
+    .mcell .mk { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--muted); white-space: nowrap; }
+    .mcell .mk svg { width: 13px; height: 13px; flex: none; }
+    .mcell .mvv { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--text-base); font-weight: 600; white-space: nowrap; }
+    .mcell .mvv .u { margin-left: 3px; font-size: var(--text-xs); font-weight: 400; color: var(--muted); }
 
-    /* 节点延迟行 */
-    .lat-row { display: grid; grid-template-columns: 1fr 120px 56px 14px; gap: var(--space-3); align-items: center; padding: var(--space-3) 0; border-bottom: 1px solid var(--border); }
-    .lat-row:last-child { border-bottom: 0; }
-    .lat-row .lname { font-family: var(--font-mono); font-size: var(--text-sm); }
-    .lat-row .lsub { font-size: var(--text-xs); color: var(--muted); margin-top: 1px; }
-    .lat-row .lms { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--text-sm); text-align: right; }
-    .lat-row .alive { width: 8px; height: 8px; border-radius: 50%; justify-self: center; }
-    .alive.on { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
-    .alive.off { background: var(--muted); }
+    /* ─── 工具条 ─── */
+    .log-tools { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; padding: var(--space-3) var(--space-5); border-bottom: 1px solid var(--border); }
+    .log-tools .select, .log-tools .input { width: auto; }
+    .log-tools .t-chan { min-width: 168px; }
+    .log-tools .t-re { flex: 1; min-width: 180px; font-family: var(--font-mono); font-size: var(--text-xs); }
+    .log-tools .t-re.is-bad { border-color: var(--danger); }
+    .log-tools .t-hint { font-size: var(--text-xs); color: var(--warn); white-space: nowrap; }
+    /* .tag/.btn 在 app.css 里显式写了 display，会盖掉 UA 的 [hidden]{display:none}，须补回 */
+    #log-state[hidden], .log-tools .t-hint[hidden] { display: none; }
+    .log-tools .t-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 var(--space-1); }
 
-    /* 实时连接表内的链路标签 */
-    .chain-cell { display: flex; flex-direction: column; gap: 1px; }
-    .chain-cell .cn { font-weight: 500; }
-    .chain-cell .ce { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted); }
-    .table tr.is-direct td { color: var(--muted); }
-    .rule-tag { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+    /* ─── 日志流：浅底（白 surface）等宽行密，对齐 Clash Verge 浅色模式的日志页。
+     * 规则：短的嵌入式输出（.code / noVNC 舞台）留深色终端块；这种撑满整屏的
+     * 主内容日志面用浅底 —— 一块 800px 高的黑面压在奶油底页面上会喧宾夺主。 ─── */
+    .log-wrap { position: relative; }
+    .log-view {
+      height: clamp(340px, calc(100vh - 420px), 820px);
+      overflow: auto;
+      padding: var(--space-3) 0;
+      background: var(--surface); color: var(--fg);
+      font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.75;
+    }
+    .log-row { display: flex; gap: var(--space-3); padding: 0 var(--space-5); }
+    .log-row:hover { background: var(--row-hover); }
+    .lg-seq { flex: none; min-width: 3.2em; text-align: right; color: color-mix(in oklab, var(--muted), transparent 35%); }
+    .lg-ts  { flex: none; color: var(--muted); }
+    .lg-msg { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
+    .lg-net { color: color-mix(in oklab, var(--muted), transparent 15%); }
+    .lg-kw  { color: var(--muted); }         /* --> / match / using */
+    .lg-src { color: var(--muted); }
+    .lg-dst { color: var(--fg); }
+    .lg-pl  { color: var(--accent); }        /* 命中的 rulePayload —— 本屏唯一强调 */
+    .lg-via { color: var(--fg); }
+    /* 末跳非 ch-*（DIRECT/REJECT 等兜底）：整行压到 muted，与走通道的行拉开层次 */
+    .log-row.is-direct .lg-msg,
+    .log-row.is-direct .lg-dst,
+    .log-row.is-direct .lg-via { color: var(--muted); }
 
-    /* 遥测更新状态 pill —— 唯一处用钴蓝点缀已在别处，故此处仅用 success/danger/muted 语义色 */
+    .log-empty { padding: var(--space-8) var(--space-5); text-align: center; color: var(--muted); font-family: var(--font-body); font-size: var(--text-sm); }
+    .log-skel { padding: var(--space-4) var(--space-5); }
+
+    /* 用户上滚脱离跟随时出现 */
+    .log-jump { position: absolute; right: var(--space-5); bottom: var(--space-4); box-shadow: var(--elev-raised); }
+    .log-jump[hidden] { display: none; }
+
+    /* ─── 遥测更新状态 pill ─── */
     #feed-pill .dot { transition: background var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard); }
     #feed-pill.is-live .dot { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
     #feed-pill.is-down .dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
     #feed-pill #feed-text { transition: color var(--motion-fast) var(--ease-standard); }
     #feed-pill.is-down #feed-text { color: var(--danger); }
 
+    @media (max-width: 920px) {
+      .mband { grid-template-columns: repeat(2, 1fr); }
+      .mcell:nth-child(3) { border-left: 0; }
+      .mcell:nth-child(n+3) { border-top: 1px solid var(--border); }
+      .log-view { height: clamp(300px, calc(100vh - 460px), 640px); }
+    }
     @media (max-width: 600px) {
-      .lat-row { grid-template-columns: 1fr 70px 48px 14px; gap: var(--space-2); }
-      .table th.hide-sm, .table td.hide-sm { display: none; }
+      .mband { grid-template-columns: 1fr; }
+      .mcell { border-left: 0; border-top: 1px solid var(--border); }
+      .mcell:first-child { border-top: 0; }
+      .log-tools .t-chan, .log-tools .t-re { min-width: 0; width: 100%; flex: 1 1 100%; }
+      .log-tools .t-sep { display: none; }
+      .log-row { gap: var(--space-2); padding: 0 var(--space-3); }
+      .lg-seq { display: none; }
     }
   </style>
 </head>
@@ -107,111 +141,112 @@
         <h1>流量监控</h1>
         <span class="spacer"></span>
         <span class="sys-chip" id="feed-pill" title="遥测数据更新状态"><span class="dot"></span><span id="feed-text">连接中…</span></span>
-        <span class="sys-chip" id="ctrl-pill">external-controller 127.0.0.1:9090 · 只读遥测</span>
+        <span class="sys-chip hide-mobile" id="ctrl-pill">external-controller 127.0.0.1:9090 · 只读遥测</span>
       </header>
 
       <div class="content stack-6">
         <!-- 反馈层错误条挂载点（仅故障时填充，平时为空、不占视觉） -->
         <div id="feed-error"></div>
 
-        <!-- 说明：本页镜像 mihomo :9090 的实时遥测 -->
-        <div class="banner info" data-od-id="monitor-note">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
-          <div>
-            <div class="bt">这里只看本工具 mihomo 的第二跳</div>
-            <p>数据来自本工具 mihomo 的 <span class="mono">/traffic</span> 与 <span class="mono">/connections</span>。未命中客户域名的流量在你的 Clash 内直连、不进本工具——所以下表中 <span class="mono">MATCH → DIRECT</span> 的行只是兜底直连，本工具不介入。</p>
-          </div>
-        </div>
-
-        <!-- 顶部实时指标 -->
-        <div class="grid-4" data-od-id="metrics">
-          <div class="metric up">
-            <div class="ml">
+        <!-- ── 紧凑指标带 ── -->
+        <div class="card mband" data-od-id="metrics">
+          <div class="mcell">
+            <span class="mk">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
               实时上行
-            </div>
-            <div class="mv"><span class="num" id="m-up">0</span><span class="unit">KB/s</span></div>
-            <svg class="spark" id="sp-up" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--accent)"/></svg>
+            </span>
+            <span class="mvv"><span id="m-up">—</span><span class="u" id="m-up-u">KB/s</span></span>
           </div>
-          <div class="metric down">
-            <div class="ml">
+          <div class="mcell">
+            <span class="mk">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
               实时下行
-            </div>
-            <div class="mv"><span class="num" id="m-down">0</span><span class="unit">KB/s</span></div>
-            <svg class="spark" id="sp-down" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--success)"/></svg>
+            </span>
+            <span class="mvv"><span id="m-down">—</span><span class="u" id="m-down-u">KB/s</span></span>
           </div>
-          <div class="metric">
-            <div class="ml">
+          <div class="mcell">
+            <span class="mk">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M5 12a7 7 0 017-7M19 12a7 7 0 01-7 7"/><circle cx="12" cy="12" r="2"/></svg>
-              活跃连接数
-            </div>
-            <div class="mv"><span class="num" id="m-conn">0</span></div>
-            <svg class="spark" id="sp-conn" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--muted)"/></svg>
+              活跃连接
+            </span>
+            <span class="mvv"><span id="m-conn">—</span><span class="u">条</span></span>
           </div>
-          <div class="metric">
-            <div class="ml">
+          <div class="mcell">
+            <span class="mk">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
-              在线节点数
-            </div>
-            <div class="mv"><span class="num" id="m-nodes">0</span></div>
-            <svg class="spark" id="sp-nodes" viewBox="0 0 200 48" preserveAspectRatio="none"><path stroke="var(--muted)"/></svg>
-          </div>
-        </div>
-
-        <!-- 大面积图 + 右侧节点延迟 -->
-        <div class="grid-2-1" data-od-id="charts">
-          <div class="card">
-            <div class="card-head">
-              <h3>流量速率 <span class="t-xs muted" style="font-weight:400;">· 实时</span></h3>
-              <div class="legend-row">
-                <span class="legend"><span class="legend-dot legend-up" style="background:var(--accent);"></span>上行 <span class="num" id="lg-up">0 KB/s</span></span>
-                <span class="legend"><span class="legend-dot legend-down" style="background:var(--success);"></span>下行 <span class="num" id="lg-down">0 KB/s</span></span>
-              </div>
-            </div>
-            <div class="card-body">
-              <svg class="area-chart flow-chart" id="flow" viewBox="0 0 600 180" preserveAspectRatio="none">
-                <g class="grid" id="flow-grid"></g>
-                <path class="fill-down" id="flow-down-fill"></path>
-                <path class="fill-up" id="flow-up-fill"></path>
-                <path class="line" id="flow-down-line" stroke="var(--success)"></path>
-                <path class="line" id="flow-up-line" stroke="var(--accent)"></path>
+              在线节点
+            </span>
+            <span class="mvv">
+              <!-- 半圆弧仪表(blume 形态,纯装饰):左红→右绿三段弧 + 指针指向在线率。
+                   数据仍以右侧数字为准;弧段用语义色 soft 档,指针用 --fg。 -->
+              <svg id="m-gauge" viewBox="0 0 44 24" aria-hidden="true" style="width:38px;height:21px;flex:none;align-self:center;">
+                <path d="M4 21 A18 18 0 0 1 12.4 5.8"  fill="none" stroke="var(--danger-soft)"  stroke-width="5" stroke-linecap="round"/>
+                <path d="M14.9 4.5 A18 18 0 0 1 29.1 4.5" fill="none" stroke="var(--warn-soft)" stroke-width="5" stroke-linecap="round"/>
+                <path d="M31.6 5.8 A18 18 0 0 1 40 21"  fill="none" stroke="var(--success-soft)" stroke-width="5" stroke-linecap="round"/>
+                <g id="m-needle" style="transform-origin:22px 21px;transition:transform 400ms var(--ease-standard);transform:rotate(0deg);">
+                  <line x1="22" y1="21" x2="22" y2="8" stroke="var(--fg)" stroke-width="1.6" stroke-linecap="round" transform="rotate(-90 22 21)"/>
+                </g>
+                <circle cx="22" cy="21" r="2.2" fill="var(--coral)"/>
               </svg>
-              <p class="t-xs muted" style="margin-top:10px;">最近 60 个采样 · 每 ~1.5s 取一点 · 仅统计经本工具分流的流量</p>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head"><h3>节点延迟</h3><span class="t-xs muted">隧道侧探活</span></div>
-            <div class="card-body">
-              <div id="lat-list"></div>
-            </div>
+              <span id="m-nodes">—</span><span class="u" id="m-nodes-u">/ —</span></span>
           </div>
         </div>
 
-        <!-- 实时连接表 -->
-        <div class="card" data-od-id="connections">
+        <!-- ── 通道测速卡片墙：对齐 Clash 仪表盘 Proxies 面板的卡片+延迟徽章形态。
+             数据只用页面已有轮询变量 chs(/api/channels，含 latency_ms/status)；
+             命门 #1：延迟/连通只认 GET /api/channels/{cid}/status 的 SOCKS5 探活结果，
+             这里刻意不读 /api/proxies 的 alive 字段(nodes 变量在别处已在用，本区块不碰它)。 -->
+        <div class="card" data-od-id="speedtest">
           <div class="card-head">
-            <h3>实时连接</h3>
-            <span class="t-sm muted">活跃 <span class="num" id="conn-count">—</span> 条 · 按目标聚合</span>
+            <h3>通道测速</h3>
+            <span class="row">
+              <span class="t-xs muted" id="spd-summary">— / — 可达</span>
+              <button class="btn btn-secondary btn-sm" id="spd-all" type="button">全部测速</button>
+            </span>
           </div>
-          <div style="overflow-x:auto;">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>目标</th>
-                  <th class="hide-sm">命中规则</th>
-                  <th>通道 / 出口</th>
-                  <th class="r">连接</th>
-                  <th class="r">↑ 总</th>
-                  <th class="r">↓ 总</th>
-                </tr>
-              </thead>
-              <tbody id="conn-body"></tbody>
-            </table>
+          <div class="card-body">
+            <div class="spd-grid" id="spd-grid"></div>
           </div>
           <div class="card-foot">
-            <span class="t-xs muted">命中客户域名的连接走对应通道的 SOCKS5 出口；<span class="mono">DIRECT</span> 行为 mihomo 兜底直连，绝不回环到你的 Clash。</span>
+            <span class="t-xs muted">延迟 = 后端经容器 SOCKS5 实测探活 URL 的往返毫秒数，是登录/连通的唯一判据；点卡片单测，数值落库后各屏同步。</span>
+          </div>
+        </div>
+
+        <!-- ── 路由决策日志流（主角） ── -->
+        <div class="card" data-od-id="log">
+          <div class="card-head">
+            <h3>路由决策日志 <span class="t-xs muted" style="font-weight:400;">· mihomo 第二跳</span></h3>
+            <span class="row">
+              <span class="tag" id="log-state" hidden>已暂停</span>
+              <span class="t-xs muted">缓冲 <span class="num" id="log-count">0</span> / 500</span>
+            </span>
+          </div>
+
+          <div class="log-tools">
+            <select class="select t-chan" id="f-chan" aria-label="按出口筛选">
+              <option value="all">全部出口</option>
+            </select>
+            <input class="input t-re" id="f-re" type="search" placeholder="正则搜索：域名 / IP / 规则 / 通道名" aria-label="正则搜索" />
+            <span class="t-hint" id="re-hint" hidden>正则无效 · 已按原文匹配</span>
+            <span class="t-sep"></span>
+            <button class="btn btn-secondary btn-sm" id="btn-pause" type="button">
+              <svg id="pause-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 5v14M15 5v14"/></svg>
+              <span id="pause-label">暂停</span>
+            </button>
+            <button class="btn btn-ghost btn-sm" id="btn-clear" type="button">清空</button>
+            <button class="btn btn-ghost btn-sm" id="btn-export" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 11l5 5 5-5M4 21h16"/></svg>
+              导出 .log
+            </button>
+          </div>
+
+          <div class="log-wrap">
+            <div class="log-view" id="log-view" tabindex="0" role="log" aria-live="off" aria-label="路由决策日志"></div>
+            <button class="btn btn-secondary btn-sm log-jump" id="log-jump" type="button" hidden>↓ 跟随最新</button>
+          </div>
+
+          <div class="card-foot">
+            <span class="t-xs muted">每 1.5 秒对 <span class="mono">/connections</span> 的连接 id 做差分，新出现的连接合成一行。<span class="mono">using DIRECT</span> 是 mihomo 兜底直连、本工具不介入；日志只解释分流走向，<span class="strong">不作为通道登录状态的判据</span>（登录成功只认后端 SOCKS5 探活）。</span>
           </div>
         </div>
       </div>
@@ -222,25 +257,49 @@
   <script src="js/app.js"></script>
   <script src="js/feedback.js"></script>
   <script>
-    let chs = [], sys = {}, prevTotals = null, prevTs = null;
+    /* ═══ 路由决策日志流 ═══
+     * 数据源只有既有的 /api/connections + /api/proxies（无新后端接口）：
+     * 每 1.5s 拉一次 connections，对 connections[].id 做集合差分，
+     * 新出现的 id 合成一行 Clash 风格日志。连接结束后 id 不再复用，
+     * 因此每帧把「已记录集合」直接重置为当前活跃 id 集合即可，内存恒定。 */
+
+    const MAX_LINES = 500;                 // 环形缓冲上限
+
+    let chs = [], sys = {}, nodes = [];
+    let prevTotals = null, prevTs = null;  // 速率差分锚点（沿用旧页算法）
+    let pollTimer = null, feedDown = false, booted = false;
+
+    let seen = new Set();   // 已记录过日志的 connection id（= 上一帧的活跃集合）
+    let buf = [];           // 环形缓冲：日志条目对象
+    let pending = [];       // 暂停期间挂起的条目（恢复后按序补入）
+    let seq = 0;            // 全局行号
+    let paused = false, follow = true;
+    let filterChan = "all", filterQ = "", filterRe = null, chanSig = "";
+
+    /* ═══ 通道测速卡片墙 ═══
+     * testing：正在单测/批测中的通道 id 集合。renderSpeedGrid 每次渲染都据此
+     * 现算徽章，测速中的卡永远显示 spinner，不管本帧轮询拿到的 chs 是什么值——
+     * 这就是"防轮询覆盖"的机制，不需要额外的 DOM diff。
+     * results：本页测过的最近一次结果（{ok, ms}），只用来在两次轮询之间立刻
+     * 反映刚测完的数字，且用来区分"探测失败"与"从未有数据"这两种灰/红态。 */
+    let testing = new Set();
+    let results = new Map();
+    let allTesting = false;
+    let allProgress = { done: 0, total: 0 };
+
+    const PAUSE_IC = '<path d="M9 5v14M15 5v14"/>';
+    const PLAY_IC  = '<path d="M7 4l13 8-13 8V4z"/>';
 
     /* ───────── 反馈层状态：遥测更新 pill + 故障错误条(单条、自愈即清) ───────── */
-    let pollTimer = null;        // setInterval 句柄(避免重复启动多个轮询)
-    let feedDown = false;        // 当前是否处于离线/故障态(用于只渲染一次错误条)
-    let booted = false;          // 首次渲染是否已成功(决定首屏占位 vs 静默重试)
-
     function setFeed(state, text) {
-      // state ∈ loading | live | down;text 为 pill 文案
       const pill = $("#feed-pill");
       pill.classList.toggle("is-live", state === "live");
       pill.classList.toggle("is-down", state === "down");
       $("#feed-text").textContent = text;
     }
-    function nowHHMMSS() {
-      const d = new Date();
-      const p = (n) => String(n).padStart(2, "0");
-      return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
-    }
+    function pad2(n) { return String(n).padStart(2, "0"); }
+    function hhmmss(d) { return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
+    function nowHHMMSS() { return hhmmss(new Date()); }
     function clearFeedError() {
       if (!feedDown) return;
       feedDown = false;
@@ -263,11 +322,11 @@
     /* 首屏占位骨架(仅未成功渲染过时) */
     function showInitialSkeleton() {
       if (booted || !(window.fb && fb.skeleton)) return;
-      $("#lat-list").innerHTML = "";
-      $("#lat-list").appendChild(fb.skeleton(4));
-      $("#conn-body").innerHTML =
-        `<tr><td colspan="6" style="padding:var(--space-4);"></td></tr>`;
-      $("#conn-body").querySelector("td").appendChild(fb.skeleton(4));
+      const box = document.createElement("div");
+      box.className = "log-skel";
+      box.appendChild(fb.skeleton(8));
+      $("#log-view").innerHTML = "";
+      $("#log-view").appendChild(box);
     }
 
     async function boot() {
@@ -290,160 +349,310 @@
       $("#ctrl-pill").textContent = "external-controller " + (sys.controller || "?") + " · 只读遥测";
       // 先起轮询(只起一次)再拉首帧 —— 即便首帧失败,后续仍会每 1.5s 自动重试自愈
       if (!pollTimer) pollTimer = setInterval(tick, 1500);
-      await tick();                                // 首帧拉真实遥测(内部自带反馈)
+      await tick();
     }
-    function chanName(id) { const c = chs.find(x => x.id === id); return c ? c.name : "—"; }
+    function chanName(id) { const c = chs.find(x => x.id === id); return c ? c.name : "未知通道"; }
 
-    /* ───────── 实时速率序列（由 pushSeries 维护，初值全 0，不再仿真） ───────── */
-    const N = 60;                       // 面积图采样点
-    const SN = 28;                      // spark 采样点
-    let upSeries = Array.from({ length: N }, () => 0);
-    let downSeries = Array.from({ length: N }, () => 0);
-    let connSeries = Array.from({ length: SN }, () => 0);
-    let nodeSeries = Array.from({ length: SN }, () => 0);
-    let liveNodes = 0;
-
-    function pushSeries(up, down, conn) {
-      upSeries.push(up); upSeries.shift();
-      downSeries.push(down); downSeries.shift();
-      connSeries.push(conn); connSeries.shift();
-      nodeSeries.push(liveNodes); nodeSeries.shift();   // liveNodes 已在 tick 由 /proxies 算好
+    /* ───────── 日志条目合成 ─────────
+     * 出口取 chains 里的 ch-* 项：本工具的通道在 mihomo 里就是 ch-{id} 代理，
+     * chains 末项即它；若上游把分流口(vpn-router)也串进 chains，则末项不是 ch-*，
+     * 这里退一步在整条链里找 ch-*，找不到再退回末项（DIRECT/REJECT 等兜底）。 */
+    function outbound(chains) {
+      const arr = Array.isArray(chains) ? chains : [];
+      const hit = arr.find(x => typeof x === "string" && x.indexOf("ch-") === 0);
+      if (hit) return hit;
+      return arr.length ? String(arr[arr.length - 1] || "") : "";
     }
-
-    function drawSpark(id, vals, stroke) {
-      const p = $("#" + id + " path");
-      p.setAttribute("d", linePath(vals, 200, 48, 4));
-      if (stroke) p.setAttribute("stroke", stroke);
+    function tsOf(c) {
+      const d = c.start ? new Date(c.start) : null;
+      return d && !isNaN(d.getTime()) ? hhmmss(d) : nowHHMMSS();
     }
-
-    function drawFlow() {
-      const w = 600, h = 180;
-      // 上下行归一到同一坐标系（共享峰值），自绘 path 让基线固定在 0、不随帧跳动
-      const peak = Math.max(...upSeries, ...downSeries, 1) * 1.15;
-      const norm = (arr) => arr.map(v => v / peak);
-      const up = norm(upSeries), down = norm(downSeries);
-      const pad = 4;
-      const path = (arr) => {
-        const step = (w - pad * 2) / (arr.length - 1);
-        return arr.map((v, i) => {
-          const x = (pad + i * step).toFixed(1);
-          const y = (pad + (h - pad * 2) * (1 - v)).toFixed(1);
-          return (i ? "L" : "M") + x + " " + y;
-        }).join(" ");
+    function makeEntry(c) {
+      const m = c.metadata || {};
+      const net = String(m.network || "tcp").toUpperCase();
+      const src = (m.sourceIP || "?") + (m.sourcePort ? ":" + m.sourcePort : "");
+      const dst = (m.host || m.destinationIP || "?") + (m.destinationPort ? ":" + m.destinationPort : "");
+      const tail = outbound(c.chains);
+      const cid = tail.indexOf("ch-") === 0 ? tail.slice(3) : null;
+      const rule = c.rule || "Match";
+      const payload = c.rulePayload || "";
+      const via = cid ? tail + "[" + chanName(cid) + "]" : (tail || "DIRECT");
+      const e = {
+        seq: 0, ts: tsOf(c), net, src, dst, rule, payload, tail, via,
+        direct: !cid,   // 末跳非 ch-* ＝ 未经本工具通道（DIRECT / REJECT 兜底）
       };
-      const area = (arr) => path(arr) + ` L${(w - pad).toFixed(1)} ${h} L${pad} ${h} Z`;
-      $("#flow-up-line").setAttribute("d", path(up));
-      $("#flow-down-line").setAttribute("d", path(down));
-      $("#flow-up-fill").setAttribute("d", area(up));
-      $("#flow-down-fill").setAttribute("d", area(down));
+      // 纯文本形态：既供正则搜索，也供导出 .log
+      e.text = "[" + net + "] " + src + " --> " + dst + " match " + rule +
+               (payload ? "(" + payload + ")" : "") + " using " + via;
+      e.search = e.ts + " " + e.text;
+      return e;
     }
 
-    function drawGrid() {
-      const g = $("#flow-grid");
-      let s = "";
-      for (let i = 1; i < 4; i++) { const y = (180 / 4) * i; s += `<line x1="0" y1="${y}" x2="600" y2="${y}"/>`; }
-      g.innerHTML = s;
+    function rowHTML(e) {
+      const rule = e.payload
+        ? fb.esc(e.rule) + "(<span class=\"lg-pl\">" + fb.esc(e.payload) + "</span>)"
+        : fb.esc(e.rule);
+      return '<div class="log-row' + (e.direct ? " is-direct" : "") + '" data-seq="' + e.seq + '">' +
+        '<span class="lg-seq">' + String(e.seq).padStart(4, "0") + "</span>" +
+        '<span class="lg-ts">' + fb.esc(e.ts) + "</span>" +
+        '<span class="lg-msg">' +
+          '<span class="lg-net">[' + fb.esc(e.net) + "]</span> " +
+          '<span class="lg-src">' + fb.esc(e.src) + "</span> " +
+          '<span class="lg-kw">--&gt;</span> ' +
+          '<span class="lg-dst">' + fb.esc(e.dst) + "</span> " +
+          '<span class="lg-kw">match</span> ' + rule + " " +
+          '<span class="lg-kw">using</span> ' +
+          '<span class="lg-via">' + fb.esc(e.via) + "</span>" +
+        "</span></div>";
     }
 
-    function fmtRate(kb) { return kb >= 1024 ? (kb / 1024).toFixed(1) + " MB/s" : Math.round(kb) + " KB/s"; }
+    /* ───────── 筛选（出口下拉 + 正则搜索） ───────── */
+    function matchEntry(e) {
+      if (filterChan === "direct" && !e.direct) return false;
+      if (filterChan !== "all" && filterChan !== "direct" && e.tail !== filterChan) return false;
+      if (!filterQ) return true;
+      if (filterRe) { filterRe.lastIndex = 0; return filterRe.test(e.search); }
+      return e.search.toLowerCase().indexOf(filterQ.toLowerCase()) !== -1;
+    }
+    function filterDesc() {
+      const chan = filterChan === "all" ? "全部出口" : filterChan === "direct" ? "DIRECT" : filterChan;
+      return chan + (filterQ ? " · /" + filterQ + "/" : "");
+    }
+    function readFilters() {
+      filterChan = $("#f-chan").value || "all";
+      filterQ = $("#f-re").value.trim();
+      filterRe = null;
+      let bad = false;
+      if (filterQ) {
+        try { filterRe = new RegExp(filterQ, "i"); }
+        catch (_) { filterRe = null; bad = true; }   // 正则写坏了不报错，降级成原文包含匹配
+      }
+      $("#f-re").classList.toggle("is-bad", bad);
+      $("#re-hint").hidden = !bad;
+    }
 
+    /* ───────── 视图维护（环形缓冲 → DOM，增量 append + 头部裁剪） ───────── */
+    function view() { return $("#log-view"); }
+    function removeEmpty() { const ph = $("#log-empty"); if (ph) ph.remove(); }
+    function syncEmpty() {
+      const v = view();
+      if (v.querySelector(".log-row")) { removeEmpty(); return; }
+      if ($("#log-empty")) return;
+      const d = document.createElement("div");
+      d.className = "log-empty";
+      d.id = "log-empty";
+      d.textContent = buf.length
+        ? "当前筛选下没有匹配的日志行"
+        : "等待新连接…命中分流规则的连接一出现就会记到这里";
+      v.innerHTML = "";
+      v.appendChild(d);
+    }
+    function trimDom() {
+      const v = view();
+      const oldest = buf.length ? buf[0].seq : Infinity;
+      let first = v.querySelector(".log-row");
+      while (first && Number(first.dataset.seq) < oldest) {
+        first.remove();
+        first = v.querySelector(".log-row");
+      }
+    }
+    function scrollBottom() { const v = view(); v.scrollTop = v.scrollHeight; }
+    function syncCount() { $("#log-count").textContent = buf.length; }
+
+    function appendEntries(list) {
+      if (!list.length) return;
+      list.forEach(e => { e.seq = ++seq; buf.push(e); });
+      if (buf.length > MAX_LINES) buf.splice(0, buf.length - MAX_LINES);
+      const html = list.filter(matchEntry).map(rowHTML).join("");
+      if (html) { removeEmpty(); view().insertAdjacentHTML("beforeend", html); }
+      trimDom();
+      syncEmpty();
+      syncCount();
+      if (follow) scrollBottom();
+    }
+    function renderAll() {
+      const html = buf.filter(matchEntry).map(rowHTML).join("");
+      view().innerHTML = html;
+      syncEmpty();
+      syncCount();
+      if (follow) scrollBottom();
+    }
+
+    /* ───────── 暂停 / 清空 / 导出 ───────── */
+    function syncPause() {
+      $("#pause-ic").innerHTML = paused ? PLAY_IC : PAUSE_IC;
+      $("#pause-label").textContent = paused ? "恢复" : "暂停";
+      const st = $("#log-state");
+      st.hidden = !paused;
+      st.textContent = "已暂停" + (pending.length ? " · 挂起 " + pending.length + " 条" : "");
+    }
+    function togglePause() {
+      paused = !paused;
+      if (!paused && pending.length) { const p = pending; pending = []; appendEntries(p); }
+      syncPause();
+    }
+    function clearLog() {
+      // 只清缓冲与视图；seen 保留，避免把仍活跃的连接当成「新出现」再记一遍
+      buf = []; pending = [];
+      view().innerHTML = "";
+      follow = true;
+      $("#log-jump").hidden = true;
+      syncEmpty(); syncCount(); syncPause();
+    }
+    function stamp() {
+      const d = new Date();
+      return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + "-" +
+             pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
+    }
+    function exportLog() {
+      const rows = buf.filter(matchEntry);
+      if (!rows.length) { toast("当前没有可导出的日志行", { variant: "danger" }); return; }
+      const head = [
+        "# VPN 管理网关 · 路由决策日志(mihomo 第二跳)",
+        "# 导出于 " + new Date().toLocaleString(),
+        "# 共 " + rows.length + " 行 · 缓冲 " + buf.length + "/" + MAX_LINES + " · 筛选 " + filterDesc(),
+        "# 仅反映分流走向,不作为通道登录状态判据",
+        "",
+      ];
+      const text = head.concat(rows.map(e => e.ts + "  " + e.text)).join("\n") + "\n";
+      const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "vpn-router-" + stamp() + ".log";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast("已导出 " + rows.length + " 行日志", { variant: "success" });
+    }
+
+    /* ───────── 出口下拉：随通道列表变化重建，保留当前选中 ───────── */
+    function syncChanFilter() {
+      const sig = chs.map(c => c.id + ":" + c.name).join("|");
+      if (sig === chanSig) return;
+      chanSig = sig;
+      const sel = $("#f-chan");
+      const cur = sel.value || "all";
+      sel.innerHTML =
+        '<option value="all">全部出口</option>' +
+        '<option value="direct">DIRECT 兜底直连</option>' +
+        chs.map(c => '<option value="ch-' + fb.esc(c.id) + '">ch-' + fb.esc(c.id) + " · " + fb.esc(c.name) + "</option>").join("");
+      const has = Array.from(sel.options).some(o => o.value === cur);
+      sel.value = has ? cur : "all";
+      if (!has) { readFilters(); renderAll(); }
+    }
+
+    /* ───────── 指标带 ───────── */
+    function rateParts(kb) {
+      return kb >= 1024 ? [(kb / 1024).toFixed(1), "MB/s"] : [String(Math.round(kb)), "KB/s"];
+    }
     function renderMetrics(up, down, conn) {
-      $("#m-up").textContent = Math.round(up);
-      $("#m-down").textContent = Math.round(down);
+      const u = rateParts(up), d = rateParts(down);
+      $("#m-up").textContent = u[0];   $("#m-up-u").textContent = u[1];
+      $("#m-down").textContent = d[0]; $("#m-down-u").textContent = d[1];
       $("#m-conn").textContent = conn;
-      $("#m-nodes").textContent = liveNodes;
-      $("#lg-up").textContent = fmtRate(up);
-      $("#lg-down").textContent = fmtRate(down);
+      const aliveN = nodes.filter(p => p.alive).length;
+      $("#m-nodes").textContent = aliveN;
+      $("#m-nodes-u").textContent = "/ " + nodes.length;
+      // 指针:0 节点在线指最左(0deg 基准为竖直向上,-90 起点),全在线指最右(+90)
+      const ratio = nodes.length ? aliveN / nodes.length : 0;
+      $("#m-needle").style.transform = `rotate(${ratio * 180}deg)`;
     }
 
-    /* ───────── 节点延迟列表 ───────── */
-    function latRow(name, sub, ms, alive, dotTitle) {
-      const cls = latClass(ms);
-      const pct = ms == null ? 0 : Math.min(100, Math.round((ms / 200) * 100));
-      return `<div class="lat-row">
-        <div>
-          <div class="lname">${fb.esc(name)}</div>
-          <div class="lsub">${fb.esc(sub)}</div>
-        </div>
-        <div class="lat-bar ${cls}"><i style="width:${pct}%"></i></div>
-        <div class="lms">${ms == null ? "—" : ms + " ms"}</div>
-        <div class="alive ${alive ? "on" : "off"}" title="${fb.esc(dotTitle || (alive ? "alive" : "offline"))}"></div>
-      </div>`;
+    /* ───────── 通道测速：卡片渲染 + 单测 + 全部测速（worker 池并发 4） ───────── */
+    function badgeFor(ch) {
+      if (testing.has(ch.id)) return { cls: "testing", label: "测速中…", spin: true };
+      if (ch.status === "stopped") return { cls: "off", label: "已停止" };
+      // 本页测过就以本页结果为准(立刻反映,不等下一帧轮询);但只在短窗内有效——
+      // 永不过期会压住轮询快照:测出绿 120ms 后通道掉线,卡片却永远绿(红队 M13)。
+      let r = results.get(ch.id);
+      if (r && Date.now() - r.t > 30000) { results.delete(ch.id); r = null; }
+      const connected = r ? r.ok : (ch.status === "logged_in");
+      const ms = r ? r.ms : ch.latency_ms;
+      if (connected && typeof ms === "number") {
+        const cls = ms <= 150 ? "ok" : ms <= 500 ? "mid" : "slow";
+        return { cls, label: ms + " ms" };
+      }
+      // 不通：本页测过或后端已标记 error 才算"探测失败"；否则只是还没数据
+      return (r || ch.status === "error") ? { cls: "timeout", label: "超时" } : { cls: "off", label: "—" };
     }
-    function renderLatency() {
-      let html = "";
-      // 节点 = 本工具内层 mihomo 的 ch-*（来自 /proxies），alive 直接来自 mihomo，空闲也算在线
-      nodes.forEach(p => {
-        const id = p.name.indexOf("ch-") === 0 ? p.name.slice(3) : p.name;
-        const c = chs.find(x => x.id === id);
-        const sub = c ? c.name + " · " + c.socks_endpoint : "vpn-" + id + ":1080";
-        html += latRow(p.name, sub, c ? c.latency_ms : null, p.alive, p.alive ? "alive" : "offline");
-      });
-      // DIRECT 兜底直连：非隧道探活，仅表示直连可用，延迟显示“—”
-      html += latRow("DIRECT", "兜底直连 · 不经隧道", null, true, "直连可用");
-      $("#lat-list").innerHTML = html;
+    function renderSpeedGrid() {
+      const grid = $("#spd-grid");
+      if (!grid) return;
+      if (!chs.length) {
+        grid.innerHTML = '<div class="log-empty">暂无通道，先去「通道总览」新建一个</div>';
+      } else {
+        grid.innerHTML = chs.map(ch => {
+          const b = badgeFor(ch);
+          const off = ch.status === "stopped";
+          const spin = b.spin ? window.fb.SVG.spin : "";
+          return '<div class="spd-card' + (off ? " is-off" : "") + '" data-id="' + fb.esc(ch.id) + '">' +
+            '<div class="spd-top">' +
+              '<span class="spd-name" title="' + fb.esc(ch.name) + '">' + fb.esc(ch.name) + '</span>' +
+              '<span class="spd-badge ' + b.cls + '">' + spin + '<span>' + fb.esc(b.label) + '</span></span>' +
+            '</div>' +
+            '<div class="spd-meta">' + fb.esc(ch.vpn_type || "—") + ' · socks5</div>' +
+          '</div>';
+        }).join("");
+      }
+      syncSpeedSummary();
+    }
+    function syncSpeedSummary() {
+      const targets = chs.filter(c => c.status !== "stopped");
+      const ok = chs.filter(c => c.status === "logged_in" && typeof c.latency_ms === "number").length;
+      $("#spd-summary").textContent = ok + "/" + targets.length + " 可达";
+    }
+    function syncAllBtn() {
+      const btn = $("#spd-all");
+      btn.disabled = allTesting;
+      btn.textContent = allTesting ? "测速中 " + allProgress.done + "/" + allProgress.total : "全部测速";
+    }
+    // 单测一个通道：opts.silent 供"全部测速"复用，失败不单独 toast（由汇总 toast 统一报）
+    async function testSpeed(id, opts) {
+      opts = opts || {};
+      if (testing.has(id)) return null;   // 同卡测速中忽略再次点击（防重入）
+      testing.add(id);
+      renderSpeedGrid();
+      let result;
+      try {
+        const r = await api.status(id);
+        const ch = chs.find(c => c.id === id);
+        if (ch) { ch.status = r.status; ch.latency_ms = r.latency_ms; }
+        result = { ok: !!r.connected, ms: r.latency_ms, t: Date.now() };
+      } catch (e) {
+        result = { ok: false, ms: null, t: Date.now() };
+        if (!opts.silent) toast("测速失败：" + (e.message || "未知错误"), { variant: "danger" });
+      }
+      results.set(id, result);
+      testing.delete(id);
+      renderSpeedGrid();
+      return result;
+    }
+    // 全部测速：简单 worker 池，并发上限 4；每个 worker 从共享游标顺序取任务
+    async function testAllSpeed() {
+      if (allTesting) return;
+      const targets = chs.filter(c => c.status !== "stopped");
+      if (!targets.length) { toast("没有可测速的通道", { variant: "danger" }); return; }
+      allTesting = true;
+      allProgress = { done: 0, total: targets.length };
+      syncAllBtn();
+      let ok = 0, idx = 0;
+      async function worker() {
+        while (idx < targets.length) {
+          const ch = targets[idx++];
+          const r = await testSpeed(ch.id, { silent: true });
+          if (r && r.ok) ok++;
+          allProgress.done++;
+          syncAllBtn();
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(4, targets.length) }, worker));
+      allTesting = false;
+      syncAllBtn();
+      toast("测速完成：" + ok + "/" + targets.length + " 可达", { variant: ok === targets.length ? "success" : "default" });
     }
 
-    /* ───────── 实时连接表（mihomo /connections 真实形态） ───────── */
-    function fmtBytes(n) {
-      n = +n || 0;
-      if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
-      if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
-      return n + " B";
-    }
-    function chainId(chain) {
-      // chains 末项形如 "ch-{id}"；取出 {id} 用于映射通道名/序号
-      return chain && chain.indexOf("ch-") === 0 ? chain.slice(3) : null;
-    }
-    // 按 目标+通道+规则 聚合：同目标的重复短连接合并成一行，带连接数与累计流量
-    function aggregate(list) {
-      const groups = new Map();
-      list.forEach(c => {
-        const meta = c.metadata || {};
-        const chains = c.chains || [];
-        const tail = chains.length ? chains[chains.length - 1] : "";
-        const host = (meta.host || meta.destinationIP || "—") + (meta.destinationPort ? ":" + meta.destinationPort : "");
-        const key = host + "|" + tail + "|" + (c.rule || "");
-        let g = groups.get(key);
-        if (!g) { g = { host, tail, rule: c.rule || "", count: 0, up: 0, down: 0 }; groups.set(key, g); }
-        g.count++; g.up += (+c.upload || 0); g.down += (+c.download || 0);
-      });
-      return Array.from(groups.values()).sort((a, b) => b.count - a.count);
-    }
-    function connRow(g) {
-      const id = chainId(g.tail);
-      const direct = !id;   // 末跳非 ch-* 即兜底直连（DIRECT）
-      const chainCell = direct
-        ? `<div class="chain-cell"><span class="cn muted">直连</span><span class="ce">DIRECT</span></div>`
-        : `<div class="chain-cell"><span class="cn">${fb.esc(chanName(id))}</span><span class="ce">${fb.esc(g.tail)} → vpn-${fb.esc(id)}:1080</span></div>`;
-      return `<tr class="${direct ? "is-direct" : ""}">
-        <td class="mono">${fb.esc(g.host)}</td>
-        <td class="hide-sm"><span class="rule-tag">${fb.esc(g.rule)}</span></td>
-        <td>${chainCell}</td>
-        <td class="r num-col">${g.count > 1 ? `<span class="pill">×${g.count}</span>` : g.count}</td>
-        <td class="r num-col">${fmtBytes(g.up)}</td>
-        <td class="r num-col">${fmtBytes(g.down)}</td>
-      </tr>`;
-    }
-    function renderConns(list) {
-      const groups = aggregate(list);
-      $("#conn-body").innerHTML = groups.length
-        ? groups.map(connRow).join("")
-        : `<tr><td colspan="6"><div class="empty" style="padding:var(--space-5);">暂无经本工具分流的连接</div></td></tr>`;
-      $("#conn-count").textContent = list.length;
-    }
-
-    /* ───────── 全量重绘（spark + 面积图） ───────── */
-    function drawAll() {
-      drawSpark("sp-up", upSeries.slice(-SN), "var(--accent)");
-      drawSpark("sp-down", downSeries.slice(-SN), "var(--success)");
-      drawSpark("sp-conn", connSeries, "var(--muted)");
-      drawSpark("sp-nodes", nodeSeries, "var(--muted)");
-      drawFlow();
-    }
-
-    /* ───────── tick：拉真实遥测，速率=总量差分/时间差 ───────── */
-    let nodes = [];   // 本工具内层通道节点 ch-*（来自 /api/proxies）
+    /* ───────── tick：拉真实遥测 → 差分出新连接 → 合成日志行 ───────── */
     async function tick() {
       let data;
       try {
@@ -454,19 +663,19 @@
         // 失败:轮询会每 1.5s 自动重试,但给用户可见的离线指示 + 一条(只一条)友好错误条
         const firstFail = !feedDown;
         setFeed("down", "数据离线 · 重试中");
-        // 手动「重试」= 立刻再跑一帧 tick(同一组 api,参数不变),不等下个周期
         showFeedError(e, () => { tick(); });
-        // 仅首次失败弹一次 toast,避免每帧刷屏
         if (firstFail)
           toast("遥测数据加载失败,将自动重试", { variant: "danger", action: { label: "立即重试", onClick: () => tick() } });
         return;
       }
       // 成功:更新「更新于」时间戳 + 清掉可能存在的故障错误条(自愈)
-      booted = true;
+      if (!booted) { booted = true; view().innerHTML = ""; }
       clearFeedError();
       setFeed("live", "更新于 " + nowHHMMSS());
       $("#nav-count").textContent = chs.length;
-      liveNodes = nodes.filter(p => p.alive).length;   // 在线节点 = mihomo 里 alive 的 ch-*
+      syncChanFilter();
+      renderSpeedGrid();   // testing 集合非空的卡在函数内部自己保持"测速中…"，这里放心整块重渲
+
       // 速率 = 总量差分 / 时间差；累计值变小 = mihomo 重载/重启归零，本帧不计差分（避免负值突刺）
       const now = Date.now();
       let up = 0, down = 0;
@@ -477,16 +686,58 @@
         down = dDown >= 0 ? dDown / dt / 1024 : 0;
       }
       prevTotals = { up: data.uploadTotal, down: data.downloadTotal }; prevTs = now;
-      const connList = data.connections || [];
-      pushSeries(up, down, connList.length);
-      renderMetrics(up, down, connList.length);
-      renderConns(connList);
-      renderLatency();
-      drawAll();
+
+      const list = data.connections || [];
+      renderMetrics(up, down, list.length);
+
+      // 差分：本帧活跃 id 里没被记过的就是新连接；随后把 seen 换成本帧活跃集合
+      const live = new Set();
+      const fresh = [];
+      list.forEach(c => {
+        const id = String(c.id == null ? "" : c.id);
+        if (!id) return;
+        live.add(id);
+        if (!seen.has(id)) fresh.push(c);
+      });
+      seen = live;
+      if (!fresh.length) { syncEmpty(); return; }
+      fresh.sort((a, b) => String(a.start || "").localeCompare(String(b.start || "")));
+      const entries = fresh.map(makeEntry);
+      if (paused) {
+        pending = pending.concat(entries).slice(-MAX_LINES);
+        syncPause();
+      } else {
+        appendEntries(entries);
+      }
     }
 
-    // 初次渲染（静态部分）+ 启动轮询
-    drawGrid();
+    /* ───────── 事件绑定 ───────── */
+    // 卡片墙用事件委托挂在容器上一次即可，避免每次 renderSpeedGrid 重渲都要重新绑定
+    $("#spd-grid").addEventListener("click", (e) => {
+      const card = e.target.closest(".spd-card");
+      if (!card || card.classList.contains("is-off")) return;   // stopped 卡不可点
+      testSpeed(card.dataset.id);
+    });
+    $("#spd-all").addEventListener("click", testAllSpeed);
+    $("#f-chan").addEventListener("change", () => { readFilters(); renderAll(); });
+    $("#f-re").addEventListener("input", () => { readFilters(); renderAll(); });
+    $("#btn-pause").addEventListener("click", togglePause);
+    $("#btn-clear").addEventListener("click", clearLog);
+    $("#btn-export").addEventListener("click", exportLog);
+    $("#log-jump").addEventListener("click", () => {
+      follow = true;
+      $("#log-jump").hidden = true;
+      scrollBottom();
+    });
+    // 用户上滚即脱离跟随；滚回底部自动恢复跟随
+    $("#log-view").addEventListener("scroll", () => {
+      const v = view();
+      const atBottom = v.scrollHeight - v.scrollTop - v.clientHeight < 24;
+      follow = atBottom;
+      $("#log-jump").hidden = atBottom;
+    });
+
+    syncPause();
     boot();
   </script>
 </body>
