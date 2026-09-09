@@ -11,10 +11,18 @@ import registry
 import dockerhub
 
 # P1 硬编码镜像源(按顺序探测可达再拉);P2 改为读 store.mirrors 表
-DEFAULT_MIRRORS = ["docker.1ms.run", "hub.rat.dev"]
+# 内置国内 Docker Hub 加速源(优先级序)。⚠️ 收录标准:实测能取到真实 manifest
+# (如 metacubex/mihomo),不是 /v2/ 探针 <500 就算——xuanyuan/dockerproxy.net/aityp
+# 经红队实测是僵尸源(manifest 403/404/非 registry),已剔除。全死时用户在「镜像源」屏补源。
+DEFAULT_MIRRORS = [
+    "docker.1ms.run",
+    "docker.m.daocloud.io",
+    "hub.rat.dev",
+]
 
 # 自建镜像的本地构建上下文(镜像名前缀 → 仓库内构建目录)
-_BUILD_CONTEXT = {"vpnmgr/oss-vpn": "images/oss", "vpnmgr/byo-desktop": "images/byo"}
+_BUILD_CONTEXT = {"vpnmgr/oss-vpn": "images/oss", "vpnmgr/byo-desktop": "images/byo",
+                  "vpnmgr/hillstone-desktop": "images/hillstone"}
 
 # 基础设施镜像(定义在 docker-compose,不在 adapters):分流底座 + 管理后端
 INFRA_IMAGES = [

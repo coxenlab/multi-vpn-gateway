@@ -11,10 +11,17 @@ use crate::{registry, dockerhub};
 pub const BUILD_CONTEXT: &[(&str, &str)] = &[
     ("vpnmgr/oss-vpn", "images/oss"),
     ("vpnmgr/byo-desktop", "images/byo"),
+    ("vpnmgr/hillstone-desktop", "images/hillstone"),
 ];
 
-/// P1 硬编码镜像源(对照 DEFAULT_MIRRORS)。
-pub const DEFAULT_MIRRORS: &[&str] = &["docker.1ms.run", "hub.rat.dev"];
+/// 内置国内 Docker Hub 加速源(优先级序,对照 preflight.py DEFAULT_MIRRORS)。
+/// ⚠️ 收录标准:实测能取到真实 manifest(如 metacubex/mihomo),不是 /v2/ 探针 <500 就算——
+/// 红队实测 xuanyuan(manifest 403)/dockerproxy.net(404)/aityp(非 registry)全是僵尸源,已剔除。
+pub const DEFAULT_MIRRORS: &[&str] = &[
+    "docker.1ms.run",
+    "docker.m.daocloud.io",
+    "hub.rat.dev",
+];
 
 pub(crate) fn build_context_of(repo: &str) -> Option<&'static str> {
     BUILD_CONTEXT.iter().find(|(k, _)| *k == repo).map(|(_, v)| *v)
@@ -495,6 +502,7 @@ mod tests {
     fn buildable_only_vpnmgr() {
         assert!(is_buildable("vpnmgr/oss-vpn:latest"));
         assert!(is_buildable("vpnmgr/byo-desktop:latest"));
+        assert!(is_buildable("vpnmgr/hillstone-desktop:latest"));
         assert!(!is_buildable("hagb/docker-easyconnect:7.6.3"));
     }
 
