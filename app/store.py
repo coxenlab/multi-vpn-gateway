@@ -67,9 +67,20 @@ def init():
                     "INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES(?,?,?,1)",
                     (r["channel_id"], "domain", r["pattern"]),
                 )
+        # 镜像源种入:空表全量种;老库经 user_version 一次性合并新增默认源(追加到队尾,
+        # INSERT OR IGNORE 不动用户已有条目;此后用户删掉的源不会复活)。
+        # ⚠️ user_version 是两栈共享的 DB 级版本号(store.rs 同用):改 DEFAULT_MIRRORS
+        # 并升版本时必须两栈同步升,否则先跑的一栈把版本推高,另一栈永久跳过合并。
+        from preflight import DEFAULT_MIRRORS
         if c.execute("SELECT COUNT(*) FROM mirrors").fetchone()[0] == 0:
-            for i, h in enumerate(("docker.1ms.run", "hub.rat.dev"), start=1):
+            for i, h in enumerate(DEFAULT_MIRRORS, start=1):
                 c.execute("INSERT INTO mirrors(host,priority,enabled) VALUES(?,?,1)", (h, i))
+        elif c.execute("PRAGMA user_version").fetchone()[0] < 2:
+            for h in DEFAULT_MIRRORS:
+                c.execute(
+                    "INSERT OR IGNORE INTO mirrors(host,priority,enabled) "
+                    "VALUES(?,(SELECT COALESCE(MAX(priority),0)+1 FROM mirrors),1)", (h,))
+        c.execute("PRAGMA user_version = 2")
 
 
 def _row(r):
@@ -206,15 +217,18 @@ def set_config_field(cid, key, value, secret=False):
 
     secret=False(默认):明文存(供前端展示,如上传安装包文件名引用)。
     secret=True:Fernet 加密后存,并登记到 _secret(回前端时由 _public_config 剥除)。
-    """
-    raw = get_config_raw(cid)
-    obj = json.loads(raw) if raw else {"_fields": {}, "_secret": []}
-    obj.setdefault("_fields", {})
-    obj.setdefault("_secret", [])
-    obj["_fields"][key] = F.encrypt(str(value).encode()).decode() if secret else value
-    if secret and key not in obj["_secret"]:
-        obj["_secret"] = sorted(set(obj["_secret"]) | {key})
+    读改写收进同一连接的 BEGIN IMMEDIATE 事务:FastAPI 同步端点跑在线程池里是真并发,
+    裸 RMW 会让并发写(如「保存备注」与「键入自动留档」)整体回退掉对方的 secret 字段(红队 M10)。"""
     with _c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT config_json FROM channels WHERE id=?", (cid,)).fetchone()
+        raw = row["config_json"] if row and row["config_json"] else ""
+        obj = json.loads(raw) if raw else {"_fields": {}, "_secret": []}
+        obj.setdefault("_fields", {})
+        obj.setdefault("_secret", [])
+        obj["_fields"][key] = F.encrypt(str(value).encode()).decode() if secret else value
+        if secret and key not in obj["_secret"]:
+            obj["_secret"] = sorted(set(obj["_secret"]) | {key})
         c.execute("UPDATE channels SET config_json=? WHERE id=?", (json.dumps(obj), cid))
 
 
@@ -256,6 +270,30 @@ def all_rules():
     with _c() as c:
         return [dict(r) for r in c.execute(
             "SELECT id,channel_id,kind,pattern,enabled FROM rules ORDER BY id").fetchall()]
+
+
+def effective_rules():
+    """运行时规则消费面(mihomo rebuild / provider / snippet / PAC)共用的有效规则集。
+
+    折叠通道状态:stopped/error 通道的规则不生效 ——「关容器即关分流」,避免规则把
+    流量导进已死的 ch-{id} 节点变黑洞;通道回到运行态自动恢复,不改规则自身 enabled。
+    保留全部元素与 ORDER BY id 插入序(对照桌面版 store.rs effective_rules;
+    routing_off/routing_enabled 为桌面版独有开关,web 栈无此折叠层)。导出仍用 all_rules。"""
+    rules = all_rules()
+    with _c() as c:
+        # routing_enabled 列由桌面栈迁移添加;web 栈自建库无此列(红队 M9:两栈同库时
+        # 桌面暂停路由的通道 web 侧照常分流)。列存在才叠加折叠,否则只折叠状态。
+        try:
+            dead = {r["id"] for r in c.execute(
+                "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 "
+                "OR status IN ('stopped','error')").fetchall()}
+        except sqlite3.OperationalError:
+            dead = {r["id"] for r in c.execute(
+                "SELECT id FROM channels WHERE status IN ('stopped','error')").fetchall()}
+    for r in rules:
+        if r["channel_id"] in dead:
+            r["enabled"] = 0
+    return rules
 
 
 def get_rule(rid):

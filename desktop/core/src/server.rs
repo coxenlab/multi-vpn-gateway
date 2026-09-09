@@ -32,6 +32,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/channels/:cid/logs", get(api::logs))
         .route("/api/channels/:cid/login", get(api::login))
         .route("/api/channels/:cid/upload", axum::routing::post(api::upload))
+        .route("/api/channels/:cid/note", get(api::note_get).put(api::note_put))
         .route("/api/channels/:cid/status", get(api::status))
         .route("/api/channels/:cid/rules", axum::routing::post(api::add_rules))
         .route("/api/rules", axum::routing::patch(api::patch_rules))
@@ -342,6 +343,52 @@ mod tests {
         assert_eq!(rule.note, "锁定后仍可单条修改");
         assert_eq!(rule.locked, 1);
         assert_eq!(rule.enabled, 1);
+    }
+
+    #[tokio::test]
+    async fn login_note_roundtrip_encrypted_and_single_endpoint_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,status) VALUES('c1','one','running')", []).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+
+        // 初始为空
+        let resp = app.clone().oneshot(Request::builder()
+            .uri("/api/channels/c1/note").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["note"], "");
+
+        // 写入 → 单点可读(命门 #5 的有意例外);落库为 Fernet 密文
+        let resp = app.clone().oneshot(Request::builder().method("PUT")
+            .uri("/api/channels/c1/note").header("content-type", "application/json")
+            .body(Body::from(r#"{"note":"账号 zhang\n密码 s3cret!"}"#)).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = app.clone().oneshot(Request::builder()
+            .uri("/api/channels/c1/note").body(Body::empty()).unwrap()).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(v["note"], "账号 zhang\n密码 s3cret!");
+        let raw = crate::store::get_config_raw(&db, "c1").unwrap();
+        assert!(!raw.contains("s3cret!") && raw.contains("login_note"));
+
+        // 通道列表不回传备注明文
+        let resp = app.clone().oneshot(Request::builder()
+            .uri("/api/channels").body(Body::empty()).unwrap()).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("s3cret!"));
+
+        // 未知通道 404;非字符串 400
+        let resp = app.clone().oneshot(Request::builder()
+            .uri("/api/channels/nope/note").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let resp = app.oneshot(Request::builder().method("PUT")
+            .uri("/api/channels/c1/note").header("content-type", "application/json")
+            .body(Body::from(r#"{"note":42}"#)).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

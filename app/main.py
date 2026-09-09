@@ -176,6 +176,35 @@ async def upload(cid, file: UploadFile = File(...)):
     return {"ok": True, "package": file.filename}
 
 
+NOTE_MAX = 20000   # 登录备注长度上限(字符)
+
+
+@app.get("/api/channels/{cid}/note")
+def note_get(cid):
+    """登录信息备注(用户自记的账号/密码/联系人等,多行文本)。
+    ⚠️ 命门 #5 的有意例外:备注 Fernet 加密落库,但本端点解密回传——
+    备注是用户为「下次交互登录照抄」而记的,不可读则功能不成立。
+    通道列表 /api/channels 仍不回传(secret 字段被 _row 剥除),仅此单点可读。"""
+    if not store.get_channel(cid):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    note = store.get_config(cid).get("login_note", "")
+    # 旧导入文件可能塞进非字符串:与桌面版(as_str 失败回空串)对齐
+    return {"note": note if isinstance(note, str) else ""}
+
+
+@app.put("/api/channels/{cid}/note")
+def note_put(cid, body: dict = Body(...)):
+    if not store.get_channel(cid):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    note = body.get("note", "")
+    if not isinstance(note, str):
+        return JSONResponse({"error": "note 须为字符串"}, status_code=400)
+    if len(note) > NOTE_MAX:
+        return JSONResponse({"error": f"备注过长(上限 {NOTE_MAX} 字符)"}, status_code=400)
+    store.set_config_field(cid, "login_note", note, secret=True)
+    return {"ok": True}
+
+
 @app.get("/api/channels/{cid}/status")
 def status(cid):
     ch = store.get_channel(cid)
@@ -325,6 +354,7 @@ def start(cid):
     if runtime == "byo":
         manager.start(cid)
         store.set_status(cid, "running")
+        manager.rebuild()   # 状态参与 effective_rules 折叠:回运行态要立刻恢复该通道规则
         return {"ok": True}
     # 重建是同步的,aTrust/EC 要十几秒;期间先落「starting」,否则前端 8s 轮询拿到的
     # 还是 stopped → 卡片一直显示「已停止」(用户以为没生效)。
@@ -333,6 +363,7 @@ def start(cid):
         container_id, novnc = manager.create_channel(ch, ch["vnc_password"])
     except Exception as e:
         store.set_status(cid, "error")
+        manager.rebuild()   # error 态规则折叠为不生效,配置面须同步,别留半生效
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
     store.set_container(cid, container_id, novnc, "running")
     manager.rebuild()
@@ -343,6 +374,9 @@ def start(cid):
 def stop(cid):
     manager.stop(cid)
     store.set_status(cid, "stopped")
+    # 关容器即关分流:订阅面(provider/PAC)现算会立刻显示折叠,但真正在跑的 mihomo
+    # 只有 rebuild 才重写——不重建就是「显示已收掉、实际黑洞照旧」的半生效(红队 H2)。
+    manager.rebuild()
     return {"ok": True}
 
 
@@ -365,6 +399,9 @@ def config_export():
         cfg = store.get_config(c["id"])
         if c.get("login_method") != "headless":
             cfg.pop("password", None)   # 交互登录密码不随导出
+        # 登录备注一律不随导出:「键入到容器」自动留档默认开,备注里大概率就是上一行
+        # 刚剥掉的交互登录密码(红队 D5),导出明文会绕过剥密;备注留在本机加密库里。
+        cfg.pop("login_note", None)
         if c.get("login_method") == "byo":
             cfg.pop("package", None)    # 安装器二进制在数据卷里带不走,文件名引用一并不导
         channels.append({
@@ -484,6 +521,7 @@ async def config_import(req: Request):
             "probe_url": text_fields["probe_url"], "status": "stopped",
         }
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
+        secret_keys.append("login_note")   # 登录备注不在 manifest inputs 里,导入时同样加密落库
         plans.append({"channel": ch, "config": cfg, "secret_keys": secret_keys,
                       "rules": planned_rules})
         existing.add(imported_name)
@@ -571,7 +609,7 @@ def clash_provider():
     # 命门:provider 的 IP-CIDR 不带 no-resolve(外层 Clash 的 RULE-SET,...,no-resolve 集合级统一施加)。
     # 顺序 = ORDER BY id 插入序(不做前缀排序);存量脏规则先按统一契约跳过,再经 yaml.safe_dump 编码。
     payload = []
-    for r in store.all_rules():
+    for r in store.effective_rules():
         if not r["enabled"]:
             continue
         normalized = normalize_stored_rule(r["kind"], r["pattern"])
@@ -587,7 +625,7 @@ def clash_provider():
 
 @app.get("/api/clash-snippet", response_class=PlainTextResponse)
 def clash_snippet():
-    rules = [r for r in store.all_rules() if r["enabled"]]
+    rules = [r for r in store.effective_rules() if r["enabled"]]
     L = [
         "# ① 在你现有 Clash 的 proxies: 下加这个节点",
         "proxies:",
@@ -638,7 +676,7 @@ def entry_pac():
     port = MIHOMO_HOST_PORT
     proxy = f"SOCKS5 127.0.0.1:{port}; SOCKS 127.0.0.1:{port}; DIRECT"
     domains, nets = [], []
-    for r in store.all_rules():
+    for r in store.effective_rules():
         if not r["enabled"]:
             continue
         normalized = normalize_stored_rule(r["kind"], r["pattern"])

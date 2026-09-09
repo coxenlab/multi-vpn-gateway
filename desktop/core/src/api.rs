@@ -456,6 +456,12 @@ pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b)
                     }
                 }
                 let _ = store::set_status(&db, &cid, "error");
+                // 状态联动:通道落 error 后规则自动失效,同步收掉分流面(失败仅记日志)。
+                let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+                if !reload_ok(&reload) {
+                    crate::ev!(error, "api", "mihomo_reload_failed", "通道更新失败落 error 后 mihomo 重载未达成",
+                        { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
+                }
                 return err500(&format!("{e}"));
             }
         }
@@ -541,6 +547,60 @@ pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp:
     Json(json!({ "ok": true, "package": filename })).into_response()
 }
 
+/// 登录备注长度上限(字符),对照 main.py NOTE_MAX。
+const NOTE_MAX: usize = 20000;
+
+/// GET /api/channels/{cid}/note:登录信息备注(用户自记的账号/密码/联系人等)。
+/// ⚠️ 命门 #5 的有意例外:备注 Fernet 加密落库,但本端点解密回传——用户记它就是
+/// 为了下次交互登录照抄。/api/channels 列表仍不回传(secret 字段被剥除),仅此单点可读。
+pub async fn note_get(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let key = match store::master_key(&st.cfg.data_dir) {
+        Ok(k) => k,
+        Err(e) => return err500(&format!("master_key: {e}")),
+    };
+    match store::get_channel(&db, &cid) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&format!("{e}")),
+    }
+    let note = match store::get_config(&db, &key, &cid) {
+        Ok(cfg) => cfg.get("login_note").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        Err(e) => return err500(&format!("{e}")),
+    };
+    Json(json!({ "note": note })).into_response()
+}
+
+/// PUT /api/channels/{cid}/note:整体覆盖备注文本(Fernet 加密落 config_json)。
+pub async fn note_put(
+    State(st): State<AppState>,
+    Path(cid): Path<String>,
+    Json(b): Json<Value>,
+) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    let key = match store::master_key(&st.cfg.data_dir) {
+        Ok(k) => k,
+        Err(e) => return err500(&format!("master_key: {e}")),
+    };
+    match store::get_channel(&db, &cid) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&format!("{e}")),
+    }
+    let note = match b.get("note") {
+        None | Some(Value::Null) => "",
+        Some(Value::String(s)) => s.as_str(),
+        Some(_) => return err_detail(StatusCode::BAD_REQUEST, "note 须为字符串"),
+    };
+    if note.chars().count() > NOTE_MAX {
+        return err_detail(StatusCode::BAD_REQUEST, &format!("备注过长(上限 {NOTE_MAX} 字符)"));
+    }
+    if let Err(e) = store::set_config_field(&db, &key, &cid, "login_note", note, true) {
+        return err500(&format!("{e}"));
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
 pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
@@ -606,6 +666,12 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
         manager::ensure_novnc_bridge(&docker, &cid).await;
         if let Err(e) = crate::novnc::ensure(&st, &cid).await {
             return err_detail(StatusCode::BAD_GATEWAY, &format!("noVNC forward: {e}"));
+        }
+        // 状态联动:byo 原地 start 不走重建路径,也要 rebuild 让停用期折叠掉的规则恢复生效。
+        let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+        if !reload_ok(&reload) {
+            crate::ev!(error, "api", "mihomo_reload_failed", "启动通道后 mihomo 重载未达成",
+                { "operation": "start", "cid": cid.as_str(), "error": reload.as_str() });
         }
         crate::ev!(info, "api", "channel_start", "通道启动完成", {
             "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
@@ -678,6 +744,13 @@ pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::
             "duration_ms": started.elapsed().as_millis() as u64, "result": "error", "error": e.to_string()
         });
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
+    }
+    // 状态联动:停止的通道其规则在 effective_rules 里自动失效,rebuild 一次把分流面
+    // (mihomo/provider/PAC/TUN 路由)同步收掉,避免黑洞规则;重载未达成仅记日志。
+    let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    if !reload_ok(&reload) {
+        crate::ev!(error, "api", "mihomo_reload_failed", "停止通道后 mihomo 重载未达成",
+            { "operation": "stop", "cid": cid.as_str(), "error": reload.as_str() });
     }
     crate::ev!(info, "api", "channel_stop", "通道已停止", {
         "cid": cid.as_str(), "name": ch.name.as_str(), "vpn_type": ch.vpn_type.as_str(),
@@ -1083,6 +1156,9 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
         if ch.login_method == "byo" {
             config.remove("package");
         }
+        // 登录备注一律不导出:「键入到容器」自动留档默认开,备注里大概率就是上面刚剥掉的
+        // 交互登录密码(红队 D5),导出明文会绕过剥密;备注留在本机加密库。
+        config.remove("login_note");
         let rules: Vec<Value> = store::list_rules(&db, &ch.id)
             .unwrap_or_default()
             .into_iter()
@@ -1279,7 +1355,8 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
             status: "stopped".into(),
             routing_enabled,
         };
-        let sk = secret_keys_of(&vtype);
+        let mut sk = secret_keys_of(&vtype);
+        sk.push("login_note".into()); // 登录备注不在 manifest inputs 里,导入时同样加密落库
         plans.push(store::ImportChannel { channel: nc, config: cfg_in, secret_keys: sk, rules: planned_rules });
         names.insert(imported_name.clone());
         imported.push(imported_name);

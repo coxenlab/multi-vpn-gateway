@@ -56,13 +56,31 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
         )?;
     }
 
+    // 镜像源种入(对照 store.py):空表按优先级全量种;老库经 user_version 一次性合并
+    // 新增默认源(追加队尾,INSERT OR IGNORE 不动用户已有条目;此后用户删掉的源不复活)。
+    // ⚠️ user_version 是两栈共享的 DB 级版本号(store.py 同用):改 DEFAULT_MIRRORS 并
+    // 升版本时必须两栈同步升,否则先跑的一栈把版本推高,另一栈永久跳过合并。
     let mirrors_n: i64 = conn.query_row("SELECT COUNT(*) FROM mirrors", [], |r| r.get(0))?;
     if mirrors_n == 0 {
-        conn.execute(
-            "INSERT INTO mirrors(host,priority,enabled) VALUES('docker.1ms.run',1,1),('hub.rat.dev',2,1)",
-            [],
-        )?;
+        for (i, host) in crate::preflight::DEFAULT_MIRRORS.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO mirrors(host,priority,enabled) VALUES(?1,?2,1)",
+                rusqlite::params![host, (i + 1) as i64],
+            )?;
+        }
+    } else {
+        let ver: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if ver < 2 {
+            for host in crate::preflight::DEFAULT_MIRRORS {
+                conn.execute(
+                    "INSERT OR IGNORE INTO mirrors(host,priority,enabled) \
+                     VALUES(?1,(SELECT COALESCE(MAX(priority),0)+1 FROM mirrors),1)",
+                    [host],
+                )?;
+            }
+        }
     }
+    conn.execute_batch("PRAGMA user_version = 2")?;
     Ok(())
 }
 
@@ -245,9 +263,11 @@ pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
 
 /// 运行时五个规则消费面共用的有效规则集。
 ///
-/// 依次折叠全局 `routing_off`、通道 `routing_enabled`、规则自身 `enabled`。只改返回项的
-/// `enabled` 值，保留所有元素与 `ORDER BY id` 插入序；过滤仍由各消费面原有逻辑完成，
-/// 避免 mihomo/provider/PAC/TUN 的规则集合和顺序漂移。原始字段由 [`all_rules`] 提供给导出。
+/// 依次折叠全局 `routing_off`、通道 `routing_enabled`、通道状态(stopped/error 的通道
+/// 规则不生效,避免流量进黑洞;通道回到运行态自动恢复,不改规则自身开关)、规则自身
+/// `enabled`。只改返回项的 `enabled` 值，保留所有元素与 `ORDER BY id` 插入序；过滤仍由
+/// 各消费面原有逻辑完成，避免 mihomo/provider/PAC/TUN 的规则集合和顺序漂移。原始字段由
+/// [`all_rules`] 提供给导出。
 pub fn effective_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
     let mut rules = all_rules(db)?;
     if routing_off(db.parent().unwrap_or_else(|| Path::new("."))) {
@@ -259,7 +279,7 @@ pub fn effective_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
 
     let conn = Connection::open(db)?;
     let mut stmt = conn.prepare(
-        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 ORDER BY id",
+        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 OR status IN ('stopped','error') ORDER BY id",
     )?;
     let disabled = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -492,8 +512,11 @@ pub fn set_config_field(
     secret: bool,
 ) -> anyhow::Result<()> {
     let f = fernet_for(key)?;
-    let conn = Connection::open(db)?;
-    let raw: Option<String> = conn
+    let mut conn = Connection::open(db)?;
+    // RMW 收进 IMMEDIATE 事务:并发写 config(如「保存备注」与「键入自动留档」)
+    // 裸读改写会整体回退掉对方刚写入的 secret 字段(红队 M10)。
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let raw: Option<String> = tx
         .query_row("SELECT config_json FROM channels WHERE id=?1", [cid], |r| {
             r.get::<_, Option<String>>(0)
         })
@@ -524,10 +547,11 @@ pub fn set_config_field(
         set.insert(field.to_string());
         obj["_secret"] = json!(set.into_iter().collect::<Vec<_>>());
     }
-    conn.execute(
+    tx.execute(
         "UPDATE channels SET config_json=?1 WHERE id=?2",
         rusqlite::params![obj.to_string(), cid],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -816,14 +840,15 @@ mod tests {
         let rule_cols = table_columns(&conn, "rules").unwrap();
         assert!(rule_cols.contains("note"));
         assert!(rule_cols.contains("locked"));
+        let seeded = crate::preflight::DEFAULT_MIRRORS.len() as i64;
         let m: i64 = conn.query_row("SELECT COUNT(*) FROM mirrors", [], |r| r.get(0)).unwrap();
-        assert_eq!(m, 2);
+        assert_eq!(m, seeded);
         drop(conn);
 
         init(&db).unwrap();
         let conn = rusqlite::Connection::open(&db).unwrap();
         let m: i64 = conn.query_row("SELECT COUNT(*) FROM mirrors", [], |r| r.get(0)).unwrap();
-        assert_eq!(m, 2);
+        assert_eq!(m, seeded, "重复 init 不重复种入(user_version 已提升,用户删源不复活)");
     }
 
     #[test]
@@ -941,7 +966,7 @@ mod tests {
         );
 
         let mirrors = list_mirrors(&db).unwrap();
-        assert_eq!(mirrors.len(), 2);
+        assert_eq!(mirrors.len(), crate::preflight::DEFAULT_MIRRORS.len());
         assert_eq!(mirrors[0].host, "docker.1ms.run");
         assert_eq!(mirrors[0].priority, 1);
     }
@@ -952,19 +977,23 @@ mod tests {
         let db = dir.path().join("vpnmgr.db");
         init(&db).unwrap();
         let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.execute("INSERT INTO channels(id,routing_enabled) VALUES('on',1)", []).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled,status) VALUES('on',1,'logged_in')", []).unwrap();
         conn.execute("INSERT INTO channels(id,routing_enabled) VALUES('paused',0)", []).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled,status) VALUES('down',1,'stopped')", []).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled,status) VALUES('broken',1,'error')", []).unwrap();
         conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('on','domain','a.com',1)", []).unwrap();
         conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('on','ip','10.0.0.0/8',1)", []).unwrap();
         conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('paused','domain','b.com',1)", []).unwrap();
         conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('paused','ip','10.1.0.0/16',1)", []).unwrap();
         conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('on','domain','c.com',0)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('down','ip','10.2.0.0/16',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('broken','domain','d.com',1)", []).unwrap();
         drop(conn);
 
         let raw = all_rules(&db).unwrap();
         let folded = effective_rules(&db).unwrap();
         assert_eq!(folded.iter().map(|r| r.id).collect::<Vec<_>>(), raw.iter().map(|r| r.id).collect::<Vec<_>>());
-        assert_eq!(folded.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0]);
+        assert_eq!(folded.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 0, 0]);
 
         let channels = list_channels(&db).unwrap();
         let mihomo = crate::manager::build_mihomo_config(
@@ -981,6 +1010,8 @@ mod tests {
             assert!(text.contains("10.0.0.0/8"), "active IP missing from consumer: {text}");
             assert!(!text.contains("10.1.0.0/16"), "paused IP leaked into consumer: {text}");
             assert!(!text.contains("b.com"), "paused domain leaked into consumer: {text}");
+            assert!(!text.contains("10.2.0.0/16"), "stopped-channel IP leaked into consumer: {text}");
+            assert!(!text.contains("d.com"), "error-channel domain leaked into consumer: {text}");
         }
         assert!(pac.contains("a.com"));
         assert!(pac.contains("[\"10.0.0.0\",\"255.0.0.0\"]"));
@@ -988,12 +1019,13 @@ mod tests {
         assert!(!pac.contains("b.com"));
         assert!(v4.iter().any(|cidr| cidr == "10.0.0.0/8"));
         assert!(!v4.iter().any(|cidr| cidr == "10.1.0.0/16"));
+        assert!(!v4.iter().any(|cidr| cidr == "10.2.0.0/16"));
         assert!(v6.is_empty());
 
         set_routing_off(dir.path(), true).unwrap();
         assert!(routing_off(dir.path()));
         let folded_off = effective_rules(&db).unwrap();
-        assert_eq!(folded_off.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![0, 0, 0, 0, 0]);
+        assert_eq!(folded_off.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![0, 0, 0, 0, 0, 0, 0]);
         let mihomo = crate::manager::build_mihomo_config(
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &folded_off);
         assert_eq!(
@@ -1011,7 +1043,12 @@ mod tests {
         set_routing_off(dir.path(), false).unwrap();
         assert!(!routing_off(dir.path()));
         assert_eq!(all_rules(&db).unwrap(), raw, "kill switch must not mutate raw rules");
-        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0]);
+        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 0, 0]);
+
+        // 通道回到运行态,规则自动恢复生效——联动是计算出来的,不写规则表。
+        set_status(&db, "down", "logged_in").unwrap();
+        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 1, 0]);
+        assert_eq!(all_rules(&db).unwrap(), raw, "status fold must not mutate raw rules");
     }
 
     #[test]
@@ -1211,13 +1248,14 @@ mod tests {
     fn mirror_writers() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("vpnmgr.db");
-        init(&db).unwrap(); // seeds 2 mirrors (priority 1,2)
+        init(&db).unwrap(); // seeds DEFAULT_MIRRORS (priority 1..=N)
+        let seeded = crate::preflight::DEFAULT_MIRRORS.len() as i64;
 
         let mid = add_mirror(&db, "my.mirror.io").unwrap();
         assert!(mid > 0);
         let mirrors = list_mirrors(&db).unwrap();
         let added = mirrors.iter().find(|m| m.host == "my.mirror.io").unwrap();
-        assert_eq!(added.priority, 3); // MAX(2)+1
+        assert_eq!(added.priority, seeded + 1); // MAX(N)+1
         assert_eq!(added.enabled, 1);
 
         assert!(add_mirror(&db, "my.mirror.io").is_err()); // host UNIQUE
@@ -1225,7 +1263,7 @@ mod tests {
         set_mirror(&db, mid, None, Some(false)).unwrap();
         let m = list_mirrors(&db).unwrap().into_iter().find(|m| m.id == mid).unwrap();
         assert_eq!(m.enabled, 0);
-        assert_eq!(m.priority, 3); // unchanged
+        assert_eq!(m.priority, seeded + 1); // unchanged
 
         set_mirror(&db, mid, Some(10), None).unwrap();
         let m = list_mirrors(&db).unwrap().into_iter().find(|m| m.id == mid).unwrap();

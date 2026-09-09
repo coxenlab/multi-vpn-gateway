@@ -199,6 +199,81 @@ def test_upload_puts_file_and_stores_ref_not_bytes(client, monkeypatch):
     assert b"\x7fELF" not in up.content
 
 
+def test_login_note_roundtrip_encrypted_not_in_channel_row(client):
+    import store
+    r = client.post("/api/channels", json={
+        "name": "备注X", "vpn_type": "custom", "login_method": "byo",
+        "probe_url": "http://p"})
+    cid = r.json()["id"]
+    # 初始为空
+    assert client.get(f"/api/channels/{cid}/note").json() == {"note": ""}
+    text = "网关 198.51.100.1:9629\n账号 zhang\n密码 s3cret!\n验证码找王工"
+    assert client.put(f"/api/channels/{cid}/note", json={"note": text}).json() == {"ok": True}
+    # 单点可读(命门 #5 的有意例外)
+    assert client.get(f"/api/channels/{cid}/note").json() == {"note": text}
+    # 落库为 Fernet 密文,明文不进 SQLite
+    raw = store.get_config_raw(cid)
+    assert "s3cret!" not in raw and "login_note" in raw
+    # 通道列表/详情行不回传(secret 字段被 _row 剥除)
+    row = store.get_channel(cid)
+    assert "login_note" not in (row.get("config") or {})
+    listing = client.get("/api/channels")
+    assert "s3cret!" not in listing.text
+    # 超长与类型校验
+    assert client.put(f"/api/channels/{cid}/note", json={"note": "x" * 20001}).status_code == 400
+    assert client.put(f"/api/channels/{cid}/note", json={"note": 42}).status_code == 400
+    assert client.get("/api/channels/nope/note").status_code == 404
+
+
+def test_login_note_never_exported_but_old_imports_reencrypt(client):
+    # 红队 D5:备注常含「键入到容器」自动留档的交互登录密码,导出明文会绕过剥密 →
+    # 导出一律剥 login_note;旧导出文件里若带 login_note,导入仍按 secret 重新加密。
+    import json
+    import store
+    r = client.post("/api/channels", json={
+        "name": "备注Y", "vpn_type": "custom", "login_method": "byo",
+        "probe_url": "http://p"})
+    cid = r.json()["id"]
+    client.put(f"/api/channels/{cid}/note", json={"note": "密码 p@ss"})
+    doc = client.get("/api/config/export").json()
+    entry = next(c for c in doc["channels"] if c["name"] == "备注Y")
+    assert "login_note" not in entry["config"]
+    assert "p@ss" not in json.dumps(doc, ensure_ascii=False)
+    # 旧格式导入兼容:手工塞回 login_note → 导入后可读且密文落库
+    entry["name"] = "备注Y2"
+    entry["config"]["login_note"] = "密码 p@ss"
+    doc["channels"] = [entry]
+    imp = client.post("/api/config/import", json=doc).json()
+    assert imp["imported"] == ["备注Y2"]
+    nid = next(c["id"] for c in client.get("/api/channels").json() if c["name"] == "备注Y2")
+    assert client.get(f"/api/channels/{nid}/note").json() == {"note": "密码 p@ss"}
+    assert "p@ss" not in store.get_config_raw(nid)
+
+
+def test_stopped_channel_rules_fold_out_of_all_consumers(client):
+    # 关容器即关分流:stopped/error 通道的规则从 provider/snippet/PAC 消失,
+    # 回到运行态自动恢复,规则自身 enabled 不被改动(对照桌面版 effective_rules)。
+    import store
+    r = client.post("/api/channels", json={
+        "name": "折叠X", "vpn_type": "custom", "login_method": "byo",
+        "probe_url": "http://p"})
+    cid = r.json()["id"]
+    client.post(f"/api/channels/{cid}/rules", json={"patterns": ["fold.example.com", "10.99.0.0/16"]})
+
+    def surfaces():
+        return (client.get("/clash/vpn-rules.yaml").text,
+                client.get("/api/clash-snippet").text,
+                client.get("/entry/proxy.pac").text)
+
+    assert all("fold.example.com" in s for s in surfaces())
+    store.set_status(cid, "stopped")
+    assert all("fold.example.com" not in s and "10.99.0.0" not in s for s in surfaces())
+    # 规则自身仍是启用的(导出/规则表不受影响),只是运行面折叠
+    assert all(r["enabled"] for r in store.list_rules(cid))
+    store.set_status(cid, "running")
+    assert all("fold.example.com" in s for s in surfaces())
+
+
 def test_preflight_endpoint_returns_aggregate(client, monkeypatch):
     import preflight
     monkeypatch.setattr(preflight, "run_checks",

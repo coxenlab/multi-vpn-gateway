@@ -24,16 +24,19 @@
 
   /* 请求兜底超时:后端某条链路半死时(如探分流口卡住),fetch 默认会无限等,
    * 调用方的 loading/骨架屏就永远停住(2026-08-04 事故现象之一)。宁可报错让上层
-   * 走重试,也不要静默挂死。25s 足够覆盖起容器/拉镜像这类慢接口的正常耗时。 */
+   * 走重试,也不要静默挂死。25s 覆盖常规接口;建通道要同步拉几百 MB 镜像
+   * (aTrust arm64 ≈ 825MB,红队 B3:25s 必超时且前端 abort 后重试会造重复通道),
+   * 单独放宽到 20 分钟。 */
   const TIMEOUT_MS = 25000;
+  const LONG_TIMEOUT_MS = 20 * 60 * 1000;
 
-  async function req(method, url, body) {
+  async function req(method, url, body, { timeout = TIMEOUT_MS } = {}) {
     const opt = { method, headers: {} };
     if (body !== undefined) {
       opt.headers["Content-Type"] = "application/json";
       opt.body = JSON.stringify(body);
     }
-    if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opt.signal = AbortSignal.timeout(TIMEOUT_MS);
+    if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opt.signal = AbortSignal.timeout(timeout);
     const r = await fetch(url, opt);
     if (!r.ok) {
       const t = await r.text().catch(() => "");
@@ -58,7 +61,7 @@
     images: () => req("GET", "/api/images"),
     exportConfig: () => req("GET", "/api/config/export"),
     importConfig: (doc) => req("POST", "/api/config/import", doc),
-    create: (data) => req("POST", "/api/channels", data),
+    create: (data) => req("POST", "/api/channels", data, { timeout: LONG_TIMEOUT_MS }),
     update: (id, data) => req("PATCH", `/api/channels/${id}`, data),
     login: (id) => req("GET", `/api/channels/${id}/login`),
     upload: async (id, file) => {
@@ -70,6 +73,9 @@
       return ct.includes("application/json") ? r.json() : r.text();
     },
     status: (id) => req("GET", `/api/channels/${id}/status`),
+    // 登录信息备注(加密落库;旧后端 404/405 → 调用方 feature-detect 隐藏卡片)
+    noteGet: (id) => req("GET", `/api/channels/${id}/note`),
+    noteSet: (id, note) => req("PUT", `/api/channels/${id}/note`, { note }),
     // 通道诊断(桌面版 host-only;web 版 404 → 前端 feature-detect 降级)
     diag: () => req("GET", "/api/diag"),
     // 运行事件日志(桌面版 host-only;web/旧桌面版 404 → 调用方隐藏入口)
