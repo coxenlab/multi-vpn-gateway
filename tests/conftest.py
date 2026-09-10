@@ -54,6 +54,7 @@ def clean_db():
         c.execute("DELETE FROM rules")
         c.execute("DELETE FROM domains")
         c.execute("DELETE FROM mirrors")
+        c.execute("DELETE FROM config_apply_state")
     store.init()       # 重新播种默认镜像源
     yield
     channel_state.shutdown()

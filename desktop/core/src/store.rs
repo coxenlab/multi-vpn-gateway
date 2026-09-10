@@ -86,6 +86,7 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
         }
     }
     conn.execute_batch("PRAGMA user_version = 2")?;
+    conn.execute_batch(include_str!("../../../app/config_apply_schema.sql"))?;
     Ok(())
 }
 
@@ -232,6 +233,10 @@ fn map_channel(row: &rusqlite::Row) -> rusqlite::Result<ChannelPublic> {
 
 pub fn list_channels(db: &Path) -> anyhow::Result<Vec<ChannelPublic>> {
     let conn = Connection::open(db)?;
+    list_channels_with(&conn)
+}
+
+pub(crate) fn list_channels_with(conn: &Connection) -> anyhow::Result<Vec<ChannelPublic>> {
     let mut stmt = conn.prepare(&format!("SELECT {CH_COLS} FROM channels ORDER BY id"))?;
     let rows = stmt.query_map([], map_channel)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -269,6 +274,10 @@ pub fn list_rules(db: &Path, cid: &str) -> anyhow::Result<Vec<Rule>> {
 
 pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
     let conn = Connection::open(db)?;
+    all_rules_with(&conn)
+}
+
+fn all_rules_with(conn: &Connection) -> anyhow::Result<Vec<Rule>> {
     // ORDER BY id:同 list_rules，插入序是规则排序/编码的稳定输入（golden 契约）。
     let mut stmt = conn.prepare("SELECT id,channel_id,kind,pattern,enabled,note,locked FROM rules ORDER BY id")?;
     let rows = stmt.query_map([], map_rule)?;
@@ -283,15 +292,20 @@ pub fn all_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
 /// 各消费面原有逻辑完成，避免 mihomo/provider/PAC/TUN 的规则集合和顺序漂移。原始字段由
 /// [`all_rules`] 提供给导出。
 pub fn effective_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
-    let mut rules = all_rules(db)?;
-    if routing_off(db.parent().unwrap_or_else(|| Path::new("."))) {
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction()?;
+    effective_rules_with(&tx, routing_off(db.parent().unwrap_or_else(|| Path::new("."))))
+}
+
+pub(crate) fn effective_rules_with(conn: &Connection, off: bool) -> anyhow::Result<Vec<Rule>> {
+    let mut rules = all_rules_with(conn)?;
+    if off {
         for rule in &mut rules {
             rule.enabled = 0;
         }
         return Ok(rules);
     }
 
-    let conn = Connection::open(db)?;
     let mut stmt = conn.prepare(
         "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 OR status IN ('stopped','error') ORDER BY id",
     )?;

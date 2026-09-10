@@ -1,6 +1,7 @@
 """SQLite + 凭据字段级加密(Fernet)。主密钥存数据卷里权限锁死的文件(容器内读不到 macOS 钥匙串)。"""
 import os, sqlite3
 import json
+from pathlib import Path
 from cryptography.fernet import Fernet
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -86,6 +87,7 @@ def init():
                     "INSERT OR IGNORE INTO mirrors(host,priority,enabled) "
                     "VALUES(?,(SELECT COALESCE(MAX(priority),0)+1 FROM mirrors),1)", (h,))
         c.execute("PRAGMA user_version = 2")
+        c.executescript(Path(__file__).with_name("config_apply_schema.sql").read_text())
 
 
 def _row(r):
@@ -303,21 +305,21 @@ def effective_rules():
 
     折叠通道状态:stopped/error 通道的规则不生效 ——「关容器即关分流」,避免规则把
     流量导进已死的 ch-{id} 节点变黑洞;通道回到运行态自动恢复,不改规则自身 enabled。
-    保留全部元素与 ORDER BY id 插入序(对照桌面版 store.rs effective_rules;
-    routing_off/routing_enabled 为桌面版独有开关,web 栈无此折叠层)。导出仍用 all_rules。"""
-    rules = all_rules()
+    保留全部元素与 ORDER BY id 插入序。Web 没有全局 routing_off 开关；
+    两栈均折叠通道 routing_enabled。导出仍用 all_rules。"""
     with _c() as c:
-        # routing_enabled 列由桌面栈迁移添加;web 栈自建库无此列(红队 M9:两栈同库时
-        # 桌面暂停路由的通道 web 侧照常分流)。列存在才叠加折叠,否则只折叠状态。
-        try:
-            dead = {r["id"] for r in c.execute(
-                "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 "
-                "OR status IN ('stopped','error')").fetchall()}
-        except sqlite3.OperationalError:
-            dead = {r["id"] for r in c.execute(
-                "SELECT id FROM channels WHERE status IN ('stopped','error')").fetchall()}
+        c.execute("BEGIN")
+        return _effective_rules(c, False)
+
+
+def _effective_rules(c, routing_off):
+    rules = [dict(r) for r in c.execute(
+        "SELECT id,channel_id,kind,pattern,enabled FROM rules ORDER BY id")]
+    dead = {r["id"] for r in c.execute(
+        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 "
+        "OR status IN ('stopped','error')")}
     for r in rules:
-        if r["channel_id"] in dead:
+        if routing_off or r["channel_id"] in dead:
             r["enabled"] = 0
     return rules
 
