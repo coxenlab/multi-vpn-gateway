@@ -181,7 +181,7 @@ pub fn plan_rules(patterns: &[String], forced: Option<&str>, existing: &[(String
 /// path 须带尾斜杠:镜像内 tinyproxy 把 /websockify 301→/websockify/,WS 握手不跟随 301。
 pub fn login_url(port: i64, vnc_password: &str) -> String {
     format!(
-        "http://127.0.0.1:{port}/vnc.html?path=websockify/&autoconnect=true&resize=remote&password={vnc_password}"
+        "http://127.0.0.1:{port}/vnc.html?path=websockify/&autoconnect=true&resize=scale&password={vnc_password}"
     )
 }
 
@@ -455,6 +455,7 @@ mod tests {
         assert!(u.contains("127.0.0.1:45678/vnc.html"));
         assert!(u.contains("path=websockify/"), "尾斜杠不可少(tinyproxy 301 不被 WS 跟随)");
         assert!(u.contains("autoconnect=true"));
+        assert!(u.contains("resize=scale"));
         assert!(u.contains("password=deadbeef"));
     }
 

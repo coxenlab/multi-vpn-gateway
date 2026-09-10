@@ -23,6 +23,7 @@ adapters:
       FAKE_HWADDR: "{mac}"
       EC_VER: "{version}"
       DISABLE_PKG_VERSION_XML: "1"
+      VNC_SIZE: "1110x620"
     caps: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun:rwm"]
     sysctls: {}
@@ -44,6 +45,7 @@ adapters:
       EXIT: ""
       FAKE_HWADDR: "{mac}"
       DISABLE_PKG_VERSION_XML: "1"
+      VNC_SIZE: "1110x620"
     caps: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun:rwm"]
     sysctls: {"net.ipv4.conf.default.route_localnet": "1"}
