@@ -84,6 +84,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/config/export", get(api::config_export))
         .route("/api/config/import", axum::routing::post(api::config_import))
         .route("/api/config/retry", axum::routing::post(api::config_retry))
+        .route_layer(axum::middleware::from_fn_with_state(state.clone(), crate::runtime::track_request))
         .fallback_service(static_svc)
         .with_state(state)
 }

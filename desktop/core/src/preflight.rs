@@ -415,7 +415,7 @@ fn set_task(tid: &str, v: Value) {
 }
 
 /// 对照 start_pull:后台任务遍历 mirror 拉取(pull_retag),更新任务表。返回 task_id(8 hex)。
-pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<String>) -> String {
+pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<String>, activity: crate::runtime_lifecycle::Activity) -> String {
     let tid: String = (0..4).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
     set_task(&tid, json!({ "status": "running", "progress": "准备拉取…", "log_tail": [], "error": Value::Null }));
     let (image, host_arch, tid2) = (image.to_string(), host_arch.to_string(), tid.clone());
@@ -425,6 +425,7 @@ pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<Str
         mirrors
     };
     tokio::spawn(async move {
+        let _activity = activity;
         let (repo, tag) = match image.split_once(':') {
             Some((r, t)) => (r.to_string(), if t.is_empty() { "latest".into() } else { t.to_string() }),
             None => (image.clone(), "latest".to_string()),

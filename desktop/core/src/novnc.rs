@@ -275,7 +275,7 @@ pub async fn watchdog_tick(state: AppState, ensure_due: bool) {
     let Ok(_guard) = WATCHDOG_LOCK.try_lock() else { return; };
     let ids: Vec<_> = state.novnc.forwards.lock().await.keys().cloned().collect();
     for cid in ids {
-        let Ok(_operation) = state.lifecycle.access(&cid).await else { continue; };
+        let Some(_operation) = state.lifecycle.maintenance_access(&cid).await else { return; };
         let _ensure = state.novnc.operation(&cid).await;
         let watched = state.novnc.forwards.lock().await.get_mut(&cid).is_some_and(|f| f.watched(Instant::now()));
         if !watched { drop_for_unlocked(&state, &cid).await; continue; }
@@ -312,6 +312,21 @@ pub async fn watchdog_tick(state: AppState, ensure_due: bool) {
             }
         }
     }
+}
+
+/// 释放前必须确认没有有效登录租约；过期租约不延长 VM 生命周期。
+pub async fn has_viewers(state: &AppState) -> bool {
+    state.novnc.forwards.lock().await.values_mut().any(|f| f.watched(Instant::now()))
+}
+
+/// 调用方已独占释放阶段，新 acquire 被 lifecycle 拦在外面。
+pub async fn drop_all(state: &AppState) -> Result<()> {
+    let mut forwards = state.novnc.forwards.lock().await;
+    for forward in forwards.values_mut() {
+        if let Some(child) = forward.child.as_mut() { crate::tunnel::stop_child_confirmed(child).await?; }
+    }
+    forwards.clear();
+    Ok(())
 }
 
 #[cfg(test)]

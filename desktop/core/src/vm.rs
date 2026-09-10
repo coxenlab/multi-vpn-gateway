@@ -158,6 +158,30 @@ pub async fn status(profile: &str) -> VmStatus {
     }
 }
 
+/// 用于释放确认：命令失败、缺少目标、未知状态都不能当作已停止。
+pub async fn stopped_confirmed(profile: &str) -> Result<bool> {
+    let output = tokio::time::timeout(Duration::from_secs(8),
+        Command::new("colima").args(["list", "--json"]).kill_on_drop(true).output()).await??;
+    anyhow::ensure!(output.status.success(), "无法读取虚拟机列表");
+    stopped_from_listing(&String::from_utf8(output.stdout)?, profile)
+}
+
+fn stopped_from_listing(text: &str, profile: &str) -> Result<bool> {
+    let mut found = None;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let item: serde_json::Value = serde_json::from_str(line)?;
+        if item["name"] == profile {
+            anyhow::ensure!(found.is_none(), "虚拟机列表存在重复目标");
+            found = Some(match item["status"].as_str() {
+                Some("Stopped") => true,
+                Some("Running") => false,
+                _ => anyhow::bail!("虚拟机状态待确认"),
+            });
+        }
+    }
+    found.ok_or_else(|| anyhow!("虚拟机列表缺少目标实例"))
+}
+
 fn start_args(profile: &str, enable_rosetta: bool) -> Vec<String> {
     let mut args = vec!["start".to_string(), profile.to_string(), "--vm-type".to_string(), "vz".to_string()];
     if enable_rosetta {
@@ -531,6 +555,16 @@ pub async fn wait_docker_ready(profile: &str, timeout_secs: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_confirmation_requires_explicit_target_status() {
+        assert!(stopped_from_listing(r#"{"name":"vpnmgr-dev","status":"Stopped"}"#, "vpnmgr-dev").unwrap());
+        assert!(!stopped_from_listing(r#"{"name":"vpnmgr-dev","status":"Running"}"#, "vpnmgr-dev").unwrap());
+        for listing in ["", "not json", r#"{"name":"vpnmgr","status":"Stopped"}"#,
+            r#"{"name":"vpnmgr-dev","status":"Broken"}"#] {
+            assert!(stopped_from_listing(listing, "vpnmgr-dev").is_err());
+        }
+    }
 
     #[test]
     fn socket_path_layout() {

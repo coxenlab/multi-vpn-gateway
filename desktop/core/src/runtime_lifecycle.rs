@@ -116,6 +116,15 @@ impl Coordinator {
         }
     }
 
+    /// 后台检查只占用资源，不续期用户的空闲等待；释放/退出开始后跳过本轮。
+    pub fn maintenance(self: &Arc<Self>) -> Option<Activity> {
+        let mut state = self.state.lock().unwrap();
+        if state.closing || state.phase == Phase::Releasing { return None; }
+        state.active += 1;
+        self.publish(&mut state);
+        Some(Activity { coordinator: self.clone() })
+    }
+
     /// 同一轮启动的调用者共享成功或失败；请求取消、启动函数 panic 都不会卡死状态。
     /// 失败后只有下一次显式 ensure 才重试，不在等待者内部隐式循环启动。
     pub async fn ensure<F, Fut>(self: &Arc<Self>, start: F) -> Outcome
@@ -363,5 +372,28 @@ mod tests {
         gate.add_permits(1); quit.await.unwrap();
         assert_eq!(c.snapshot().phase, Phase::Closing);
         assert!(c.ensure(|| async { panic!("quit must not reboot") }).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn maintenance_blocks_release_without_resetting_deadline() {
+        let c = coordinator(); ready(&c).await;
+        let now = Instant::now(); let grace = Duration::from_secs(60);
+        assert!(!c.release_at(now, grace, || async { Ok(true) }, || async { Ok(()) }).await.unwrap());
+        let task = c.maintenance().unwrap();
+        assert_eq!(c.snapshot().phase, Phase::Waiting);
+        assert!(!c.release_at(now + grace, grace, || async { panic!("live maintenance") }, || async { Ok(()) }).await.unwrap());
+        drop(task);
+        assert!(c.release_at(now + grace, grace, || async { Ok(true) }, || async { Ok(()) }).await.unwrap());
+        assert_eq!(c.snapshot().phase, Phase::Dormant);
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_release_is_failed_and_does_not_automatically_retry() {
+        let c = coordinator(); ready(&c).await;
+        assert!(c.release_if_idle(Duration::ZERO, || async { Ok(true) }, || async { Err("readback unavailable".into()) }).await.is_err());
+        assert_eq!(c.snapshot().phase, Phase::Failed);
+        assert!(!c.release_if_idle(Duration::ZERO, || async { panic!("no implicit retry") }, || async { Ok(()) }).await.unwrap());
+        c.ensure(|| async { Ok(()) }).await.unwrap();
+        assert_eq!(c.snapshot().phase, Phase::Ready);
     }
 }

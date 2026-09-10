@@ -59,6 +59,13 @@ impl Lifecycle {
         Ok(OperationGuard { _channel: guard, _activity: activity })
     }
 
+    pub async fn maintenance_access(&self, cid: &str) -> Option<OperationGuard> {
+        let activity = self.runtime.maintenance()?;
+        let guard = self.slot(cid).operation.clone().lock_owned().await;
+        if self.closing.load(Ordering::SeqCst) { return None; }
+        Some(OperationGuard { _channel: guard, _activity: activity })
+    }
+
     pub async fn quiesce(&self) {
         self.closing.store(true, Ordering::SeqCst);
         self.runtime.quiesce().await;

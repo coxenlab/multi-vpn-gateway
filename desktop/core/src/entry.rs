@@ -299,6 +299,8 @@ pub async fn system_proxy_apply(ui_port: &str, enable: bool) -> anyhow::Result<S
         return Err(e);
     }
     let state = system_proxy_status(ui_port).await;
+    // 显式开关覆盖 idle 暂停前的自动恢复意图。
+    IDLE_PROXY_SERVICES.lock().await.clear();
     crate::events::audit("system_proxy_set",
         if enable { "系统自动代理已启用" } else { "系统自动代理已关闭" },
         serde_json::json!({
@@ -325,6 +327,88 @@ pub const TUN_DEVICE: &str = "utun225";
 pub const HELPER_VERSION: &str = "0.2.0";
 static TUN_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static TUN_PARKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// 只记本进程为 idle 暂停的服务；恢复前仍核对 URL，外部改为其他代理时不夺回。
+static IDLE_PROXY_SERVICES: tokio::sync::Mutex<Vec<String>> = tokio::sync::Mutex::const_new(Vec::new());
+
+async fn idle_networksetup(args: &[&str]) -> anyhow::Result<String> {
+    let output = tokio::time::timeout(Duration::from_secs(10),
+        Command::new("networksetup").args(args).kill_on_drop(true).output()).await??;
+    anyhow::ensure!(output.status.success(), "系统代理状态操作失败");
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+async fn idle_proxy_status(service: &str) -> anyhow::Result<(Option<String>, bool)> {
+    let output = idle_networksetup(&["-getautoproxyurl", service]).await?;
+    anyhow::ensure!(output.lines().any(|line| matches!(line.trim(), "Enabled: Yes" | "Enabled: No")),
+        "系统代理状态无法确认");
+    Ok(parse_autoproxy(&output))
+}
+
+fn idle_helper_stopped(value: &serde_json::Value) -> bool {
+    value["running"] == false && value["alive"] == false && value["applied"] == 0 && value["pending"] == false
+}
+
+/// 空闲释放必须读回确认入口已撤下；与退出的 best-effort 清理不同，失败即保留 VM。
+pub async fn park_for_idle(cfg: &crate::config::Config) -> anyhow::Result<()> {
+    if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") { return Ok(()); }
+    {
+        let _guard = TUN_MUTATION_LOCK.lock().await;
+        TUN_PARKED.store(true, std::sync::atomic::Ordering::SeqCst);
+        if std::path::Path::new(HELPER_SOCK).exists() {
+            let status = helper_call(serde_json::json!({"cmd":"status"})).await?;
+            if !idle_helper_stopped(&status) {
+                anyhow::ensure!(tun_enabled(&cfg.data_dir) && status["config"] == tun_mihomo_config(&cfg.mihomo_host_port),
+                    "TUN 入口归属或停止状态待确认，保留运行环境");
+                helper_mutation(serde_json::json!({"cmd":"stop"})).await?;
+                let status = helper_call(serde_json::json!({"cmd":"status"})).await?;
+                anyhow::ensure!(idle_helper_stopped(&status), "TUN 引擎或路由尚未确认释放");
+            }
+        } else {
+            anyhow::ensure!(!tun_enabled(&cfg.data_dir), "TUN 助手不可达，无法确认路由已释放");
+        }
+    }
+    let listing = idle_networksetup(&["-listallnetworkservices"]).await?;
+    anyhow::ensure!(listing.lines().next().is_some_and(|line| line.contains("asterisk")), "无法确认系统网络服务列表");
+    let ours = pac_url(&cfg.ui_port.to_string());
+    let mut parked = IDLE_PROXY_SERVICES.lock().await;
+    for service in listing.lines().skip(1).map(|s| s.trim().trim_start_matches('*').trim()).filter(|s| !s.is_empty()) {
+        let (url, enabled) = idle_proxy_status(service).await?;
+        if enabled && url.as_deref() == Some(&ours) {
+            // 写前记住意图，响应丢失后先读回；失败后显式连接仍能恢复已暂停的部分。
+            if !parked.iter().any(|s| s == service) { parked.push(service.into()); }
+            let result = idle_networksetup(&["-setautoproxystate", service, "off"]).await;
+            let (url, enabled) = idle_proxy_status(service).await?;
+            anyhow::ensure!(!enabled || url.as_deref() != Some(&ours), "系统代理关闭尚未确认: {:?}", result.err());
+        }
+    }
+    Ok(())
+}
+
+/// 再次连接只恢复本实例保留的入口意图；外部 URL 发生变化的服务不恢复。
+pub async fn resume_after_idle(cfg: &crate::config::Config) -> anyhow::Result<()> {
+    if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") { return Ok(()); }
+    if TUN_PARKED.load(std::sync::atomic::Ordering::SeqCst) && tun_enabled(&cfg.data_dir) {
+        let status = tun_apply(cfg, true).await?;
+        if status["helper"]["pending"] != false {
+            TUN_PARKED.store(true, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("TUN 入口恢复仍待确认");
+        }
+    } else {
+        TUN_PARKED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    let ours = pac_url(&cfg.ui_port.to_string());
+    let mut parked = IDLE_PROXY_SERVICES.lock().await;
+    while let Some(service) = parked.first().cloned() {
+        let (url, enabled) = idle_proxy_status(&service).await?;
+        if url.as_deref() == Some(&ours) && !enabled {
+            let result = idle_networksetup(&["-setautoproxystate", &service, "on"]).await;
+            let (url, enabled) = idle_proxy_status(&service).await?;
+            anyhow::ensure!(url.as_deref() != Some(&ours) || enabled, "系统代理恢复尚未确认: {:?}", result.err());
+        }
+        parked.remove(0);
+    }
+    Ok(())
+}
 
 /// mihomo#2 冻结配置(唯一动态值 = 分流口)。要点全部来自实测/源码调研:
 /// - `auto-route: false`:不抢默认路由,由 helper 按绑定 IP-CIDR 加最长前缀路由,与 ClashX TUN 共存;
@@ -775,6 +859,18 @@ pub async fn tun_uninstall(cfg: &crate::config::Config) -> anyhow::Result<serde_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_requires_engine_exit_and_confirmed_route_removal() {
+        let stopped = serde_json::json!({"running":false,"alive":false,"applied":0,"pending":false});
+        assert!(idle_helper_stopped(&stopped));
+        for (key, value) in [("running", serde_json::json!(true)), ("alive", serde_json::json!(true)),
+            ("applied", serde_json::json!(1)), ("pending", serde_json::json!(true)),
+            ("pending", serde_json::Value::Null)] {
+            let mut status = stopped.clone(); status[key] = value;
+            assert!(!idle_helper_stopped(&status));
+        }
+    }
 
     #[test]
     fn helper_negative_ack_and_unconfirmed_stop_are_errors() {

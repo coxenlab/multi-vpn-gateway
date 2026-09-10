@@ -576,7 +576,7 @@ pub fn spawn(state: AppState) {
                 last_health = None;
                 continue;
             }
-            let Ok(_activity) = state.lifecycle.runtime().activity().await else { break; };
+            let Some(_activity) = state.lifecycle.runtime().maintenance() else { continue; };
             if !crate::runtime::serving(&state) { continue; }
             tick_count = tick_count.wrapping_add(1);
             let self_heal_enabled = state.self_heal_enabled();
@@ -606,7 +606,13 @@ pub fn spawn(state: AppState) {
             }
             // 暂停时仍回收无人观看/过期的 noVNC 入口，只由内部开关挡住恢复动作。
             let ensure_due = self_heal_resumed || woke || tick_count.is_multiple_of(3);
-            tokio::spawn(crate::novnc::watchdog_tick(state.clone(), ensure_due));
+            if let Some(activity) = state.lifecycle.runtime().maintenance() {
+                let owned = state.clone();
+                tokio::spawn(async move {
+                    let _activity = activity;
+                    crate::novnc::watchdog_tick(owned, ensure_due).await;
+                });
+            }
 
             let now_ms = started.elapsed().as_millis() as u64;
             let probe_started = std::time::Instant::now();
@@ -649,7 +655,13 @@ pub fn spawn(state: AppState) {
             // 有意放在「暂停自动修复」分支之前:守卫是防容器漏私网连接占死 VM 出站的基础防护,
             // 不是一次自愈动作,暂停自愈期间照样下发(2026-09-10 用户拍板;设置页开关说明同步写明)。
             if ensure_due && health != GatewayHealth::VmDown {
-                tokio::spawn(ensure_egress_guard(state.clone(), woke));
+                if let Some(activity) = state.lifecycle.runtime().maintenance() {
+                    let owned = state.clone();
+                    tokio::spawn(async move {
+                        let _activity = activity;
+                        ensure_egress_guard(owned, woke).await;
+                    });
+                }
             }
 
             // VM 出站僵死检测:与分流口健康正交(僵死时 docker ping/分流口全绿),每 3 拍

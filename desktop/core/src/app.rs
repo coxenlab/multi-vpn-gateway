@@ -66,6 +66,7 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> anyhow::Result<()> {
     if !state.cfg.managed_vm { crate::replacement::recover_all(&state).await; }
     crate::health::spawn(state.clone());
+    crate::runtime::spawn_idle(state.clone());
     let app = crate::server::build_router(state);
     axum::serve(listener, app).await?;
     Ok(())

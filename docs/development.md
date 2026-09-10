@@ -139,7 +139,9 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 `desktop/app/dev.sh` 使用独立 `vpnmgr-dev` VM、`vpnmgr_dev_vpnnet` 网络、Application Support/vpnmgr-dev 数据和 48878/48879/48880 端口。`--core` 只运行 Rust HTTP 核心；默认运行桌面壳，两者均启用按需 VM。开发实例禁用助手安装/替换/卸载、系统代理和 TUN 操作，自动对账与退出也不调用全局助手。非日常 profile 不挂载宿主目录、不改 SSH 配置和当前 Docker context。
 
-桌面打开管理界面只准备本地组件、配置和 HTTP 服务，连接/创建/恢复、显式修复才经 `runtime.rs` 共享启动底座。`/api/system.runtime` 提供阶段、进度和错误；`POST /api/runtime/start` 可显式准备环境，创建向导在用户确认创建后、预检前调用。独立 core 由 `VPNMGR_MANAGED_VM=1` 选择该模式，默认仍连接现有引擎。尚未运行时不探活或启动看门狗修复，也不把旧登录记录报为当前连通；启动先核对网络守卫，再载入镜像、建立自持 SSH、恢复未完成操作和读回规则。管理链路失败不自动重启全部通道，显式重试保留现场；退出及 managed core 的 SIGINT/SIGTERM 等待已接受工作后清理。空闲释放及休眠期间全部编辑/停止/清理入口的行为还在接入，不能据此认为 P5 完成。
+桌面打开管理界面只准备本地组件、配置和 HTTP 服务，连接/创建/恢复、显式修复才经 `runtime.rs` 共享启动底座。`/api/system.runtime` 提供阶段、进度和错误；`POST /api/runtime/start` 可显式准备环境，创建向导在用户确认创建后、预检前调用。独立 core 由 `VPNMGR_MANAGED_VM=1` 选择该模式，默认仍连接现有引擎。尚未运行时不探活或启动看门狗修复，也不把旧登录记录报为当前连通；启动先核对网络守卫，再载入镜像、建立自持 SSH、恢复未完成操作和读回规则。管理链路失败不自动重启全部通道，显式重试保留现场；退出及 managed core 的 SIGINT/SIGTERM 等待已接受工作后清理。
+
+按需底座在全通道明确 `stopped`、无有效登录租约/恢复记录/待同步规则、Docker 实际只有 mihomo 或无运行容器时，等待 60 秒后释放。新用户操作重置等待；维护检查只计入占用，不重置计时。写请求和 preflight 临时探针的执行不随 HTTP 断开取消，后台拉取独立持有活动许可；一旦开始释放，新操作等待完成。释放按 TUN/本实例 PAC→自持 noVNC/分流转发→本 profile VM 的顺序执行，入口、子进程和 VM 均须读回确认；任何失败保留失败状态，不循环重放停止。VM 停止命令运行期间保持释放状态，应用退出仍受总清理预算约束。再次连接只恢复本进程暂停过、URL 仍指向本实例的 PAC 服务及保留的 TUN 意图；不接管外部代理。旧助手若不能确认引擎、路由和 pending 状态，会阻止自动释放。休眠期间全部编辑/停止/清理入口、实际宿主入口切换、旧数据迁移与厂商通道验收仍未完成，不能据此认为 P5 完成。
 
 `VPNMGR_VM_PROFILE` 默认 `vpnmgr`；Docker 连接、SSH、守卫和 shutdown 均从 Config 的 profile 取地址。DATA_DIR 显式设置优先；桌面调试构建使用开发默认，发布构建固定使用 Application Support。旧开发目录中的日常数据不自动迁移；升级交付前须备份并执行独立迁移/保留配置验收。
 

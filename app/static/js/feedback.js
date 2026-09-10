@@ -448,7 +448,7 @@ import "./app.js";
       let ok = false, label;
       const runtime = sys.runtime;
       const inactive = runtime && !["ready", "waiting"].includes(runtime.phase);
-      if (inactive) label = ({ dormant: "按需运行", starting: "正在连接…", releasing: "正在释放…", failed: "启动未完成", closing: "正在退出…" })[runtime.phase] || "等待连接";
+      if (inactive) label = ({ dormant: "按需运行", starting: "正在连接…", releasing: "正在释放…", failed: "运行待确认", closing: "正在退出…" })[runtime.phase] || "等待连接";
       else if (sys.vm_egress_dead) label = "本地引擎断网";
       else if (gh === "forward_dead") label = "分流链路中断";
       else if (gh === "container_down") label = "入口未运行";
@@ -456,6 +456,7 @@ import "./app.js";
       else if (gh === "transport_degraded") { ok = true; label = "分流可用，底座降级"; }
       else if (gh === "vm_down") label = "本地引擎断开";
       else { ok = running; label = running ? "入口运行中" : "入口未运行"; }
+      if (runtime && runtime.phase === "waiting" && ok) label = "空闲，稍后释放";
       chip.classList.toggle("ok", ok);
       chip.classList.toggle("bad", !ok && (!inactive || runtime.phase === "failed"));
       if (txt) txt.textContent = label;

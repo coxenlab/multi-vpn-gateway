@@ -1297,6 +1297,7 @@ pub async fn system_proxy_set(State(st): State<AppState>, Json(b): Json<Value>) 
     }
     let ui = st.cfg.ui_port.to_string();
     let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
+    if enable { if let Err(error) = crate::runtime::ensure(&st).await { return err503(&error.to_string()); } }
     match entry::system_proxy_apply(&ui, enable).await {
         Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
         Err(e) => err500(&format!("{e}")),
@@ -1316,6 +1317,7 @@ pub async fn tun_set(State(st): State<AppState>, Json(b): Json<Value>) -> axum::
         return (StatusCode::FORBIDDEN, Json(json!({"error": "隔离实例禁用宿主 TUN 和助手变更"}))).into_response();
     }
     let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
+    if enable { if let Err(error) = crate::runtime::ensure(&st).await { return err503(&error.to_string()); } }
     let before = tun_snapshot(&entry::tun_status(&st.cfg).await);
     match entry::tun_apply(&st.cfg, enable).await {
         Ok(state) => {
@@ -1482,7 +1484,10 @@ pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String
                 None => return err500("docker unavailable"),
             };
             let mirrors = enabled_mirror_hosts(&st);
-            let tid = preflight::start_pull(docker, &image, &registry::host_arch(), mirrors.clone());
+            let activity = match st.lifecycle.runtime().activity().await {
+                Ok(activity) => activity, Err(error) => return err503(&error),
+            };
+            let tid = preflight::start_pull(docker, &image, &registry::host_arch(), mirrors.clone(), activity);
             // 拉取是后台任务:审计只记「谁在什么时候要拉哪个镜像」,结果由任务状态端点看。
             crate::events::audit("preflight_fix", "已发起镜像拉取", json!({
                 "target_kind": "system", "target_name": image.as_str(), "action": "pull_image",

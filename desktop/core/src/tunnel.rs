@@ -235,9 +235,32 @@ pub async fn kill(state: &AppState) {
     }
 }
 
+pub(crate) async fn stop_child_confirmed(child: &mut Child) -> Result<()> {
+    if child.try_wait()?.is_some() { return Ok(()); }
+    let result = child.kill().await;
+    anyhow::ensure!(child.try_wait()?.is_some(), "转发进程停止尚未确认: {:?}", result);
+    Ok(())
+}
+
+/// 空闲释放需要确认退出；失败时保留句柄供后续核查。
+pub async fn kill_confirmed(state: &AppState) -> Result<()> {
+    let mut guard = state.tunnel.lock().await;
+    if let Some(child) = guard.as_mut() { stop_child_confirmed(child).await?; }
+    *guard = None;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn idle_stop_confirms_child_exit_and_is_idempotent() {
+        let mut child = Command::new("sleep").arg("30").kill_on_drop(true).spawn().unwrap();
+        stop_child_confirmed(&mut child).await.unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+        stop_child_confirmed(&mut child).await.unwrap();
+    }
 
     #[test]
     fn forward_args_binds_loopback_only() {
