@@ -129,7 +129,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 单元测试用 `.venv/bin/pytest tests -q`，不要从仓库根递归扫描 handoff 符号链接。测试强制使用本轮创建的临时目录，拒绝真实 Docker/requests 网络操作。
 
-完整本地检查入口为 `./verify.sh`：Python 隔离单测、Rust core/helper 测试与 clippy、桌面壳检查，以及共享页面和脚本语法检查。Cargo 使用锁文件和离线缓存；缺依赖时明确失败，不自动联网安装。该入口不启动 VM、不登录 VPN、不修改系统代理或助手；通过不等于真实运行与业务验收完成。需要真实 Docker 的旧 Rust 测试保持显式 ignored，按对应测试要求另行执行。
+完整本地检查入口为 `./verify.sh`：Python 隔离单测、Rust core/helper 测试与 clippy、桌面壳检查，以及共享页面和脚本语法检查。入口强制使用临时 DATA_DIR、MIHOMO_CONFIG_PATH、不存在的 Docker socket 和独立 profile，结束后清理；测试自己构造 Config 时仍须显式使用临时目录与 dev_mode，不能绕过环境隔离去读日常默认目录。Cargo 使用锁文件和离线缓存；缺依赖时明确失败，不自动联网安装。该入口不启动 VM、不登录 VPN、不修改系统代理或助手；通过不等于真实运行与业务验收完成。需要真实 Docker 的旧 Rust 测试保持显式 ignored，按对应测试要求另行执行。
 
 通道自动刷新使用 `/api/channels/{id}/health`：结果含 `checked_at` 和 `stale`，稳定状态复用 30 秒、失败有界退避，过期结果标待确认并后台更新。手动检测继续使用 `/status`，不读取过期缓存。同通道并发共享一次探活；通道变更的代次校验阻止旧结果回写。共享 `api.poll` 在上一轮完成后计时，页面隐藏后暂停；监控明细与低频通道目录分别刷新。
 

@@ -10,6 +10,14 @@ fi
 for tool in cargo node; do
   command -v "$tool" >/dev/null || { echo "缺少 $tool" >&2; exit 1; }
 done
+# 不继承启动 app 的数据/配置/daemon 环境；各测试仍应使用自己的临时 Config。
+VERIFY_DATA="$(mktemp -d "${TMPDIR:-/tmp}/vpnmgr-verify.XXXXXX")"
+trap 'rm -rf -- "$VERIFY_DATA"' EXIT
+export DATA_DIR="$VERIFY_DATA"
+export MIHOMO_CONFIG_PATH="$VERIFY_DATA/mihomo.yaml"
+export DOCKER_HOST="unix://$VERIFY_DATA/absent-docker.sock"
+export VPNMGR_DEV_MODE=1
+export VPNMGR_VM_PROFILE=vpnmgr-verify
 .venv/bin/python -m pytest tests -q
 cargo test --locked --offline --manifest-path desktop/core/Cargo.toml
 cargo test --locked --offline --manifest-path desktop/helper/Cargo.toml

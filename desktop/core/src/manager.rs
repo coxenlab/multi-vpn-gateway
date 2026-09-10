@@ -683,7 +683,11 @@ mod tests {
         let db = dir.path().join("vpnmgr.db");
         crate::store::init(&db).unwrap();
         std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
-        let cfg = Config::from_getter(|_| None);
+        let mut cfg = Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into();
+        cfg.vm_profile = "vpnmgr-test".into();
+        cfg.dev_mode = true;
+        assert!(!cfg.host_integrations_allowed());
         // 造一个"存在但非 docker"的 sock 文件:connect_with_unix 只查路径存在性(构造通过),
         // 而 put_file 首个 API 调用连它即失败(非真 socket)→ 稳定触发 put_file 失败路径。
         let sock = dir.path().join("not-a-docker.sock");
