@@ -40,13 +40,11 @@ def _subst(s, idmap):
     return s
 
 
-def test_mihomo_rules_golden(make_channel, monkeypatch):
+def test_mihomo_rules_golden(make_channel, monkeypatch, mihomo_controller):
     """rebuild 产出的 cfg["rules"] 逐项等于 golden expected_mihomo_rules(占位替换后)。
     ⚠️ 不用 client fixture:它把 manager.rebuild monkeypatch 成 lambda:204 会短路真实渲染;
-    这里照 test_manager 模板只挡网络 requests.put。"""
+    使用控制器替身读回，不访问外网。"""
     import manager
-    monkeypatch.setattr(manager.requests, "put",
-                        lambda *a, **k: type("R", (), {"status_code": 204})())
     g = _load_golden()
     idmap = _seed_from_golden(make_channel, g)
 

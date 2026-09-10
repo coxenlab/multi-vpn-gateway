@@ -1,5 +1,6 @@
 """容器编排 + mihomo 热加载 + SOCKS5 探活。"""
 import os
+import copy
 import io
 import socket
 import tarfile
@@ -22,6 +23,7 @@ import store
 import registry
 import adapters
 import replacement_store
+import config_apply
 import replacement_docker
 from ruleutil import normalize_stored_rule
 
@@ -293,8 +295,7 @@ def _probe_once(ch):
         return False, None
 
 
-# rebuild 全程持锁:FastAPI 同步端点走线程池,main.py 多处并发调用 rebuild 真实存在,
-# 「读 base→渲染→写盘→PUT reload」必须整体串行,否则并发写会互相撕裂配置文件。
+# 线程内串行 + config_apply 的跨进程文件锁，共同保护读快照、重载、读回和启动文件提交。
 _REBUILD_LOCK = threading.Lock()
 
 
@@ -332,58 +333,46 @@ def _atomic_write_yaml(path, value):
             os.close(owned_fd)
 
 
+def build_mihomo_config(base, chs, rules):
+    """纯函数：保留非托管配置，替换通道节点和排序后的有效规则。"""
+    base = copy.deepcopy(base) if isinstance(base, dict) else {}
+    base["proxies"] = [
+        {"name": f"ch-{c['id']}", "type": "socks5",
+         "server": f"vpn-{c['id']}", "port": 1080, "udp": True}
+        for c in chs
+    ]
+    base["proxy-groups"] = []
+    # enabled 规则拆两桶:domain 桶保持输入序(ORDER BY id)整体在前;ip 桶按 CIDR
+    # 前缀长度全局降序、同长度稳定保序(sorted 稳定)。输出:domain 全部→ip 全部→MATCH 恒最后。
+    # 与 Rust 侧 build_mihomo_config 排序语义逐字一致(golden fixture 钉死)。
+    # 命门:IP-CIDR 带 no-resolve、DOMAIN-SUFFIX 不带——有意不对称,勿修平。
+    # 出口再校验:enabled 且 pattern 不含 DANGER 字符——存量脏条即便在库也不写进配置(命门②·C)
+    domains, ips = [], []
+    for r in rules:
+        if not r["enabled"]:
+            continue
+        normalized = normalize_stored_rule(r["kind"], r["pattern"])
+        if not normalized:
+            continue
+        kind, pattern = normalized
+        item = dict(r, kind=kind, pattern=pattern)
+        (ips if kind == "ip" else domains).append(item)
+    ips = sorted(ips, key=lambda r: _cidr_prefix_len(r["pattern"]), reverse=True)
+    out = [f"DOMAIN-SUFFIX,{r['pattern']},ch-{r['channel_id']}" for r in domains]
+    out += [f"IP-CIDR,{r['pattern']},ch-{r['channel_id']},no-resolve" for r in ips]
+    out.append("MATCH,DIRECT")
+    base["rules"] = out
+    return base
+
+
 def rebuild():
-    """按当前所有通道+规则重写 mihomo 配置并热加载(force reload,不断现有连接)。"""
+    """按一致快照应用规则；内容未变仍核对运行态，确认后才保存启动文件。"""
     with _REBUILD_LOCK:
-        chs = store.list_channels()
-        rules = store.effective_rules()   # 停止/error 通道的规则折叠为不生效(关容器即关分流)
         try:
-            with open(CFG) as f:
-                base = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            base = {}
-
-        base["proxies"] = [
-            {"name": f"ch-{c['id']}", "type": "socks5",
-             "server": f"vpn-{c['id']}", "port": 1080, "udp": True}
-            for c in chs
-        ]
-        base["proxy-groups"] = []
-        # enabled 规则拆两桶:domain 桶保持输入序(ORDER BY id)整体在前;ip 桶按 CIDR
-        # 前缀长度全局降序、同长度稳定保序(sorted 稳定)。输出:domain 全部→ip 全部→MATCH 恒最后。
-        # 与 Rust 侧 build_mihomo_config 排序语义逐字一致(golden fixture 钉死)。
-        # 命门:IP-CIDR 带 no-resolve、DOMAIN-SUFFIX 不带——有意不对称,勿修平。
-        # 出口再校验:enabled 且 pattern 不含 DANGER 字符——存量脏条即便在库也不写进配置(命门②·C)
-        domains, ips = [], []
-        for r in rules:
-            if not r["enabled"]:
-                continue
-            normalized = normalize_stored_rule(r["kind"], r["pattern"])
-            if not normalized:
-                continue
-            kind, pattern = normalized
-            item = dict(r, kind=kind, pattern=pattern)
-            (ips if kind == "ip" else domains).append(item)
-        ips = sorted(ips, key=lambda r: _cidr_prefix_len(r["pattern"]), reverse=True)
-        out = [f"DOMAIN-SUFFIX,{r['pattern']},ch-{r['channel_id']}" for r in domains]
-        out += [f"IP-CIDR,{r['pattern']},ch-{r['channel_id']},no-resolve" for r in ips]
-        out.append("MATCH,DIRECT")
-        base["rules"] = out
-
-        # 原子写:同目录唯一 0600 临时文件,flush+fsync 后 replace,避免半截/宽权限配置。
-        _atomic_write_yaml(CFG, base)
-
-        try:
-            r = requests.put(
-                f"{CTRL}/configs",
-                params={"force": "true"},
-                json={"path": CFG},
-                headers={"Authorization": f"Bearer {SECRET}"},
-                timeout=10,
-            )
-            return r.status_code
-        except Exception as e:
-            return f"{type(e).__name__}: {e}"
+            return config_apply.apply(CFG, CTRL, SECRET, build_mihomo_config, _atomic_write_yaml)
+        except Exception:
+            # 不把 YAML/controller 异常中的配置正文或凭据回传前端。
+            return "配置同步失败，已保存的设置仍待确认，请重试"
 
 
 def _parse_docker_time(s):

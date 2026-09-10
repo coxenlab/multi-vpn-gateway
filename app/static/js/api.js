@@ -95,6 +95,7 @@
     images: () => req("GET", "/api/images"),
     exportConfig: () => req("GET", "/api/config/export"),
     importConfig: (doc) => req("POST", "/api/config/import", doc),
+    retryConfig: () => req("POST", "/api/config/retry", undefined, { timeout: LONG_TIMEOUT_MS }),
     create: (data) => req("POST", "/api/channels", data, { timeout: LONG_TIMEOUT_MS }),
     update: (id, data) => req("PATCH", `/api/channels/${id}`, data, { timeout: LONG_TIMEOUT_MS }),
     restore: (id) => req("POST", `/api/channels/${id}/restore`, undefined, { timeout: LONG_TIMEOUT_MS }),

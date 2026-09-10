@@ -120,6 +120,10 @@ import "./app.js";
     const detail = e.raw || e.message || (reason || "未知错误");
 
     const has = (kw) => rawLow.includes(kw);
+    if (e.body && e.body.saved === true) {
+      return F("设置已保存，规则同步尚未完成", "当前运行规则可能仍是上次配置。",
+        "到分流规则页重试同步，无需重复添加。", detail);
+    }
 
     // 0) 底座降级/中断优先(gatewayMonitor 轮询维护 window.fb.gatewayHealth):
     //    docker 通道死时一切容器操作都会失败,按根因提示,别误报成「镜像拉取失败」等表象。
@@ -477,14 +481,24 @@ import "./app.js";
       const ctrlDown = gh === "healthy" && sys && sys.mihomo_status !== "running";
       const routingOff = !!(sys && sys.routing_off);
       const egressDead = !!(sys && sys.vm_egress_dead);
-      currentKey = (gh || "healthy") + "|" + (ctrlDown ? 1 : 0) + "|" + (routingOff ? 1 : 0) + "|" + (egressDead ? 1 : 0);
+      const application = sys && sys.config_application;
+      const configPending = !!(application && application.pending);
+      currentKey = (gh || "healthy") + "|" + (ctrlDown ? 1 : 0) + "|" + (routingOff ? 1 : 0) + "|" + (egressDead ? 1 : 0)
+        + "|" + (configPending ? `${application.source_revision}/${application.desired_generation}/${application.last_error}` : "synced");
       if (dismissedKey !== null && dismissedKey !== currentKey) dismissedKey = null; // 状态变化 → 复位收起记忆
       const dismissed = dismissedKey === currentKey;
+      if (configPending && !egressDead && (!gh || gh === "healthy") && sys.mihomo_status === "running") {
+        if (dismissed || document.body.dataset.page === "routing") { clear(); return; }
+        banner("warn", SVG.cross, "设置已保存，规则同步尚未完成",
+          "分流内核或启动配置仍待确认，流量可能继续按上次规则处理。",
+          '<div class="fb-eb-acts"><a class="btn btn-secondary btn-sm" href="routing-table.html">检查与重试</a></div>');
+        return;
+      }
       if (routingOff) {
         wasBroken = !!gh && gh !== "healthy";
         healing = false;
-        banner("warn", SVG.check, "全直连已开启",
-          "所有分流规则暂时失效，mihomo、TUN 路由、PAC 与 Clash 规则均只走 DIRECT；通道和登录态仍保持。",
+        banner("warn", SVG.check, configPending ? "全直连设置等待同步" : "全直连已开启",
+          configPending ? "设置已保存，分流内核尚未确认。请在分流规则页检查并重试。" : "已暂停托管的分流规则；通道与登录态仍保持。各入口的同步情况可在分流规则页查看。",
           routingActions(), false);
         bindRoutingRestore();
         return;

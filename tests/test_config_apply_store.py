@@ -51,6 +51,13 @@ def test_old_confirmation_rejected_even_when_new_revision_has_same_hash(make_cha
     apply.confirmed(same)
     next_ticket = prepare("b")
     assert next_ticket.generation == same.generation + 1
+    apply.observed(next_ticket)
+    assert apply.status()["pending"]
+    assert apply.status()["applied_generation"] == next_ticket.generation
+    # 以下失败历史测试另建一代，仍保留已观察的上一代。
+    apply.confirmed(next_ticket)
+    first = next_ticket
+    next_ticket = prepare("c")
     apply.failed(next_ticket, "readback_mismatch")
     state = apply.status()
     assert state["pending"] and state["verified_at"]
@@ -59,7 +66,7 @@ def test_old_confirmation_rejected_even_when_new_revision_has_same_hash(make_cha
     with pytest.raises(RuntimeError, match="代次已变化"):
         apply.confirmed(same)
     apply.confirmed(next_ticket)
-    retry = prepare("b")
+    retry = prepare("c")
     assert retry.generation == next_ticket.generation
     assert retry.attempt > next_ticket.attempt
     with pytest.raises(RuntimeError, match="代次已变化"):

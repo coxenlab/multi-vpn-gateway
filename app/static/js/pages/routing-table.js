@@ -13,11 +13,11 @@ import { loadWithSystem } from "../page-data.js";
     const selectedRules = new Set();
 
     const routingControlsSupported = () => typeof sys.routing_off === "boolean";
-    const channelRoutingOn = (c) => !routingControlsSupported() || (c.routing_enabled !== false && c.routing_enabled !== 0);
-    const isDeadCh = (c) => c.status === "stopped" || c.status === "error" || c.status === "down";
+    const channelRoutingOn = (c) => c.routing_enabled !== false && c.routing_enabled !== 0;
+    const isDeadCh = (c) => ["stopped", "error", "down"].includes(c.configured_status ?? c.status);
     // 规则自身 enabled(不折叠通道态)——「失效」清单用它,才能列出停止通道上仍启用的规则
     const chEnabledRaw = (c) => [...(c.domains || []), ...(c.ips || [])].filter((r) => r.enabled);
-    // 实际生效规则:对齐后端 effective_rules 的折叠(全局开关 + 通道路由开关 + 通道状态)。
+    // 已保存设置对应的有效规则；内核实际应用确认单独展示。
     // 红队 M12:不折叠状态会导致计数虚高、交叠误报、干线图给死通道画分支。
     const enabledRules = (c) => (sys.routing_off || !channelRoutingOn(c) || isDeadCh(c)) ? [] : chEnabledRaw(c);
     const allRules = (c) => [...(c.domains || []), ...(c.ips || [])];
@@ -225,7 +225,33 @@ import { loadWithSystem } from "../page-data.js";
       $("#bulk-disable").disabled = busy || !n;
     }
 
+    function paintApplication() {
+      const state = sys.config_application;
+      const panel = $("#config-application");
+      panel.style.display = state ? "" : "none";
+      if (!state) return;
+      const offline = sys.mihomo_status !== "running";
+      const reasons = {
+        unconfirmed: "同步尚未完成。",
+        reload_failed: "重载响应未确认。",
+        readback_failed: "暂时无法读取内核规则。",
+        dns_flush_failed: "通道地址缓存尚未确认刷新。",
+        readback_mismatch: "运行规则与已保存设置还不一致。",
+        write_failed: "运行规则已读回，启动配置保存失败。",
+        delivery_failed: "运行规则已读回，启动配置投递尚未确认。",
+        state_unavailable: "暂时无法读取同步记录。",
+      };
+      const title = offline ? "分流内核离线，规则同步待确认" : state.pending ? "设置已保存，规则同步尚未完成" : "规则已确认同步";
+      const checked = state.verified_at ? `最近核对 ${new Date(state.verified_at * 1000).toLocaleTimeString("zh-CN", { hour12: false })}。` : "尚无成功核对记录。";
+      $("#config-application-title").textContent = title;
+      $("#config-application-detail").textContent = `${reasons[state.last_error] || ""}${checked}本页数量按已保存设置计算。`;
+      panel.classList.toggle("warn", !!state.pending || offline);
+      $("#config-retry").disabled = busy;
+      $("#config-retry").textContent = busy ? "处理中…" : state.pending ? "重试同步" : "重新核对";
+    }
+
     function paint() {
+      paintApplication();
       const conflicts = findConflicts();
       // rid → 原始文本说明；输出到 HTML/attribute 时再统一 fb.esc。
       const confNote = new Map();
@@ -475,6 +501,20 @@ import { loadWithSystem } from "../page-data.js";
       }
     }
     $("#global-routing").addEventListener("click", toggleGlobalRouting);
+    $("#config-retry").addEventListener("click", async () => {
+      if (busy) return;
+      busy = true;
+      paintApplication();
+      try {
+        await api.retryConfig();
+        toast("规则同步已确认", { variant: "success" });
+      } catch (error) {
+        toast(error.reason || "规则同步尚未完成，请稍后重试", { variant: "danger" });
+      } finally {
+        busy = false;
+        await load(false);
+      }
+    });
 
     load();
     loadEntry();

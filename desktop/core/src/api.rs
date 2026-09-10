@@ -96,7 +96,7 @@ pub async fn add_rules(
         detail["error"] = json!(format!("mihomo reload failed: {code}"));
         detail["after"] = json!(store::list_rules(&db, &cid).map(|r| rule_snapshots(&r)).unwrap_or(Value::Null));
         crate::events::audit_failed("rules_add", "规则已入库但 mihomo 重载未达成", detail);
-        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+        return config_apply_failure(&db, &code);
     }
     let rs = match store::list_rules(&db, &cid) {
         Ok(rules) => rules,
@@ -165,7 +165,7 @@ pub async fn del_rule(State(st): State<AppState>, Path((cid, rid)): Path<(String
         detail["result"] = json!("failed");
         detail["error"] = json!(format!("mihomo reload failed: {code}"));
         crate::events::audit_failed("rule_delete", "规则已删除但 mihomo 重载未达成", detail);
-        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+        return config_apply_failure(&db, &code);
     }
     detail["result"] = json!("ok");
     crate::events::audit("rule_delete", "分流规则已删除", detail);
@@ -244,7 +244,7 @@ pub async fn patch_rule(
             detail["reload_status"] = json!(code.as_str());
             detail["error"] = json!(format!("mihomo reload failed: {code}"));
             crate::events::audit_failed("rule_update", "规则已改但 mihomo 重载未达成", detail);
-            return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+            return config_apply_failure(&db, &code);
         }
         response["reload_status"] = json!(code);
     }
@@ -310,7 +310,7 @@ pub async fn patch_rules(
         detail["result"] = json!("failed");
         detail["error"] = json!(format!("mihomo reload failed: {code}"));
         crate::events::audit_failed("rules_batch_update", "规则已批量改但 mihomo 重载未达成", detail);
-        return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {code}"));
+        return config_apply_failure(&db, &code);
     }
     detail["result"] = json!("ok");
     crate::events::audit("rules_batch_update", "分流规则已批量启停", detail);
@@ -427,6 +427,7 @@ pub(crate) fn channel_json(db: &std::path::Path, cid: &str) -> axum::response::R
     match store::get_channel(db, cid) {
         Ok(Some(c)) => {
             let mut value = serde_json::to_value(&c).unwrap();
+            value["config_application"] = config_application(db);
             match crate::replacement_store::public_status(db, cid) {
                 Ok(pending) => value["replacement"] = json!(pending),
                 Err(e) => return err500(&format!("replacement status: {e}")),
@@ -435,6 +436,35 @@ pub(crate) fn channel_json(db: &std::path::Path, cid: &str) -> axum::response::R
         }
         _ => err404("not found"),
     }
+}
+
+fn config_application(db: &std::path::Path) -> Value {
+    crate::config_apply_store::public_status(db, store::routing_off(db.parent().unwrap_or_else(|| std::path::Path::new("."))))
+}
+
+fn config_apply_failure(db: &std::path::Path, code: &str) -> axum::response::Response {
+    (StatusCode::BAD_GATEWAY, Json(json!({"detail":"规则已保存，同步尚未完成","saved":true,
+        "reload_status":code,"config_application":config_application(db)}))).into_response()
+}
+
+fn operation_done(db: &std::path::Path) -> axum::response::Response {
+    let application = config_application(db);
+    Json(json!({"ok":true,"rules_applied":application["pending"] == false,"config_application":application})).into_response()
+}
+
+pub async fn config_retry(State(st): State<AppState>) -> axum::response::Response {
+    detached("config_retry", async move {
+        let _operation = match st.lifecycle.access("__config_apply").await {
+            Ok(guard) => guard,
+            Err(e) => return err503(&e.to_string()),
+        };
+        let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &st.cfg.db_path()).await;
+        let application = config_application(&st.cfg.db_path());
+        if !reload_ok(&reload) {
+            return (StatusCode::BAD_GATEWAY, Json(json!({"error":reload,"config_application":application}))).into_response();
+        }
+        Json(json!({"ok":true,"config_application":application})).into_response()
+    }).await
 }
 
 pub async fn restore_channel(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
@@ -940,7 +970,7 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
             let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid), "resume_pending");
             detail["reload_status"] = json!(reload);
             crate::events::audit("channel_start", "继续启动新设置，保留上一次设置供恢复", detail);
-            return Json(json!({"ok":true})).into_response();
+            return operation_done(&db);
         }
         Ok(false) => {},
         Err(e) => return err500(&format!("启动未完成: {e}")),
@@ -973,7 +1003,7 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
             "通道启动完成",
             audit_detail("ok", channel_snapshot_of(&db, &cid), "in_place"),
         );
-        return Json(json!({ "ok": true })).into_response();
+        return operation_done(&db);
     }
     // 所有创建均先准备独立候选；旧实例丢失时也保留原数据卷。
     if let Err(e) = crate::replacement::replace(&st, &ch, &Default::default(), true).await {
@@ -987,7 +1017,7 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
     let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid), "replace");
     detail["reload_status"] = json!(reload);
     crate::events::audit("channel_start", "通道启动已应用，连通状态以探活为准", detail);
-    Json(json!({"ok":true})).into_response()
+    operation_done(&db)
 }
 
 pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
@@ -1051,7 +1081,7 @@ async fn stop_inner(st: AppState, cid: String) -> axum::response::Response {
         "通道已停止",
         audit_detail("ok", channel_snapshot_of(&db, &cid)),
     );
-    Json(json!({ "ok": true })).into_response()
+    operation_done(&db)
 }
 
 pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
@@ -1117,7 +1147,7 @@ async fn delete_inner(st: AppState, cid: String) -> axum::response::Response {
             { "operation": "delete", "cid": cid.as_str(), "error": reload.as_str() });
     }
     crate::events::audit("channel_delete", "通道已删除", audit_detail("ok"));
-    Json(json!({ "ok": true })).into_response()
+    operation_done(&db)
 }
 
 // ── 分流总开关 / 自愈开关 ────────────────────────────────────────────────

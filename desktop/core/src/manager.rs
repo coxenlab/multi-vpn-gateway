@@ -82,7 +82,7 @@ pub fn mihomo_config_path() -> String {
     std::env::var("MIHOMO_CONFIG_PATH").unwrap_or_else(|_| "/cfg/config.yaml".into())
 }
 
-fn atomic_write_0600(path: &std::path::Path, content: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write_0600(path: &std::path::Path, content: &[u8]) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -117,71 +117,15 @@ fn atomic_write_0600(path: &std::path::Path, content: &[u8]) -> Result<()> {
     result
 }
 
-/// 串行化并发 rebuild：api.rs 有 8 处调用点，加上 rebuild 末尾 spawn 的 tun_sync 会并发触发；
-/// 两个 rebuild 交错「读 base → 写盘」会互相冲掉对方并入的非托管键(dns/listeners)、或让读者看到
-/// 半截配置。全程持锁把「读-改-原子写-put_file-PUT reload」串成一个原子序列。
+/// 同进程排队；config_apply 另持跨进程文件锁。元信息/同内容不重复热加载。
 static REBUILD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 命门 #3:写 CFG + PUT /configs?force=true(不重启 mihomo、不断连)。返回状态码串或错误串。
-///
-/// host-VM 模型下 mihomo 跑在 VM 容器里、宿主无 `/cfg` 共享挂载,故:读宿主工作副本
-/// (`mihomo_config_path()`)当 base、并入通道/规则、写回工作副本,再经 `put_archive` 把成品
-/// 投递进容器 `/cfg/config.yaml`(`docker` 为 Some 时),最后 PUT 让 mihomo 从容器内绝对路径重载。
-/// `docker` 为 Some 时 put_file 是配置进容器的**唯一通道**,失败即判整体重载失败(返回 "put_file failed: ..."、
-/// reload_ok 判 false,端点不误报绑定成功);`docker` 为 None(bind-mount / 无 docker 测试)时跳过投递、直接 PUT。
+/// 热加载候选内容、读回托管规则/代理，再持久化启动文件；失败返回明确的部分完成状态。
 pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::path::Path) -> String {
-    let _guard = REBUILD_LOCK.lock().await; // 全程持锁,读-改-写-重载串行(见 REBUILD_LOCK 说明)
-    let inner = async {
-        let channels = crate::store::list_channels(db)?;
-        let rules = crate::store::effective_rules(db)?;
-        let cfg_path = mihomo_config_path();
-        // base 读取:NotFound = 首启合法(空 Mapping);其余 IO 错误 / YAML 解析错误 → 不写盘、
-        // 直接上抛(配置文件保持原样)。否则一次读失败就把 dns/listeners 等非托管键整份冲掉,
-        // oss 容器依赖 mihomo DoH+listen:53,冲掉即容器断解析。
-        let base: Yaml = match std::fs::read_to_string(&cfg_path) {
-            Ok(s) => serde_yaml::from_str(&s).map_err(|e| anyhow!("config parse error: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Yaml::Mapping(serde_yaml::Mapping::new())
-            }
-            Err(e) => return Err(anyhow!("config read error: {e}")),
-        };
-        let merged = build_mihomo_config(base, &channels, &rules);
-        let yaml = serde_yaml::to_string(&merged)?;
-        // 唯一同目录 0600 临时文件,flush+fsync 后原子 rename；读者不见半截或宽权限配置。
-        atomic_write_0600(std::path::Path::new(&cfg_path), yaml.as_bytes())?;
-        if let Some(d) = docker {
-            // host-VM 模型:put_file 经 put_archive 把成品投递进容器,是配置进容器的**唯一通道**。
-            // 失败即整体重载失败——不再发 PUT(否则 mihomo reload 的是容器里的旧配置)、不返回裸 2xx,
-            // 让 reload_ok 判 false、端点不误报绑定成功(此前 let _ 吞掉后仍并入 "204 (put_file failed:...)",
-            // reload_ok 只看首个 2xx token 就误判成功)。docker 为 None(bind-mount/无 docker 测试)不投递。
-            if let Err(e) = crate::docker::put_file(
-                d,
-                crate::infra::MIHOMO_CONTAINER,
-                crate::infra::MIHOMO_CFG_DIR,
-                crate::infra::MIHOMO_CFG_FILE,
-                yaml.as_bytes(),
-            )
-            .await
-            {
-                crate::ev!(error, "manager", "put_file_failed", "mihomo 配置投递失败",
-                    { "container": crate::infra::MIHOMO_CONTAINER, "error": e.to_string() });
-                return Ok::<String, anyhow::Error>(format!("put_file failed: {e}"));
-            }
-        }
-        let client = reqwest::Client::new();
-        let resp = client
-            .put(format!("{}/configs", cfg.mihomo_ctrl_url))
-            .query(&[("force", "true")])
-            .bearer_auth(&cfg.mihomo_secret)
-            .json(&serde_json::json!({ "path": crate::infra::MIHOMO_CFG_PATH }))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await?;
-        Ok::<String, anyhow::Error>(resp.status().as_u16().to_string())
-    };
-    let status = match inner.await {
-        Ok(s) => s,
-        Err(e) => format!("{e}"),
+    let _guard = REBUILD_LOCK.lock().await;
+    let status = match crate::config_apply::apply(cfg, docker, db).await {
+        Ok(value) => value,
+        Err(_) => "配置同步失败，已保存的设置仍待确认，请重试".into(),
     };
     // 层3 TUN 入口路由对账(best-effort):**detach** 到后台跑,不把 helper IPC 往返
     // (2s+8s 超时)串进每个 rebuild 调用点(规则增删改/建删通道/boot)的响应延迟。
@@ -672,31 +616,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_put_file_failure_is_not_success() {
-        // D 故障注入:docker 指向不存在的 socket → put_file 必失败(host-VM 下投递是配置进容器唯一通道)。
-        // rebuild 应返回 "put_file failed: ..."(无裸 2xx),即使控制器 PUT 本会 204 也不返回成功语义
-        //(此前吞掉后并入 "204 (put_file failed:...)" 被 reload_ok 首 token 误判成功)。
+    async fn config_delivery_failure_is_not_success() {
+        // 配置投递失败不能被当成成功；独立假 socket，不读取日常配置或控制器。
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("vpnmgr.db");
-        crate::store::init(&db).unwrap();
-        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
-        let mut cfg = Config::from_getter(|_| None);
-        cfg.data_dir = dir.path().into();
-        cfg.vm_profile = "vpnmgr-test".into();
-        cfg.dev_mode = true;
-        assert!(!cfg.host_integrations_allowed());
-        // 造一个"存在但非 docker"的 sock 文件:connect_with_unix 只查路径存在性(构造通过),
-        // 而 put_file 首个 API 调用连它即失败(非真 socket)→ 稳定触发 put_file 失败路径。
         let sock = dir.path().join("not-a-docker.sock");
         std::fs::write(&sock, b"").unwrap();
-        let bad = bollard::Docker::connect_with_unix(
-            sock.to_str().unwrap(), 5, bollard::API_DEFAULT_VERSION,
-        )
-        .unwrap();
-        let status = rebuild(&cfg, Some(&bad), &db).await;
-        assert!(status.starts_with("put_file failed:"), "put_file 失败应返回明确失败串,实际: {status}");
-        // 复刻 api::reload_ok 的完整字符串解析:失败串不是裸 2xx 状态码 → 不判成功。
-        assert!(status.parse::<u16>().is_err(), "失败串非裸状态码,reload_ok 判 false");
+        let bad = bollard::Docker::connect_with_unix(sock.to_str().unwrap(), 1, bollard::API_DEFAULT_VERSION).unwrap();
+        assert!(crate::config_apply::persist_container(&bad, "mihomo", b"fixture").await.is_err());
     }
 
     #[test]

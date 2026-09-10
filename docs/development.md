@@ -78,7 +78,13 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 2. **DNS 在 VPN 侧解析**:外层用户 Clash 的规则带 `no-resolve`(不解析、直接把域名交给 `vpn-router`);内层本工具 mihomo 靠 sniffer / respect-rules 还原域名。这是 `rebuild()` 里 `DOMAIN-SUFFIX` 规则不带 `no-resolve` 也能命中的原因。
 
-3. **配置使用热加载**:`manager.rebuild()` 投递配置后 `PUT {CTRL}/configs?force=true`，规则变更不主动重启 mihomo。保持既有连接是回归要求，不能仅凭一次 2xx 推断所有协议与并发故障下绝不断连。
+3. **配置使用热加载**:`manager.rebuild()` 以一致数据库快照构造候选，通过 `PUT {CTRL}/configs?force=true` 的 `payload` 应用，读回匹配后才保存启动文件；规则变更不主动重启 mihomo。同一有效内容和运行态均匹配时免重载/免写盘。保持既有连接是回归要求，不能仅凭一次 2xx 推断所有协议与并发故障下绝不断连。
+
+   配置应用由同进程锁及数据目录内的 `mihomo-apply.lock` 跨进程串行。两栈共用 `config_apply_schema.sql`：业务写入与来源 revision 同事务，内容 generation 与重试 attempt 独立；旧确认不能覆盖新处理，失败保留历史已确认版本，`/api/system.config_application` 给出 pending / 时间 / 原因码，`POST /api/config/retry` 只重新同步，不重做通道操作。规则已保存而同步失败的响应带 `saved:true`；通道操作另带 `config_application` / `rules_applied`。
+
+   通道 `container_id` 变化也增加来源 revision：代理仍为 `vpn-{id}` 时配置正文不变，但旧的代理服务器 DNS 缓存可能继续指向旧实例。免重载路径遇到新来源或上次未确认时调用 `POST /cache/dns/flush`，失败保持 pending；全文重载会创建新的解析器。普通名称/备注/探活状态更新不触发刷新。该刷新影响缓存，不主动关闭已建立连接。
+
+   内核读回核对内部 `__vpnmgr_cfg_*` 版本节点、托管节点名/类型、规则顺序/目标/禁用态及 mode；内部节点不被规则引用，也不进入 ch-* 通道输出。GET API 不暴露全部 SOCKS 参数和 no-resolve，因此这不是任意外部改写后的完整配置审计，更不是 DNS / TUN / VPN 认证验收。启动文件提交后再核对一次运行态，避免提交期间的内核重启被误报成功。桌面通过 0600 暂存文件、原子 rename 和内容/权限读回投递；Web 沿用目录挂载内的原子文件替换。控制器响应不明先读回，保持待确认，显式重试时可补文件而不重复热加载。
 
 4. **所有 host 端口只绑 `127.0.0.1`**(compose + manager 均如此),永不 `0.0.0.0`。
    - **oss**:1080 不映射 host(`_build_oss` 无 `ports` 项),仅 docker 内网 `vpn-{id}:1080` 可达;egress 由 dante `external: <tun>` pin 到隧道。

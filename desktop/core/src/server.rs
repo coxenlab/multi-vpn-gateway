@@ -82,6 +82,7 @@ pub fn build_router(state: AppState) -> Router {
         // 配置导出 / 导入(整站通道 + 规则的备份/迁移)
         .route("/api/config/export", get(api::config_export))
         .route("/api/config/import", axum::routing::post(api::config_import))
+        .route("/api/config/retry", axum::routing::post(api::config_retry))
         .fallback_service(static_svc)
         .with_state(state)
 }

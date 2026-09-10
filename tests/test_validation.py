@@ -93,12 +93,10 @@ def _seed_dirty(make_channel):
     store.add_rule("c1", "domain", DIRTY)      # 绕过入口校验,模拟历史脏数据
 
 
-def test_dirty_rule_rebuild_skipped(make_channel, monkeypatch):
+def test_dirty_rule_rebuild_skipped(make_channel, monkeypatch, mihomo_controller):
     """rebuild:脏 pattern 过 rule_pattern_safe 被跳过,绝不写进 mihomo cfg["rules"]。
-    ⚠️ 不用 client fixture(它把 rebuild 短路成 lambda:204);照 test_golden 只挡 requests.put。"""
+    ⚠️ 不用 client fixture(它把 rebuild 短路成 lambda:204);使用控制器替身读回。"""
     import manager
-    monkeypatch.setattr(manager.requests, "put",
-                        lambda *a, **k: type("R", (), {"status_code": 204})())
     _seed_dirty(make_channel)
     manager.rebuild()
     with open(os.environ["MIHOMO_CONFIG_PATH"]) as f:
@@ -238,7 +236,7 @@ def test_mirror_add_and_test_reject_query_fragment(client, monkeypatch, host):
     assert client.post("/api/mirrors/test", json={"host": host}).status_code == 400
 
 
-def test_invalid_stored_rules_skipped_by_every_output(make_channel, monkeypatch):
+def test_invalid_stored_rules_skipped_by_every_output(make_channel, monkeypatch, mihomo_controller):
     import main
     import manager
     from fastapi.testclient import TestClient
@@ -248,8 +246,6 @@ def test_invalid_stored_rules_skipped_by_every_output(make_channel, monkeypatch)
     store.add_rule("c1", "ip", "10.0.0.0/99")
     store.add_rule("c1", "domain", "bad..example")
     store.add_rule("c1", "unknown", "unknown.example")
-    monkeypatch.setattr(manager.requests, "put",
-                        lambda *a, **k: type("R", (), {"status_code": 204})())
 
     assert manager.rebuild() == 204
     with open(os.environ["MIHOMO_CONFIG_PATH"]) as f:
@@ -370,14 +366,12 @@ def test_import_enabled_update_failure_rolls_back(client, monkeypatch):
     assert store.all_rules() == []
 
 
-def test_rebuild_replaces_config_with_mode_0600(make_channel, monkeypatch):
+def test_rebuild_replaces_config_with_mode_0600(make_channel, monkeypatch, mihomo_controller):
     import manager
 
     store.add_channel(make_channel("c1"))
     with open(manager.CFG, "w") as f:
         f.write("rules: []\n")
     os.chmod(manager.CFG, 0o644)
-    monkeypatch.setattr(manager.requests, "put",
-                        lambda *a, **k: type("R", (), {"status_code": 204})())
     assert manager.rebuild() == 204
     assert os.stat(manager.CFG).st_mode & 0o777 == 0o600

@@ -97,6 +97,13 @@
       </header>
 
       <div class="content stack-6">
+        <div class="banner" id="config-application" style="display:none;" role="status">
+          <div style="flex:1;min-width:0;">
+            <div class="bt" id="config-application-title"></div>
+            <p id="config-application-detail"></p>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="config-retry" type="button">重试同步</button>
+        </div>
         <!-- 一行状态摘要：只在规则异常时展开下方问题清单 -->
         <div class="routing-health" id="routing-health" data-od-id="routing-health">
           <div class="health-title">
@@ -105,7 +112,7 @@
           </div>
           <div class="health-metrics">
             <span class="health-metric">在线通道 <b id="summary-online">—</b></span>
-            <span class="health-metric">启用规则 <b id="summary-enabled">—</b></span>
+            <span class="health-metric">设置启用 <b id="summary-enabled">—</b></span>
             <span class="health-metric issue">规则交叠 <b id="summary-conflict">—</b></span>
             <span class="health-metric">随通道停用 <b id="summary-dead">—</b></span>
           </div>

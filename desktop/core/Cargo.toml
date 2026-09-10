@@ -23,6 +23,7 @@ futures-util = "0.3"
 chrono = "0.4"
 rand = "0.8"
 ipnet = "2"
+sha2 = "=0.10.9"
 
 [dev-dependencies]
 tempfile = "3"

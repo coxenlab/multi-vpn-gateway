@@ -38,6 +38,15 @@ def status(routing_off=False):
     return state
 
 
+def public_status(routing_off=False):
+    try:
+        state = status(routing_off)
+        keys = ("source_revision", "desired_revision", "desired_generation", "applied_generation", "verified_at", "last_error", "pending")
+        return dict({key: state[key] for key in keys}, available=True, scope="managed_rules_proxies")
+    except Exception:
+        return {"available": False, "pending": True, "last_error": "state_unavailable"}
+
+
 def prepare(revision, routing_off, digest):
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("配置摘要无效")
@@ -60,19 +69,28 @@ def _matches(ticket):
 
 def confirmed(ticket):
     """保留旧确认的历史含义；若源数据已更新，status 仍为 pending。"""
+    _record_readback(ticket, None)
+
+
+def observed(ticket):
+    """运行态已读回，启动文件尚待持久化；崩溃后仍保留 pending。"""
+    _record_readback(ticket, "unconfirmed")
+
+
+def _record_readback(ticket, error):
     with store._c() as c:
         result = c.execute(
             "UPDATE config_apply_state SET applied_generation=desired_generation,applied_hash=desired_hash,"
-            "verified_at=CAST(strftime('%s','now') AS INTEGER),last_error=NULL "
+            "verified_at=CAST(strftime('%s','now') AS INTEGER),last_error=? "
             "WHERE id=1 AND desired_revision=? AND desired_routing_off=? AND desired_generation=? AND attempt=? AND desired_hash=?",
-            _matches(ticket))
+            (error, *_matches(ticket)))
         if result.rowcount != 1:
             raise RuntimeError("配置应用代次已变化")
 
 
 def failed(ticket, code):
     # 固定原因码；控制器错误正文可能包含配置，不能持久化或送回公开状态。
-    if code not in ("write_failed", "delivery_failed", "reload_failed", "readback_failed", "readback_mismatch"):
+    if code not in ("write_failed", "delivery_failed", "reload_failed", "readback_failed", "readback_mismatch", "dns_flush_failed"):
         raise ValueError("配置错误码无效")
     with store._c() as c:
         result = c.execute(

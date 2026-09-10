@@ -29,6 +29,7 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "host_integrations_available": st.cfg.host_integrations_allowed(),
         "probe_cache_available": true,
         "routing_off": store::routing_off(&st.cfg.data_dir),
+        "config_application": crate::config_apply_store::public_status(&st.cfg.db_path(), store::routing_off(&st.cfg.data_dir)),
     }))
 }
 
@@ -157,6 +158,7 @@ pub fn build_channels_response(
             // safe: ChannelPublic always serializes to a JSON object
             let mut v = serde_json::to_value(&ch).unwrap();
             let o = v.as_object_mut().unwrap();
+            o.insert("configured_status".into(), json!(ch.status));
             o.insert("status".into(), json!(status));
             o.insert("domains".into(), json!(domains));
             o.insert("ips".into(), json!(ips));

@@ -78,20 +78,40 @@ pub fn prepare(db: &Path, revision: i64, routing_off: bool, digest: &str) -> Res
     Ok(Ticket { revision, routing_off, generation, attempt, digest: digest.into() })
 }
 
+pub fn public_status(db: &Path, routing_off: bool) -> serde_json::Value {
+    match status(db, routing_off) {
+        Ok(s) => serde_json::json!({
+            "available":true,"scope":"managed_rules_proxies","source_revision":s.source_revision,
+            "desired_revision":s.desired_revision,"desired_generation":s.desired_generation,
+            "applied_generation":s.applied_generation,"verified_at":s.verified_at,"last_error":s.last_error,"pending":s.pending,
+        }),
+        Err(_) => serde_json::json!({"available":false,"pending":true,"last_error":"state_unavailable"}),
+    }
+}
+
 /// 确认的是此 ticket 的历史版本；源数据随后有变化时 status 仍然 pending。
 pub fn confirmed(db: &Path, ticket: &Ticket) -> Result<()> {
+    record_readback(db, ticket, None)
+}
+
+/// 运行态已读回，启动文件尚待持久化；此时中断仍保留 pending。
+pub fn observed(db: &Path, ticket: &Ticket) -> Result<()> {
+    record_readback(db, ticket, Some("unconfirmed"))
+}
+
+fn record_readback(db: &Path, ticket: &Ticket, error: Option<&str>) -> Result<()> {
     let conn = Connection::open(db)?;
     let changed = conn.execute("UPDATE config_apply_state SET applied_generation=desired_generation,\
-        applied_hash=desired_hash,verified_at=CAST(strftime('%s','now') AS INTEGER),last_error=NULL \
+        applied_hash=desired_hash,verified_at=CAST(strftime('%s','now') AS INTEGER),last_error=?6 \
         WHERE id=1 AND desired_revision=?1 AND desired_routing_off=?2 AND desired_generation=?3 AND desired_hash=?4 AND attempt=?5",
-        params![ticket.revision, ticket.routing_off, ticket.generation, ticket.digest, ticket.attempt])?;
+        params![ticket.revision, ticket.routing_off, ticket.generation, ticket.digest, ticket.attempt, error])?;
     ensure!(changed == 1, "配置应用代次已变化");
     Ok(())
 }
 
 pub fn failed(db: &Path, ticket: &Ticket, code: &str) -> Result<()> {
     // 只持久化原因码，避免控制器错误正文中的凭据流入公开状态。
-    ensure!(matches!(code, "write_failed" | "delivery_failed" | "reload_failed" | "readback_failed" | "readback_mismatch"), "配置错误码无效");
+    ensure!(matches!(code, "write_failed" | "delivery_failed" | "reload_failed" | "readback_failed" | "readback_mismatch" | "dns_flush_failed"), "配置错误码无效");
     let conn = Connection::open(db)?;
     let changed = conn.execute("UPDATE config_apply_state SET last_error=?1 WHERE id=1 \
         AND desired_revision=?2 AND desired_routing_off=?3 AND desired_generation=?4 AND desired_hash=?5 AND attempt=?6",
@@ -137,6 +157,12 @@ mod tests {
             tx.rollback().unwrap();
         }
         assert!(!status(&db, false).unwrap().pending);
+        conn.execute("UPDATE channels SET container_id='replacement'", []).unwrap();
+        assert!(status(&db, false).unwrap().pending);
+        let replaced = prepare_now(&db, 'a');
+        confirmed(&db, &replaced).unwrap();
+        conn.execute("UPDATE channels SET container_id='replacement'", []).unwrap();
+        assert!(!status(&db, false).unwrap().pending);
         conn.execute("UPDATE channels SET status='stopped'", []).unwrap();
         assert!(status(&db, false).unwrap().pending);
         assert_eq!(snapshot(&db, false).unwrap().rules[0].enabled, 0);
@@ -160,6 +186,12 @@ mod tests {
         confirmed(&db, &same).unwrap();
         let next = prepare_now(&db, 'b');
         assert_eq!(next.generation, same.generation + 1);
+        observed(&db, &next).unwrap();
+        assert!(status(&db, false).unwrap().pending);
+        assert_eq!(status(&db, false).unwrap().applied_generation, next.generation);
+        confirmed(&db, &next).unwrap();
+        let first = next;
+        let next = prepare_now(&db, 'c');
         failed(&db, &next, "readback_mismatch").unwrap();
         let state = status(&db, false).unwrap();
         assert!(state.pending);
@@ -168,7 +200,7 @@ mod tests {
         assert!(state.verified_at.is_some());
         assert!(confirmed(&db, &same).is_err());
         confirmed(&db, &next).unwrap();
-        let retry = prepare_now(&db, 'b');
+        let retry = prepare_now(&db, 'c');
         assert_eq!(retry.generation, next.generation);
         assert!(retry.attempt > next.attempt);
         assert!(confirmed(&db, &next).is_err());

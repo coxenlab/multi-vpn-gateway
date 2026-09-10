@@ -24,6 +24,7 @@ import manager
 import channel_state
 import replacement
 import replacement_store
+import config_apply_store
 import registry
 import dockerhub
 import preflight
@@ -45,6 +46,31 @@ async def lifespan(app):
 
 app = FastAPI(title="VPN 管理网关", lifespan=lifespan)
 store.init()
+
+
+def _channel_result(cid):
+    value = store.get_channel(cid)
+    if value:
+        value['config_application'] = config_apply_store.public_status()
+    return value
+
+
+def _operation_done():
+    application = config_apply_store.public_status()
+    return {'ok': True, 'rules_applied': not application['pending'], 'config_application': application}
+
+
+@app.post('/api/config/retry')
+def config_retry():
+    try:
+        with channel_state.mutation('__config_apply'):
+            code = manager.rebuild()
+    except RuntimeError:
+        return JSONResponse({'error': '服务正在退出'}, status_code=503)
+    application = config_apply_store.public_status()
+    if type(code) is not int or not 200 <= code < 300:
+        return JSONResponse({'error': code, 'config_application': application}, status_code=502)
+    return {'ok': True, 'config_application': application}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -75,6 +101,7 @@ def vpn_versions(vtype):
 def channels():
     out = []
     for c in store.list_channels():
+        c['configured_status'] = c['status']
         rs = store.list_rules(c["id"])
         c["domains"] = [r for r in rs if r["kind"] == "domain"]
         c["ips"] = [r for r in rs if r["kind"] == "ip"]
@@ -129,7 +156,7 @@ def create_inner(cid, b):
         store.set_status(cid, "error")
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
     manager.rebuild()
-    return store.get_channel(cid)
+    return _channel_result(cid)
 
 
 @app.patch("/api/channels/{cid}")
@@ -173,7 +200,7 @@ def update(cid: str, b: dict = Body(...)):
         manager.rebuild()
     else:
         store.update_channel(cid, b, secret_keys=secret_keys)
-    result = store.get_channel(cid)
+    result = _channel_result(cid)
     result['replacement'] = replacement_store.public_status(cid)
     return result
 
@@ -190,7 +217,7 @@ def restore_channel(cid):
     except Exception as e:
         return JSONResponse({"error": f"恢复未完成: {e}"}, status_code=500)
     manager.rebuild()
-    return store.get_channel(cid)
+    return _channel_result(cid)
 
 
 @app.get("/api/channels/{cid}/login")
@@ -284,12 +311,13 @@ def probe_response(cid, fresh):
 def _confirmed_rebuild():
     try:
         code = manager.rebuild()
-    except Exception as exc:
-        detail = f"{type(exc).__name__}: {exc}"
-        return None, JSONResponse({"error": "mihomo reload failed", "reload_status": detail},
+    except Exception:
+        return None, JSONResponse({"error": "规则已保存，同步尚未完成", "saved": True,
+                                  "config_application": config_apply_store.public_status()},
                                   status_code=502)
     if type(code) is not int or not 200 <= code < 300:
-        return code, JSONResponse({"error": "mihomo reload failed", "reload_status": code},
+        return code, JSONResponse({"error": "规则已保存，同步尚未完成", "reload_status": code, "saved": True,
+                                  "config_application": config_apply_store.public_status()},
                                   status_code=502)
     return code, None
 
@@ -414,7 +442,7 @@ def start(cid):
     try:
         if replacement.resume(cid):
             manager.rebuild()
-            return {"ok": True}
+            return _operation_done()
     except Exception as e:
         return JSONResponse({"error": f"启动未完成: {e}"}, status_code=500)
     try:
@@ -429,7 +457,7 @@ def start(cid):
             return JSONResponse({'error': f'原容器启动失败: {e}'}, status_code=500)
         store.set_status(cid, "running")
         manager.rebuild()   # 状态参与 effective_rules 折叠:回运行态要立刻恢复该通道规则
-        return {"ok": True}
+        return _operation_done()
     # Docker outcome 确认前不改 DB；候选和恢复进度由 replacement 单独保存。
     try:
         replacement.replace(ch, {}, force_start=True)
@@ -440,7 +468,7 @@ def start(cid):
         manager.rebuild()   # error 态规则折叠为不生效,配置面须同步,别留半生效
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
     manager.rebuild()
-    return {"ok": True}
+    return _operation_done()
 
 
 @app.post("/api/channels/{cid}/stop")
@@ -452,7 +480,7 @@ def stop(cid):
     # 关容器即关分流:订阅面(provider/PAC)现算会立刻显示折叠,但真正在跑的 mihomo
     # 只有 rebuild 才重写——不重建就是「显示已收掉、实际黑洞照旧」的半生效(红队 H2)。
     manager.rebuild()
-    return {"ok": True}
+    return _operation_done()
 
 
 @app.delete("/api/channels/{cid}")
@@ -462,7 +490,7 @@ def delete(cid):
         manager.remove(cid)
         store.del_channel(cid)
     manager.rebuild()
-    return {"ok": True}
+    return _operation_done()
 
 
 @app.get("/api/config/export")
@@ -663,6 +691,7 @@ def system():
         "controller": f"127.0.0.1:{ctrl_port}" if ctrl_port else None,
         "ui_port": int(os.environ.get("UI_PORT") or 0) or None,
         "bound_ip": "127.0.0.1",
+        "config_application": config_apply_store.public_status(),
     }
 
 

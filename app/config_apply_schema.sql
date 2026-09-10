@@ -21,6 +21,12 @@ END;
 CREATE TRIGGER IF NOT EXISTS config_apply_channel_delete AFTER DELETE ON channels BEGIN
   UPDATE config_apply_state SET source_revision=source_revision+1 WHERE id=1;
 END;
+-- 同名新实例仍使用相同代理配置，但必须刷新 mihomo 的代理服务器 DNS 缓存。
+CREATE TRIGGER IF NOT EXISTS config_apply_channel_runtime AFTER UPDATE OF container_id ON channels
+WHEN OLD.container_id IS NOT NEW.container_id
+BEGIN
+  UPDATE config_apply_state SET source_revision=source_revision+1 WHERE id=1;
+END;
 CREATE TRIGGER IF NOT EXISTS config_apply_channel_update AFTER UPDATE ON channels
 WHEN OLD.id IS NOT NEW.id
   OR (COALESCE(OLD.routing_enabled,1)=0) IS NOT (COALESCE(NEW.routing_enabled,1)=0)

@@ -3,10 +3,8 @@ import yaml
 import store
 
 
-def test_rebuild_emits_domain_and_ip_rules(make_channel, monkeypatch):
+def test_rebuild_emits_domain_and_ip_rules(make_channel, monkeypatch, mihomo_controller):
     import manager
-    monkeypatch.setattr(manager.requests, "put",
-                        lambda *a, **k: type("R", (), {"status_code": 204})())
     store.add_channel(make_channel("c1"))
     store.add_rule("c1", "domain", "weidu-crm.com")
     store.add_rule("c1", "ip", "10.20.0.0/16")
@@ -21,10 +19,8 @@ def test_rebuild_emits_domain_and_ip_rules(make_channel, monkeypatch):
     assert cfg["rules"][-1] == "MATCH,DIRECT"
 
 
-def test_rebuild_skips_disabled(make_channel, monkeypatch):
+def test_rebuild_skips_disabled(make_channel, monkeypatch, mihomo_controller):
     import manager
-    monkeypatch.setattr(manager.requests, "put",
-                        lambda *a, **k: type("R", (), {"status_code": 204})())
     store.add_channel(make_channel("c1"))
     rid = store.add_rule("c1", "domain", "off.com")
     store.set_rule_enabled("c1", rid, False)

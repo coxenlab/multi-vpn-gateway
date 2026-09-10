@@ -75,6 +75,58 @@ def make_channel():
 
 
 @pytest.fixture
+def mihomo_controller(monkeypatch, tmp_path):
+    """控制器替身只验证调用协议与故障补偿；真实 mihomo 验收另行执行。"""
+    import copy
+    import manager
+    import yaml
+    path = tmp_path / "config.yaml"
+    monkeypatch.setattr(manager, "CFG", str(path))
+    monkeypatch.setenv("MIHOMO_CONFIG_PATH", str(path))
+    state = {"config": {"proxies": [], "rules": ["MATCH,DIRECT"]}, "puts": 0, "flushes": 0, "reject": False, "lost_ack": False}
+
+    class Response:
+        def __init__(self, data, status=200):
+            self.data, self.status_code = data, status
+        def json(self): return copy.deepcopy(self.data)
+        def raise_for_status(self):
+            if self.status_code >= 400: raise requests.HTTPError("fixture rejection")
+
+    def put(url, **kw):
+        assert url.endswith('/configs') and kw['params'] == {'force': 'true'}
+        assert 'payload' in kw['json'] and 'path' not in kw['json']
+        state['puts'] += 1
+        if state['reject']: return Response({}, 400)
+        state['config'] = yaml.safe_load(kw['json']['payload'])
+        if state['lost_ack']: raise requests.Timeout('fixture lost ACK')
+        return Response({}, 204)
+
+    def get(url, **kw):
+        config = state['config']
+        if url.endswith('/proxies'):
+            return Response({'proxies': {p['name']: {'type': 'Socks5' if p['type'] == 'socks5' else 'Direct'} for p in config['proxies']}})
+        if url.endswith('/configs'): return Response({'mode': config.get('mode', 'rule')})
+        assert url.endswith('/rules')
+        rules = []
+        for value in config['rules']:
+            parts = value.split(',')
+            kind, payload, proxy = ('Match', '', parts[1]) if parts[0] == 'MATCH' else (
+                'DomainSuffix' if parts[0] == 'DOMAIN-SUFFIX' else 'IPCIDR', parts[1], parts[2])
+            rules.append({'type': kind, 'payload': payload, 'proxy': proxy, 'extra': {'disabled': state.get('disabled', False)}})
+        return Response({'rules': rules})
+
+    def post(url, **kw):
+        assert url.endswith('/cache/dns/flush')
+        state['flushes'] += 1
+        return Response({}, 503 if state.get('reject_flush') else 204)
+
+    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(requests, "put", put)
+    monkeypatch.setattr(requests, "get", get)
+    return state
+
+
+@pytest.fixture
 def client(monkeypatch):
     import manager, replacement
     monkeypatch.setattr(manager, "rebuild", lambda: 204)

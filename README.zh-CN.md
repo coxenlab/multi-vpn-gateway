@@ -22,7 +22,7 @@
 
 - **登录**:有头客户端(EasyConnect / aTrust,或 BYO 桌面)跑 noVNC,在浏览器里完成企业 VPN 的交互式登录(支持「重新登录」应对设备重绑);无头客户端经注入凭据登录,无 noVNC。
 - **判活**:后端经 SOCKS5 探活(`socks5h` 远程解析 `probe_url`)判定是否真连上内网——而非「VNC 连上了」。
-- **热加载**:加 / 改分流规则后,mihomo 配置热重载,**不断现有连接**。
+- **配置同步**:规则变更使用热加载；相同有效配置读回一致时不重复加载。页面区分已保存与已确认同步，失败可重试，保留上次可用启动配置。
 
 没有 Clash 时也能用「入口接入」:把系统 / 浏览器代理直接指向本工具 mihomo(`/entry/proxy.pac`,或 `/api/entry/setup-commands` 给的各平台一键命令),命中规则的流量走 VPN、其余直连。
 
@@ -141,7 +141,8 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | GET \| PUT | `/api/channels/{cid}/note` | 登录备注 `{note}`；加密存储，仅此端点读回，通道列表不暴露正文 |
 | GET | `/api/config/export` | 导出通道与规则；含自动登录所需凭据，文件须妥善保管 |
 | POST | `/api/config/import` | 导入后为停止状态，按需启动；返回已导入与跳过项 |
-| GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址；桌面额外含 `usernet` 低频诊断缓存及 `egress_guard_checked_at` / `egress_guard_applied` 最近守卫核对结果 |
+| POST | `/api/config/retry` | 重试已保存规则的同步，读回托管规则/代理并保存启动配置 |
+| GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址，以及 `config_application` 的待同步状态、确认代次和时间；桌面额外含 `usernet` 低频诊断缓存及最近守卫核对结果 |
 | POST | `/api/system/self-heal` | 桌面版内存态自愈动作开关(`enabled`)；重开 app 自动恢复 |
 | GET \| POST | `/api/routing` | 桌面版持久化全直连总开关(`{off}`)；不改规则原始启停状态 |
 | GET | `/api/connections` | mihomo 实时连接 |
