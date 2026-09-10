@@ -535,6 +535,12 @@ pub fn set_config_field(
     // RMW 收进 IMMEDIATE 事务:并发写 config(如「保存备注」与「键入自动留档」)
     // 裸读改写会整体回退掉对方刚写入的 secret 字段(红队 M10)。
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    set_config_field_on(&tx, &f, cid, field, value, secret)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn set_config_field_on(tx: &Connection, f: &fernet::Fernet, cid: &str, field: &str, value: &str, secret: bool) -> anyhow::Result<()> {
     let raw: Option<String> = tx
         .query_row("SELECT config_json FROM channels WHERE id=?1", [cid], |r| {
             r.get::<_, Option<String>>(0)
@@ -570,7 +576,6 @@ pub fn set_config_field(
         "UPDATE channels SET config_json=?1 WHERE id=?2",
         rusqlite::params![obj.to_string(), cid],
     )?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -714,24 +719,25 @@ pub fn update_channel(
     secret_keys: &[String],
 ) -> anyhow::Result<()> {
     let f = fernet_for(key)?;
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     {
-        let conn = Connection::open(db)?;
         for col in ["name", "server", "ec_ver", "username", "probe_url"] {
             if let Some(v) = fields.get(col) {
                 let s = clean_field(col, &value_to_string(v));
-                conn.execute(&format!("UPDATE channels SET {col}=?1 WHERE id=?2"), rusqlite::params![s, cid])?;
+                tx.execute(&format!("UPDATE channels SET {col}=?1 WHERE id=?2"), rusqlite::params![s, cid])?;
             }
         }
         if let Some(v) = fields.get("password") {
             let pw = value_to_string(v);
             let enc = if pw.is_empty() { String::new() } else { f.encrypt(pw.as_bytes()) };
-            conn.execute("UPDATE channels SET password_enc=?1 WHERE id=?2", rusqlite::params![enc, cid])?;
+            tx.execute("UPDATE channels SET password_enc=?1 WHERE id=?2", rusqlite::params![enc, cid])?;
         }
         if let Some(v) = fields.get("routing_enabled") {
             let enabled = v
                 .as_bool()
                 .ok_or_else(|| anyhow::anyhow!("routing_enabled must be boolean"))?;
-            conn.execute(
+            tx.execute(
                 "UPDATE channels SET routing_enabled=?1 WHERE id=?2",
                 rusqlite::params![if enabled { 1 } else { 0 }, cid],
             )?;
@@ -743,9 +749,10 @@ pub fn update_channel(
             let is_secret = secret.contains(col);
             let raw = value_to_string(v);
             let value = if is_secret { raw } else { clean_field(col, &raw) };
-            set_config_field(db, key, cid, col, &value, is_secret)?;
+            set_config_field_on(&tx, &f, cid, col, &value, is_secret)?;
         }
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1204,6 +1211,24 @@ mod tests {
         assert_eq!(cfg["username"], "bob");
         let v = serde_json::to_value(&ch).unwrap();
         assert!(v["config"].get("password").is_none());
+    }
+
+    #[test]
+    fn channel_update_rolls_back_columns_when_config_write_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        add_channel(&db, &key, &new_ch("atomic"), &serde_json::Map::new(), &[]).unwrap();
+        let before = serde_json::to_value(get_channel(&db, "atomic").unwrap().unwrap()).unwrap();
+        let password = get_password(&db, &key, "atomic").unwrap();
+        Connection::open(&db).unwrap().execute_batch(
+            "CREATE TRIGGER fail_config BEFORE UPDATE OF config_json ON channels BEGIN SELECT RAISE(ABORT, 'injected config failure'); END"
+        ).unwrap();
+        let fields = json!({"name":"changed","server":"https://new","password":"new"}).as_object().unwrap().clone();
+        assert!(update_channel(&db, &key, "atomic", &fields, &["password".into()]).is_err());
+        assert_eq!(serde_json::to_value(get_channel(&db, "atomic").unwrap().unwrap()).unwrap(), before);
+        assert_eq!(get_password(&db, &key, "atomic").unwrap(), password);
     }
 
     #[test]

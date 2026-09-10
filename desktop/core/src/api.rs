@@ -611,6 +611,11 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
     };
     let db = st.cfg.db_path();
     let fields = b.as_object().cloned().unwrap_or_default();
+    for col in ["name", "server", "username", "password", "ec_ver", "probe_url"] {
+        if fields.get(col).is_some_and(|v| !v.is_string()) {
+            return err_detail(StatusCode::BAD_REQUEST, &format!("{col} must be text"));
+        }
+    }
     if fields.get("routing_enabled").is_some_and(|v| !v.is_boolean()) {
         return err_detail(StatusCode::BAD_REQUEST, "routing_enabled must be boolean");
     }
@@ -629,11 +634,21 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         Err(e) => return err500(&format!("{e}")),
     };
     let sk = secret_keys_of(&ch.vpn_type);
-    let touched = ["server", "username", "password", "ec_ver"].iter().any(|k| fields.contains_key(*k));
-    let routing_changed = fields.contains_key("routing_enabled");
+    let password_changed = if let Some(value) = fields.get("password") {
+        match store::get_password(&db, &key, &cid) {
+            Ok(old) => value.as_str().unwrap_or_default() != old,
+            Err(e) => return err500(&format!("read existing password: {e}")),
+        }
+    } else { false };
+    let touched = password_changed || ["server", "username", "ec_ver"].iter().any(|col| {
+        fields.get(*col).is_some_and(|v| {
+            let old = match *col { "server" => ch.server.as_str(), "username" => ch.username.as_str(), _ => ch.ec_ver.as_deref().unwrap_or_default() };
+            store::clean_field(col, v.as_str().unwrap_or_default()) != old
+        })
+    });
+    let routing_changed = fields.get("routing_enabled").and_then(|v| v.as_bool()).is_some_and(|v| v != ch.routing_enabled);
     // 审计:改前快照 + 提交了哪些字段。密码只记「改没改」,值绝不进日志(命门 #5)。
     let before = channel_snapshot(&ch);
-    let password_changed = fields.contains_key("password");
     let changed_fields: Vec<&str> = fields
         .keys()
         .map(String::as_str)

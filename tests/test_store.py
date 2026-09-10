@@ -1,6 +1,23 @@
 import store
 
 
+def test_channel_update_rolls_back_columns_when_config_write_fails(make_channel):
+    import sqlite3
+    import pytest
+    store.add_channel(make_channel("atomic", password="old"), config={"server": "https://x"})
+    before = store.get_channel("atomic")
+    with store._c() as c:
+        c.execute("CREATE TRIGGER fail_config BEFORE UPDATE OF config_json ON channels BEGIN SELECT RAISE(ABORT, 'injected config failure'); END")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="injected"):
+            store.update_channel("atomic", {"name": "changed", "server": "https://new", "password": "new"}, ["password"])
+        assert store.get_channel("atomic") == before
+        assert store.get_password("atomic") == "old"
+    finally:
+        with store._c() as c:
+            c.execute("DROP TRIGGER fail_config")
+
+
 def test_switch_columns_exist_in_both_stack_schema():
     store.init()
     with store._c() as c:

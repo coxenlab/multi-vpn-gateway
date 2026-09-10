@@ -137,6 +137,13 @@ def update(cid: str, b: dict = Body(...)):
     ch = store.get_channel(cid)
     if not ch:
         return JSONResponse({"error": "not found"}, status_code=404)
+    for key in ("name", "server", "username", "password", "ec_ver", "probe_url"):
+        if key in b and not isinstance(b[key], str):
+            return JSONResponse({"error": f"{key} must be text"}, status_code=400)
+    touched = any(k in b and store._clean_field(k, b[k]) != (ch.get(k) or "")
+                  for k in ("server", "username", "ec_ver"))
+    if "password" in b:
+        touched = touched or b["password"] != store.get_password(cid)
     try:
         spec = registry.get(ch["vpn_type"])
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
@@ -144,7 +151,7 @@ def update(cid: str, b: dict = Body(...)):
         secret_keys = []
     store.update_channel(cid, b, secret_keys=secret_keys)
     # 改了连接相关字段 → 重建容器(oss 凭据从 config 读,只有重建才会重连);否则原样返回
-    if ({"server", "username", "password", "ec_ver"} & set(b.keys())) and ch.get("container_id"):
+    if touched and ch.get("container_id"):
         ch2 = store.get_channel(cid)
         try:
             container_id, novnc = manager.create_channel(ch2, ch2["vnc_password"])

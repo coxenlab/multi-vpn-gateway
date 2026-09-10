@@ -12,6 +12,17 @@ def test_create_channel(client):
     assert "password_enc" not in ch
 
 
+def test_editing_metadata_with_unchanged_connection_fields_does_not_reconnect(client, monkeypatch):
+    import manager
+    cid = _create(client)["id"]
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unchanged connection must not recreate or reload")
+    monkeypatch.setattr(manager, "create_channel", forbidden)
+    monkeypatch.setattr(manager, "rebuild", forbidden)
+    result = client.patch(f"/api/channels/{cid}", json={"name": "new name", "server": " https://x ", "username": "", "ec_ver": "7.6.3", "password": ""})
+    assert result.status_code == 200 and result.json()["name"] == "new name"
+
+
 def test_channels_enriched(client):
     cid = _create(client)["id"]
     client.post(f"/api/channels/{cid}/rules", json={"patterns": ["a.com", "10.0.0.0/8"]})

@@ -153,15 +153,15 @@ def update_channel(cid, fields, secret_keys=()):
         pw = fields["password"]
         sets.append("password_enc=?")
         vals.append(F.encrypt(pw.encode()).decode() if pw else "")
-    if sets:
-        with _c() as c:
+    with _c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        if sets:
             c.execute(f"UPDATE channels SET {', '.join(sets)} WHERE id=?", vals + [cid])
-    # 镜像连接字段到 config_json(oss_connect 从 config 读;密码 secret 加密,不清洗)
-    for k in ("server", "username", "password"):
-        if k in fields:
-            secret = k in sk
-            set_config_field(cid, k, fields[k] if secret else _clean_field(k, fields[k]),
-                             secret=secret)
+        # 列与 config_json 同一事务;任一加密/写入失败都不能留下半更新。
+        for k in ("server", "username", "password"):
+            if k in fields:
+                secret = k in sk
+                _set_config_field(c, cid, k, fields[k] if secret else _clean_field(k, fields[k]), secret)
 
 
 def set_container(cid, container_id, novnc, status):
@@ -229,15 +229,19 @@ def set_config_field(cid, key, value, secret=False):
     裸 RMW 会让并发写(如「保存备注」与「键入自动留档」)整体回退掉对方的 secret 字段(红队 M10)。"""
     with _c() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT config_json FROM channels WHERE id=?", (cid,)).fetchone()
-        raw = row["config_json"] if row and row["config_json"] else ""
-        obj = json.loads(raw) if raw else {"_fields": {}, "_secret": []}
-        obj.setdefault("_fields", {})
-        obj.setdefault("_secret", [])
-        obj["_fields"][key] = F.encrypt(str(value).encode()).decode() if secret else value
-        if secret and key not in obj["_secret"]:
-            obj["_secret"] = sorted(set(obj["_secret"]) | {key})
-        c.execute("UPDATE channels SET config_json=? WHERE id=?", (json.dumps(obj), cid))
+        _set_config_field(c, cid, key, value, secret)
+
+
+def _set_config_field(c, cid, key, value, secret):
+    row = c.execute("SELECT config_json FROM channels WHERE id=?", (cid,)).fetchone()
+    raw = row["config_json"] if row and row["config_json"] else ""
+    obj = json.loads(raw) if raw else {"_fields": {}, "_secret": []}
+    obj.setdefault("_fields", {})
+    obj.setdefault("_secret", [])
+    obj["_fields"][key] = F.encrypt(str(value).encode()).decode() if secret else value
+    if secret and key not in obj["_secret"]:
+        obj["_secret"] = sorted(set(obj["_secret"]) | {key})
+    c.execute("UPDATE channels SET config_json=? WHERE id=?", (json.dumps(obj), cid))
 
 
 def list_channels():
