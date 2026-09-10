@@ -61,7 +61,7 @@ def get(cid):
 def public_status(cid):
     with store._c() as c:
         r = c.execute("SELECT phase FROM channel_replacements WHERE channel_id=?", (cid,)).fetchone()
-    return {"phase": r["phase"], "can_restore": r["phase"] not in ("committed", "rolled_back")} if r else None
+    return {"phase": r["phase"], "can_restore": r["phase"] not in ("committed", "rolled_back", "deleting")} if r else None
 
 
 def advance(record, next_phase, payload):
@@ -110,6 +110,13 @@ def confirm(record):
         c.execute("UPDATE channel_replacements SET phase='committed' WHERE channel_id=?", (record.channel_id,))
 
 
+def resumed(record, runtime):
+    with store._c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        _check(c, record.channel_id, record.operation_id, "awaiting_login")
+        _apply_runtime(c, record.channel_id, runtime)
+
+
 def rolled_back(record, runtime, fields=None, secret_keys=()):
     with store._c() as c:
         c.execute("BEGIN IMMEDIATE")
@@ -128,3 +135,18 @@ def finish(cid, operation):
             if row["operation_id"] != operation or row["phase"] not in ("committed", "rolled_back"):
                 raise RuntimeError("容器替换尚未完成或代次已变化")
             c.execute("DELETE FROM channel_replacements WHERE channel_id=?", (cid,))
+
+
+def request_delete(record):
+    with store._c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        _check(c, record.channel_id, record.operation_id, record.phase)
+        c.execute("UPDATE channel_replacements SET phase='deleting' WHERE channel_id=?", (record.channel_id,))
+
+
+def deleted(record):
+    with store._c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        _check(c, record.channel_id, record.operation_id, 'deleting')
+        for table, column in (("channels", "id"), ("domains", "channel_id"), ("rules", "channel_id"), ("channel_runtime", "channel_id"), ("channel_replacements", "channel_id")):
+            c.execute(f"DELETE FROM {table} WHERE {column}=?", (record.channel_id,))

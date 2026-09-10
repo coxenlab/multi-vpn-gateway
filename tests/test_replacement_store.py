@@ -82,3 +82,17 @@ def test_waiting_for_login_preserves_backup_and_can_restore_fields_atomically(ma
     assert store.get_config("c1")["login_note"] == "saved while logging in"
     with pytest.raises(RuntimeError, match="代次或阶段"):
         journal.confirm(record)
+
+
+def test_delete_requires_replacement_cleanup_and_persists_delete_intent(make_channel):
+    store.add_channel(make_channel("c1"))
+    journal.begin("c1", "op1", {})
+    with pytest.raises(RuntimeError, match="尚未清理"):
+        store.del_channel("c1")
+    record = journal.get("c1")
+    journal.request_delete(record)
+    assert journal.public_status("c1") == {"phase": "deleting", "can_restore": False}
+    with pytest.raises(RuntimeError, match="代次或阶段"):
+        journal.deleted(journal.Record("c1", "stale-operation", "deleting", {}))
+    journal.deleted(journal.get("c1"))
+    assert store.get_channel("c1") is None and journal.get("c1") is None

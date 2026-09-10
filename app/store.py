@@ -262,9 +262,13 @@ def list_channels():
 
 def del_channel(cid):
     with _c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        if c.execute("SELECT 1 FROM channel_replacements WHERE channel_id=?", (cid,)).fetchone():
+            raise RuntimeError("通道替换资源尚未清理")
         c.execute("DELETE FROM channels WHERE id=?", (cid,))
         c.execute("DELETE FROM domains WHERE channel_id=?", (cid,))
         c.execute("DELETE FROM rules WHERE channel_id=?", (cid,))
+        c.execute("DELETE FROM channel_runtime WHERE channel_id=?", (cid,))
 
 
 def _insert_rule(c, cid, kind, pattern):

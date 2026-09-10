@@ -52,6 +52,8 @@ import { loadWithSystem } from "../page-data.js";
     const STATE_ZH = { running: "运行中", exited: "已停止", restarting: "重启中", created: "已创建", paused: "已暂停", missing: "不存在", dead: "已死亡" };
 
     function roleCell(x) {
+      if (x.role === "replacement")
+        return `<div>通道恢复资源</div><div class="role-sub"><a href="channel.html?id=${encodeURIComponent(x.channel_id)}">在通道详情处理</a></div>`;
       if (x.role === "infra")
         return `<div>分流入口</div><div class="role-sub">所有分流经它转发</div>`;
       if (x.role === "channel") {
@@ -81,6 +83,8 @@ import { loadWithSystem } from "../page-data.js";
         const stopped = x.channel_status === "stopped" || x.channel_status === "error" || x.state === "missing" || x.state === "exited";
         if (stopped) b.push(`<button class="btn btn-sm" data-act="start" data-cid="${fb.esc(x.channel_id)}" data-cname="${fb.esc(x.channel_name)}">启动</button>`);
         else b.push(`<button class="btn btn-sm btn-ghost" data-act="stop" data-cid="${fb.esc(x.channel_id)}" data-cname="${fb.esc(x.channel_name)}">停止</button>`);
+        if (x.state !== "missing") b.push(logBtn);
+      } else if (x.role === "replacement") {
         if (x.state !== "missing") b.push(logBtn);
       } else {
         b.push(`<button class="btn btn-sm btn-danger" data-act="clean" data-name="${fb.esc(x.name)}">清理</button>`);

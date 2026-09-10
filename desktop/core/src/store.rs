@@ -803,9 +803,11 @@ pub fn set_latency(db: &Path, cid: &str, ms: i64) -> anyhow::Result<()> {
 pub fn del_channel(db: &Path, cid: &str) -> anyhow::Result<()> {
     let mut conn = Connection::open(db)?;
     let tx = conn.transaction()?;
+    anyhow::ensure!(tx.query_row("SELECT COUNT(*) FROM channel_replacements WHERE channel_id=?1", [cid], |r| r.get::<_, i64>(0))? == 0, "通道替换资源尚未清理");
     tx.execute("DELETE FROM channels WHERE id=?1", [cid])?;
     tx.execute("DELETE FROM domains WHERE channel_id=?1", [cid])?;
     tx.execute("DELETE FROM rules WHERE channel_id=?1", [cid])?;
+    tx.execute("DELETE FROM channel_runtime WHERE channel_id=?1", [cid])?;
     tx.commit()?;
     Ok(())
 }

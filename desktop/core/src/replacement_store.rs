@@ -84,7 +84,7 @@ pub fn get(db: &Path, key: &str, cid: &str) -> Result<Option<Record>> {
 pub fn public_status(db: &Path, cid: &str) -> Result<Option<Value>> {
     let conn = Connection::open(db)?;
     let phase: Option<String> = conn.query_row("SELECT phase FROM channel_replacements WHERE channel_id=?1", [cid], |r| r.get(0)).optional()?;
-    Ok(phase.map(|phase| serde_json::json!({"can_restore":!matches!(phase.as_str(), "committed" | "rolled_back"),"phase":phase})))
+    Ok(phase.map(|phase| serde_json::json!({"can_restore":!matches!(phase.as_str(), "committed" | "rolled_back" | "deleting"),"phase":phase})))
 }
 
 /// 替换过程的旧实例/候选不能被孤儿清理抢先删除；仅读身份列。
@@ -157,6 +157,15 @@ pub fn confirm(db: &Path, record: &Record) -> Result<()> {
     Ok(())
 }
 
+pub fn resumed(db: &Path, record: &Record, runtime: &AppliedRuntime) -> Result<()> {
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    check_operation(&tx, &record.channel_id, &record.operation_id, "awaiting_login")?;
+    apply_runtime(&tx, &record.channel_id, runtime)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// 原配置在准备期间从未改过；只记录已读回确认的恢复运行态，不覆盖期间保存的备注。
 pub fn rolled_back(db: &Path, record: &Record, runtime: &AppliedRuntime) -> Result<()> {
     restore(db, None, record, None, &[], runtime)
@@ -190,10 +199,47 @@ pub fn finish(db: &Path, cid: &str, operation: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn request_delete(db: &Path, record: &Record) -> Result<()> {
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    check_operation(&tx, &record.channel_id, &record.operation_id, &record.phase)?;
+    tx.execute("UPDATE channel_replacements SET phase='deleting' WHERE channel_id=?1", [&record.channel_id])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 仅在替换关联容器全部确认已删除后调用；中断后 deleting 保留，不能恢复成一次登录。
+pub fn deleted(db: &Path, record: &Record) -> Result<()> {
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    check_operation(&tx, &record.channel_id, &record.operation_id, "deleting")?;
+    for (table, column) in [("channels", "id"), ("domains", "channel_id"), ("rules", "channel_id"), ("channel_runtime", "channel_id"), ("channel_replacements", "channel_id")] {
+        tx.execute(&format!("DELETE FROM {table} WHERE {column}=?1"), [&record.channel_id])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn deletion_keeps_its_intent_until_resources_are_confirmed_removed() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap(); let key = crate::store::master_key(dir.path()).unwrap();
+        Connection::open(&db).unwrap().execute("INSERT INTO channels(id,name) VALUES('c1','test')", []).unwrap();
+        begin(&db,&key,"c1","op1",&json!({})).unwrap();
+        assert!(crate::store::del_channel(&db,"c1").is_err());
+        request_delete(&db,&get(&db,&key,"c1").unwrap().unwrap()).unwrap();
+        assert_eq!(public_status(&db,"c1").unwrap().unwrap(),json!({"phase":"deleting","can_restore":false}));
+        let mut record = get(&db,&key,"c1").unwrap().unwrap(); record.operation_id="stale".into();
+        assert!(deleted(&db,&record).is_err());
+        deleted(&db,&get(&db,&key,"c1").unwrap().unwrap()).unwrap();
+        assert!(crate::store::get_channel(&db,"c1").unwrap().is_none());
+        assert!(get(&db,&key,"c1").unwrap().is_none());
+    }
 
     #[test]
     fn pending_login_restore_is_atomic_and_keeps_unrelated_notes() {

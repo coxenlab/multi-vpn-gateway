@@ -144,7 +144,7 @@ def replace(ch, fields, force_start=False):
     operation = uuid.uuid4().hex
     owner = resources.Owner(cid, operation)
     payload = dict(fields=fields, old_fields=old_fields, old_config=old_config, config=config, secrets=secrets,
-                   old_id=old.id, old_volume=volume, old_image=old.image.id,
+                   old_id=old.id, old_volume=volume, old_image=old.image.id, new_image=selected.id,
                    old_running=old.attrs.get('State', {}).get('Running') is True,
                    old_policy=old.attrs.get('HostConfig', {}).get('RestartPolicy', {'Name': 'no'}),
                    start=force_start or ch['status'] != 'stopped', config_applied=False)
@@ -200,6 +200,7 @@ def recover(cid):
     import manager
     dc = manager.dc; record = journal.get(cid)
     if record is None: return
+    if record.phase == 'deleting': raise RuntimeError('通道删除已开始，请重试删除')
     if record.phase in ('committed', 'rolled_back'):
         cleanup(cid); return
     if record.phase != 'rolling_back':
@@ -279,7 +280,9 @@ def cleanup(cid):
 def confirmed(cid):
     """仅由同代次的真实成功探活、在操作锁内调用；重资源清理由后续维护完成。"""
     record = journal.get(cid)
-    if record and record.phase == 'awaiting_login': journal.confirm(record)
+    if record and record.phase == 'awaiting_login':
+        if store.get_channel(cid)['container_id'] != record.payload['new_id']: raise RuntimeError('探活容器与候选代次不匹配')
+        journal.confirm(record)
 
 
 def recover_all():
@@ -287,7 +290,98 @@ def recover_all():
     for record in journal.records():
         try:
             with channel_state.mutation(record.channel_id):
-                if record.phase == 'awaiting_login': continue
-                recover(record.channel_id)
+                if record.phase == 'awaiting_login': reconcile_waiting(record.channel_id)
+                elif record.phase == 'deleting': discard(record.channel_id)
+                else: recover(record.channel_id)
         except Exception:
             LOG.warning('通道 %s 有待恢复的替换操作，保留记录与数据', record.channel_id)
+
+
+def reconcile_waiting(cid):
+    import manager
+    record = journal.get(cid)
+    if record is None or record.phase != 'awaiting_login': return
+    owner = _owner(record); c = _owned(manager.dc, owner, canonical=True)
+    if c is None: raise RuntimeError('待登录候选不存在，请恢复上一次设置')
+    _rename(manager.dc, c, owner.candidate_name, 'vpn-' + cid)
+    if not any(m.get('Name') == owner.volume_name for m in c.attrs.get('Mounts', [])): raise RuntimeError('候选数据卷已变化')
+    record = _advance(record, 'awaiting_login', new_id=c.id)
+    journal.resumed(record, _runtime(c, owner.volume_name, store.get_channel(cid)))
+    if c.attrs.get('State', {}).get('Running'): _policy(c, {'Name': 'unless-stopped'})
+
+
+def resume(cid):
+    """等待登录期间继续使用新设置；不得把启动解释成丢弃新设置或清掉旧备份。"""
+    import manager
+    dc = manager.dc; record = journal.get(cid)
+    if record is None: return False
+    if record.phase in ('committed', 'rolled_back'):
+        cleanup(cid); return False
+    if record.phase != 'awaiting_login': raise RuntimeError('上次操作尚未恢复，请先恢复上一次设置')
+    owner = _owner(record); ch = store.get_channel(cid)
+    c = _owned(dc, owner, canonical=True)
+    if c is not None and c.attrs.get('State', {}).get('Running'):
+        reconcile_waiting(cid); return True
+    volume = dc.volumes.get(owner.volume_name)
+    if not owner.owns(volume.attrs.get('Labels'), 'candidate'): raise RuntimeError('候选数据卷归属已变化')
+    if c is None or c.attrs.get('State', {}).get('Status') != 'created':
+        image = c.image.id if c else record.payload.get('new_image')
+        if not image: raise RuntimeError('待登录候选缺少固定镜像，请恢复上一次设置')
+        dc.images.get(image)
+        kw = manager.channel_plan(ch, ch.get('vnc_password', ''))
+        kw.update(name=owner.candidate_name, image=image, restart_policy={'Name': 'no'})
+        resources.use_volume(kw, owner.volume_name)
+        if c: _remove(dc, c)
+        c = dc.containers.get(resources.create_candidate(dc, kw, owner))
+    record = _advance(record, 'awaiting_login', new_id=c.id)
+    _rename(dc, c, owner.candidate_name, 'vpn-' + cid)
+    _running(c, True)
+    _initialize(manager, c, ch, record.payload['config'])
+    runtime = _runtime(c, owner.volume_name, ch)
+    if runtime.status == 'stopped': raise RuntimeError('候选启动失败，旧资源已保留，可恢复上一次设置')
+    journal.resumed(record, runtime)
+    _policy(c, {'Name': 'unless-stopped'})
+    return True
+
+
+def before_stop(cid):
+    """未提交的异常恢复也必须保持停用意图，不能为停止操作短暂登录旧客户端。"""
+    import manager
+    record = journal.get(cid)
+    if record is None: return
+    if record.phase == 'awaiting_login': return reconcile_waiting(cid)
+    if record.phase == 'deleting': raise RuntimeError('通道删除已开始，请重试删除')
+    if record.phase in ('committed', 'rolled_back'):
+        cleanup(cid); return
+    old = _identity(manager.dc, record.payload['old_id'])
+    _policy(old, {'Name': 'no'}); _running(old, False)
+    record = _advance(record, record.phase, old_running=False, start=False)
+    recover(cid)
+
+
+def discard(cid):
+    """用户删除通道时先清全部关联实例；命名卷按现有删除策略保留。"""
+    import manager
+    dc = manager.dc; record = journal.get(cid)
+    if record is None: return False
+    if record.phase != 'deleting': journal.request_delete(record); record = journal.get(cid)
+    owner = _owner(record); canonical = 'vpn-' + cid
+    containers = {}
+    old = _get(dc, record.payload['old_id'])
+    if old:
+        if old.attrs.get('Name') not in ('/'+canonical, '/'+canonical+'-previous-'+record.operation_id): raise RuntimeError('旧容器名称已变化')
+        if not any(m.get('Name') == record.payload['old_volume'] for m in old.attrs.get('Mounts', [])): raise RuntimeError('旧数据卷已变化')
+        containers[old.id] = old
+    for candidate_owner in (owner, _owner(record, True)):
+        c = _owned(dc, candidate_owner, canonical=True)
+        if c: containers[c.id] = c
+    current = _get(dc, canonical)
+    if current and current.id not in containers: raise RuntimeError('正式容器名已被外部占用')
+    helper = _get(dc, owner.copy_name)
+    if helper:
+        if not owner.owns(helper.attrs.get('Config', {}).get('Labels'), 'copy'): raise RuntimeError('复制容器归属不匹配')
+        _remove(dc, helper)
+    for c in containers.values():
+        _policy(c, {'Name': 'no'}); _remove(dc, c)
+    journal.deleted(record)
+    return True

@@ -90,6 +90,10 @@ pub async fn list(State(st): State<AppState>) -> axum::response::Response {
         ),
     };
     let docker = st.docker();
+    let protected = match crate::replacement_store::protected_names(&db) {
+        Ok(names) => names,
+        Err(e) => return crate::api::err500(&format!("replacement resources: {e}")),
+    };
 
     // docker 侧真实存在的本系统容器名(all=true 含已停止),供孤儿发现
     let mut present: Vec<String> = Vec::new();
@@ -156,7 +160,10 @@ pub async fn list(State(st): State<AppState>) -> axum::response::Response {
             Some(d) => inspect_meta(d, &name).await,
             None => None,
         };
-        out.push(merged(json!({ "name": name, "role": "orphan" }), meta));
+        let base = if let Some(cid) = protected.get(&name) {
+            json!({"name":name,"role":"replacement","channel_id":cid})
+        } else { json!({ "name": name, "role": "orphan" }) };
+        out.push(merged(base, meta));
     }
 
     Json(json!({ "docker_available": docker.is_some(), "containers": out })).into_response()
@@ -187,11 +194,20 @@ pub async fn remove(State(st): State<AppState>, Path(name): Path<String>) -> axu
         return crate::api::err404("not found");
     }
     let db = st.cfg.db_path();
-    let ids: Vec<String> = crate::store::list_channels(&db)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| c.id)
-        .collect();
+    let read_ids = || crate::store::list_channels(&db).map(|rows| rows.into_iter().map(|c| c.id).collect::<Vec<_>>());
+    let ids = match read_ids() { Ok(ids) => ids, Err(e) => return crate::api::err500(&format!("list_channels: {e}")) };
+    // 替换 begin 与清理必须按同一通道锁排序，不能靠锁前读到的孤儿列表删新候选。
+    let cid = ids.iter().find(|cid| name == format!("vpn-{cid}") || name.starts_with(&format!("vpn-{cid}-")) || name.starts_with(&format!("vpn-copy-{cid}-")));
+    let _operation = if let Some(cid) = cid {
+        match st.lifecycle.access(cid).await { Ok(guard) => Some(guard), Err(e) => return crate::api::err503(&e.to_string()) }
+    } else { None };
+    let protected = match crate::replacement_store::protected_names(&db) {
+        Ok(names) => names, Err(e) => return crate::api::err500(&format!("replacement resources: {e}")),
+    };
+    let ids = match read_ids() { Ok(ids) => ids, Err(e) => return crate::api::err500(&format!("list_channels: {e}")) };
+    if protected.contains_key(&name) {
+        return (axum::http::StatusCode::CONFLICT, Json(json!({"error":"容器属于尚未完成的通道替换，请在通道详情中恢复或完成登录"}))).into_response();
+    }
     if !is_orphan(&name, &ids) {
         return (
             axum::http::StatusCode::CONFLICT,
@@ -224,6 +240,26 @@ pub async fn remove(State(st): State<AppState>, Path(name): Path<String>) -> axu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_replacement_cannot_be_removed_as_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into(); cfg.dev_mode = true; cfg.vm_profile = "vpnmgr-test".into();
+        crate::store::init(&cfg.db_path()).unwrap();
+        let key = crate::store::master_key(dir.path()).unwrap();
+        rusqlite::Connection::open(cfg.db_path()).unwrap().execute("INSERT INTO channels(id,name) VALUES('c1','test')", []).unwrap();
+        crate::replacement_store::begin(&cfg.db_path(), &key, "c1", "op1", &json!({})).unwrap();
+        let st = AppState {
+            cfg: std::sync::Arc::new(cfg), lifecycle: Default::default(), docker: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            mihomo: crate::mihomo::Controller::new("http://127.0.0.1:1".into(), String::new()),
+            health: crate::health::shared(), tunnel: crate::tunnel::handle(), novnc: crate::novnc::handle(),
+            self_heal_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        for name in ["vpn-c1-previous-op1", "vpn-c1-next-op1", "vpn-c1-next-op1-restore", "vpn-copy-c1-op1"] {
+            assert_eq!(remove(State(st.clone()), Path(name.into())).await.status(), axum::http::StatusCode::CONFLICT);
+        }
+    }
 
     #[test]
     fn managed_namespace() {
