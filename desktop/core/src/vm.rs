@@ -344,6 +344,147 @@ pub async fn install_rosetta() -> Result<bool> {
     }
 }
 
+// ── 私网出站守卫(VM 层,命门 #8)─────────────────────────────────────────────
+//
+// VM 出站走 lima usernet(gvisor-tap-vsock v0.8.9):其 TCP forwarder 硬编码 maxInFlight=10,
+// 宿主侧 `net.Dial` 无超时且在释放名额前同步阻塞;macOS `net.inet.tcp.keepinit`=75s。容器里
+// 没被隧道 / 客户端代理接管的私网目标(aTrust 探测的内网备用线路、未登录通道的探活、绑定但
+// 服务端未下发的网段)沿默认路由从 eth0 漏到 VM,每个占一个槽 75s;10 个占满,VM 内所有新建
+// TCP 的 SYN 被静默丢弃,全部通道一起「时通时断」、登录报「服务器不可达」(2026-09-10 实测
+// 在途 9 → 建连 3/3、10 → 0/3;上游 issue containers/gvisor-tap-vsock#676,修复 PR #698 已合并
+// 未发布,lima 2.2.0 仍锁 v0.8.9)。
+//
+// 挂在 VM 的 DOCKER-USER 链(FORWARD 首跳)而不是各容器内:约束 VPN Docker 网段的 IPv4 转发,覆盖容器
+// 自发重启(unless-stopped)后的流量;不覆盖 VM OUTPUT、IPv6 或其他网络,不依赖镜像里有 iptables /
+// NET_ADMIN,也不会被 VPN 客户端的 iptables 操作冲掉。REJECT(TCP 回 RST)让容器立即失败而不是
+// 漏出去挂 75s。豁免:docker 网段自身、VM 自己的网段、以及宿主当前直连的局域网网段(这些目标
+// 需要保留合法互通,其中不可达目标仍可能占槽;换网 / 睡醒后更新豁免)。
+// ⚠️ 别改成容器内 `ip route add unreachable`:本机发包先查路由再过 nat OUTPUT,会把 EC 用
+// nat REDIRECT(→4440)接管的网段资源在查路由时就拒掉(客户A实测)。Web 栈跑在 Docker Desktop
+// 上没有 usernet 这个上限,不下发。
+
+const EGRESS_CHAIN: &str = "VPNMGR_EGRESS";
+const PRIVATE_NETS: [&str; 4] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
+
+/// 合成在 VM 内执行的守卫脚本(纯函数,便于测)。`vpn_subnet` = docker VPN 网段;`exempt` =
+/// 额外放行的目标网段(宿主直连局域网)。只在 COMMIT 时替换本链,失败保留旧规则。
+pub fn egress_guard_script(vpn_subnet: &str, exempt: &[String]) -> String {
+    let mut sh = String::from("set -e\nIPT='sudo -n iptables -w 5'\n");
+    // VM 侧锁覆盖 restore 与跳转检查,避免两个 app/SSH 调用交错插入重复跳转。
+    sh.push_str("exec 9>/tmp/vpnmgr-egress.lock\nflock -w 10 9\n");
+    // VM 自己的网段(usernet 网关 / VM DNS 所在)
+    sh.push_str("VMSUB=$(ip -4 -o addr show eth0 | awk 'NR==1{print $4}')\n[ -n \"$VMSUB\" ]\n");
+    sh.push_str(&format!("sudo -n iptables-restore --noflush -w 5 <<VPNMGR_RULES\n*filter\n:{c} - [0:0]\n", c = EGRESS_CHAIN));
+    sh.push_str(&format!("-A {c} -d {s} -j RETURN\n", c = EGRESS_CHAIN, s = vpn_subnet));
+    sh.push_str(&format!(
+        "-A {c} -d $VMSUB -j RETURN\n",
+        c = EGRESS_CHAIN
+    ));
+    for e in exempt {
+        sh.push_str(&format!("-A {c} -d {e} -j RETURN\n", c = EGRESS_CHAIN));
+    }
+    for n in PRIVATE_NETS {
+        sh.push_str(&format!("-A {c} -d {n} -p tcp -j REJECT --reject-with tcp-reset\n", c = EGRESS_CHAIN));
+        sh.push_str(&format!("-A {c} -d {n} -j REJECT --reject-with icmp-net-unreachable\n", c = EGRESS_CHAIN));
+    }
+    sh.push_str("COMMIT\nVPNMGR_RULES\n");
+    sh.push_str(&format!(
+        "$IPT -C DOCKER-USER -s {s} -j {c} 2>/dev/null || $IPT -I DOCKER-USER 1 -s {s} -j {c}; echo VPNMGR_EGRESS_OK",
+        s = vpn_subnet, c = EGRESS_CHAIN
+    ));
+    sh
+}
+
+/// 从 macOS `ifconfig` 输出解析宿主直连的 IPv4 网段(只取 en*/bridge* 之外的物理口 en*;跳过
+/// lo/utun/vmnet/bridge/awdl/llw)。纯函数,便于测。
+pub fn parse_host_lan_subnets(ifconfig: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur_if = String::new();
+    for line in ifconfig.lines() {
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            cur_if = line.split(':').next().unwrap_or("").to_string();
+            continue;
+        }
+        if !cur_if.starts_with("en") {
+            continue;
+        }
+        let t: Vec<&str> = line.split_whitespace().collect();
+        if t.len() >= 4 && t[0] == "inet" && t[2] == "netmask" {
+            let (Ok(ip), Some(mask)) = (t[1].parse::<std::net::Ipv4Addr>(), t[3].strip_prefix("0x")) else { continue };
+            let Ok(mask) = u32::from_str_radix(mask, 16) else { continue };
+            if ip.is_loopback() || ip.is_link_local() || mask == 0 {
+                continue;
+            }
+            let prefix = mask.count_ones();
+            let net = std::net::Ipv4Addr::from(u32::from(ip) & mask);
+            let cidr = format!("{net}/{prefix}");
+            if !out.contains(&cidr) {
+                out.push(cidr);
+            }
+        }
+    }
+    out
+}
+
+async fn host_lan_subnets() -> Vec<String> {
+    let out = Command::new("ifconfig").output().await;
+    match out {
+        Ok(o) => parse_host_lan_subnets(&String::from_utf8_lossy(&o.stdout)),
+        Err(_) => Vec::new(),
+    }
+}
+
+type GuardState = std::sync::Arc<tokio::sync::Mutex<String>>;
+static EGRESS_GUARDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, GuardState>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// 每次调用都实际下发守卫,缓存仅用于日志去重。按 profile 串行,VM 重建也不跳过。
+/// `force` 只要求记录成功事件。经 ssh 进 VM 用 `sudo -n iptables`;
+/// 成功判据是脚本末尾回显的标记(脚本 `set -e`,任一步失败即无标记)。
+pub async fn ensure_egress_guard(profile: &str, vpn_subnet: &str, force: bool) -> Result<()> {
+    let _: ipnet::Ipv4Net = vpn_subnet.parse().map_err(|_| anyhow!("无效 VPN IPv4 网段"))?;
+    let guard = EGRESS_GUARDS.lock().map_err(|_| anyhow!("守卫状态锁不可用"))?
+        .entry(profile.to_owned()).or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(String::new())))
+        .clone();
+    let mut last = guard.lock().await;
+    let cfg = ssh_config_path(profile);
+    if !cfg.exists() {
+        return Err(anyhow!("ssh config 不存在: {}", cfg.display()));
+    }
+    let exempt = host_lan_subnets().await;
+    let script = egress_guard_script(vpn_subnet, &exempt);
+    let out = tokio::time::timeout(
+        Duration::from_secs(20),
+        Command::new("ssh")
+            .kill_on_drop(true)
+            .args([
+                "-F", &cfg.display().to_string(),
+                "-o", "ControlMaster=no",
+                "-o", "ControlPath=none",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=5",
+                &format!("lima-colima-{profile}"),
+                "--", &script,
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow!("ssh 超时(20s)"))?
+    .map_err(|e| anyhow!("ssh: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() || !stdout.lines().any(|s| s == "VPNMGR_EGRESS_OK") {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(anyhow!("守卫脚本未完成: {}", err.trim().lines().last().unwrap_or("(无输出)")));
+    }
+    if force || *last != script {
+        crate::ev!(info, "vm", "egress_guard_applied", "VM 私网出站守卫已下发", {
+            "vpn_subnet": vpn_subnet, "exempt_host_lan": exempt, "profile": profile
+        });
+    }
+    *last = script;
+    Ok(())
+}
+
 /// 确保 VM 在跑(已 Running 则跳过 start)。
 pub async fn ensure_running(profile: &str) -> Result<()> {
     if status(profile).await == VmStatus::Running {
@@ -396,6 +537,38 @@ mod tests {
             socket_path_in("/Users/x", "vpnmgr"),
             PathBuf::from("/Users/x/.colima/vpnmgr/docker.sock")
         );
+    }
+
+    #[test]
+    fn egress_guard_script_shape() {
+        let sh = egress_guard_script("172.18.0.0/16", &["192.168.0.0/24".to_string()]);
+        assert!(sh.starts_with("set -e\n"), "must abort on first failure");
+        assert!(sh.contains("iptables-restore --noflush -w 5"));
+        assert!(!sh.contains("$IPT -F"));
+        assert!(sh.find("COMMIT").unwrap() < sh.find("-C DOCKER-USER").unwrap());
+        assert!(sh.contains("-A VPNMGR_EGRESS -d 172.18.0.0/16 -j RETURN"));
+        assert!(sh.contains("-A VPNMGR_EGRESS -d 192.168.0.0/24 -j RETURN"));
+        for n in PRIVATE_NETS {
+            assert!(sh.contains(&format!("-d {n} -p tcp -j REJECT --reject-with tcp-reset")), "{n}");
+        }
+        assert!(sh.contains("-C DOCKER-USER -s 172.18.0.0/16 -j VPNMGR_EGRESS 2>/dev/null || $IPT -I DOCKER-USER 1"));
+        assert!(sh.ends_with("echo VPNMGR_EGRESS_OK"));
+        // 豁免必须排在 REJECT 前面
+        assert!(sh.find("192.168.0.0/24 -j RETURN").unwrap() < sh.find("-j REJECT").unwrap());
+        // 打印出来供手工下发核对(cargo test -- --nocapture)
+        println!("EGRESS_GUARD_SCRIPT={sh}");
+    }
+
+    #[test]
+    fn parse_host_lan_subnets_from_ifconfig() {
+        let out = "lo0: flags=8049<UP,LOOPBACK> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n\
+en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 192.168.7.14 netmask 0xffffff00 broadcast 192.168.7.255\n\
+en5: flags=8863<UP> mtu 1500\n\tinet 10.1.2.3 netmask 0xfffff000 broadcast 10.1.15.255\n\
+utun4: flags=8051<UP,POINTOPOINT> mtu 1420\n\tinet 10.66.0.2 --> 10.66.0.2 netmask 0xffffffff\n\
+bridge100: flags=8863<UP> mtu 1500\n\tinet 192.168.64.1 netmask 0xffffff00 broadcast 192.168.64.255\n\
+en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n";
+        let got = parse_host_lan_subnets(out);
+        assert_eq!(got, vec!["192.168.7.0/24".to_string(), "10.1.0.0/20".to_string()]);
     }
 
     #[test]

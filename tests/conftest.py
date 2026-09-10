@@ -1,22 +1,44 @@
 import os
 import tempfile
+from pathlib import Path
 
 # 必须在 import store/main/manager 之前设好环境(它们在模块级读 env)
 _TMP = tempfile.mkdtemp(prefix="vpnmgr-test-")
-os.environ.setdefault("DATA_DIR", _TMP)
-os.environ.setdefault("VPN_NET", "testnet")
-os.environ.setdefault("MIHOMO_CTRL_URL", "http://mihomo-test:9090")
-os.environ.setdefault("MIHOMO_SECRET", "test-secret")
-os.environ.setdefault("MIHOMO_CONFIG_PATH", os.path.join(_TMP, "config.yaml"))
-os.environ.setdefault("MIHOMO_HOST_PORT", "48721")
-os.environ.setdefault("MIHOMO_CTRL_PORT", "20933")
-os.environ.setdefault("UI_PORT", "42411")
+os.environ["DATA_DIR"] = _TMP
+os.environ["VPN_NET"] = "testnet"
+os.environ["MIHOMO_CTRL_URL"] = "http://mihomo-test:9090"
+os.environ["MIHOMO_SECRET"] = "test-secret"
+os.environ["MIHOMO_CONFIG_PATH"] = os.path.join(_TMP, "config.yaml")
+os.environ["MIHOMO_HOST_PORT"] = "48721"
+os.environ["MIHOMO_CTRL_PORT"] = "20933"
+os.environ["UI_PORT"] = "42411"
+os.environ["DOCKER_HOST"] = "unix://" + os.path.join(_TMP, "absent-docker.sock")
+assert Path(os.environ["DATA_DIR"]).resolve() == Path(_TMP).resolve()
+assert Path(_TMP).resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 import pytest
 import store
+
+# manager 在 import 时创建 SDK 客户端。显式版本避免 SDK 为自动协商接触真实 daemon。
+import docker
+import requests
+_import_patch = pytest.MonkeyPatch()
+_import_patch.setattr(docker, "from_env", lambda **kw: docker.DockerClient(
+    base_url=os.environ["DOCKER_HOST"], version="1.45"))
+
+
+def pytest_unconfigure(config):
+    _import_patch.undo()
+
+
+@pytest.fixture(autouse=True)
+def no_external_requests(monkeypatch):
+    def blocked(*args, **kwargs):
+        raise AssertionError("单元测试不得访问真实 Docker/网络；请注入替身")
+    monkeypatch.setattr(requests.sessions.Session, "send", blocked)
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +72,7 @@ def client(monkeypatch):
     import manager
     monkeypatch.setattr(manager, "rebuild", lambda: 204)
     monkeypatch.setattr(manager, "create_channel", lambda ch, vnc: ("cid_fake", 18080))
+    monkeypatch.setattr(manager, "stop", lambda cid: None)
     monkeypatch.setattr(manager, "novnc_port", lambda cid: 18080)        # 不碰真 docker:登录 url 用此端口
     monkeypatch.setattr(manager, "ensure_novnc_bridge", lambda cid: None)
     monkeypatch.setattr(manager, "probe", lambda ch: (True, 42))

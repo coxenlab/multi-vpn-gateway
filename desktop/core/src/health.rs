@@ -460,6 +460,19 @@ async fn vm_side_probe(state: &AppState) -> String {
     }
 }
 
+/// 看门狗 / 启动共用:取 VPN 网段后下发 VM 层守卫;失败只记事件(看门狗下一拍再试)。
+pub async fn ensure_egress_guard(state: crate::AppState, force: bool) {
+    let Some(docker) = state.docker() else { return };
+    let Some(subnet) = crate::docker::network_subnet(&docker, &state.cfg.vpn_net).await else {
+        crate::ev!(warn, "vm", "egress_guard_failed", "VM 私网出站守卫未下发:取不到 VPN 网段", { "net": state.cfg.vpn_net.clone() });
+        return;
+    };
+    if let Err(e) = crate::vm::ensure_egress_guard(crate::vm::PROFILE, &subnet, force).await {
+        crate::ev!(warn, "vm", "egress_guard_failed",
+            "VM 私网出站守卫未下发:容器漏出的私网连接会占满 VM 出站槽位", { "error": e.to_string() });
+    }
+}
+
 /// VM 出站(usernet)探活:经**独立** SSH 从 VM 内对稳定公网锚点发真实 TCP 建连
 /// (223.5.5.5 / 119.29.29.29 的 443,均为国内公共 DNS 的 anycast,只发 SYN 握手即断,
 /// 任一成功即算通)。走 usernet 用户态 NAT 的完整出站路径——这正是宿主换网后会
@@ -612,6 +625,14 @@ pub fn spawn(state: AppState) {
             }
             last_health = Some(health);
 
+            // VM 层私网出站守卫(命门 #8):每分钟经 SSH 幂等下发;睡醒 / 换网立即重下发
+            // (豁免的宿主局域网段随之更新)。VM 已死时跳过(归 vm_down)。
+            // 有意放在「暂停自动修复」分支之前:守卫是防容器漏私网连接占死 VM 出站的基础防护,
+            // 不是一次自愈动作,暂停自愈期间照样下发(2026-09-10 用户拍板;设置页开关说明同步写明)。
+            if ensure_due && health != GatewayHealth::VmDown {
+                tokio::spawn(ensure_egress_guard(state.clone(), woke));
+            }
+
             // VM 出站僵死检测:与分流口健康正交(僵死时 docker ping/分流口全绿),每 3 拍
             // (60s)一探;睡醒拍立探——换网/睡醒正是僵死的诱因。VM 已死时跳过(归 vm_down)。
             if health != GatewayHealth::VmDown && (woke || tick_count.is_multiple_of(3)) {
@@ -628,7 +649,7 @@ pub fn spawn(state: AppState) {
                         if !egress_dead && egress_fail_streak >= EGRESS_FAIL_BEFORE_DEAD {
                             egress_dead = true;
                             crate::ev!(error, "watchdog", "vm_egress_dead",
-                                "VM 出站僵死(常见于换网/睡醒后,不会自愈):通道会表现为已登录但探活不过。请退出并重新打开 app 重建 VM",
+                                "连续 3 次出站检测失败（约 2 分钟）:通道可能表现为已登录但内网不通或无法登录。可能原因包括不可达目标占用 VM 出站拨号槽位;若基础防护在位仍持续失败,可退出并重新打开 app 重建 VM",
                                 { "fail_streak": egress_fail_streak });
                         }
                     }

@@ -91,6 +91,8 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 7. **代理命名**:外层用户 Clash 里那个节点叫 `vpn-router`(= 整个 mihomo 实例的分流端口);内层 mihomo 里每条通道是 `ch-{id}` 的 socks5 代理。别混淆。
 
+8. **VM 层私网出站守卫(桌面栈)**:`vm::ensure_egress_guard`(`desktop/core/src/vm.rs`)经 ssh 在 lima VM 的 `DOCKER-USER` 链(FORWARD 首跳)下发 `VPNMGR_EGRESS`:来自 VPN 网段、目标为 10/8、172.16/12、192.168/16、100.64/10 的转发 → REJECT(TCP 回 RST);豁免 docker 网段、VM 自身网段、宿主当前直连的局域网段。app 启动时强制下发,看门狗每分钟核对、睡醒 / 换网强制重下发(`health::ensure_egress_guard`)。**原因**:VM 出站走 lima usernet(gvisor-tap-vsock v0.8.9),其 TCP forwarder 硬编码在途上限 10、宿主侧拨号无超时,macOS 对不可达地址 connect 75s 才超时;容器里没被隧道 / 客户端代理接管的私网目标(aTrust 探测的内网备用线路、未登录通道的探活、绑定但未下发的网段)漏到 VM 出口每个占一个槽,10 个占满整 VM 新建 TCP 全丢 SYN、所有通道一起「时通时断」(2026-09-10 实测在途 9→3/3、10→0/3;上游 issue containers/gvisor-tap-vsock#676,修复 PR #698 已合并未发布)。**为什么在 VM 层而不是容器内**:一条规则覆盖全部容器、docker 自发的容器重启(unless-stopped 起来的容器网络命名空间是空的)、同 VPN 网段的探活容器,不依赖镜像有 iptables / NET_ADMIN。⚠️ 别改成容器内 `ip route add unreachable`:本机发包先查路由再过 nat OUTPUT,会把 EC 用 nat REDIRECT(→4440)接管的网段资源拒掉(客户A实测)。Web 栈跑在 Docker Desktop 上没有这个上限,不下发。
+
 ## HTTP API
 
 Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `desktop/core/src/server.rs` 为事实源。完整端点表见 [README](../README.zh-CN.md#http-api)。要点:

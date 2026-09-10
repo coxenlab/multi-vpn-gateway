@@ -460,6 +460,11 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     let docker = state
         .docker()
         .ok_or_else(|| BootFailure::new(BootStep::Docker, "容器引擎连接未建立", &docker_log))?;
+    // 网络与基础防护先于任何镜像加载/下载,已有容器的恢复不依赖镜像源可达。
+    vpnmgr_core::docker::create_bridge_network(&docker, &state.cfg.vpn_net)
+        .await
+        .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
+    vpnmgr_core::health::ensure_egress_guard(state.clone(), true).await;
     reporter.update(BootStep::Docker, BootStatus::Done, "容器引擎已就绪");
     boot_step_done(BootStep::Docker, docker_started, "done");
 

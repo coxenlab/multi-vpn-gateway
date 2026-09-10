@@ -250,6 +250,15 @@ pub async fn container_ip_on_net(docker: &Docker, name: &str, net: &str) -> Opti
     if ip.is_empty() { None } else { Some(ip) }
 }
 
+/// 某 docker 网络的首个 IPv4 子网(如 `172.18.0.0/16`);网络不存在或无 IPAM 配置 → None。
+pub async fn network_subnet(docker: &Docker, net: &str) -> Option<String> {
+    let info = docker.inspect_network(net, None::<InspectNetworkOptions<String>>).await.ok()?;
+    let cfgs = info.ipam?.config?;
+    cfgs.into_iter()
+        .filter_map(|c| c.subnet)
+        .find(|s| s.contains('.'))
+}
+
 pub async fn exec_capture(docker: &Docker, name: &str, cmd: Vec<&str>) -> Result<String> {
     let exec = docker
         .create_exec(name, CreateExecOptions {

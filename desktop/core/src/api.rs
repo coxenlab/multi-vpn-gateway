@@ -458,7 +458,24 @@ async fn provision_with_docker(
     Ok((id, novnc))
 }
 
+/// 改状态的处理函数(create/start/stop/delete)统一脱离 HTTP 请求生命周期:前端跳转 / 刷新会
+/// 取消请求,axum 随之丢弃处理中的 future,留下「容器已动、库未写、无审计」的半完成状态
+/// (2026-09-10 客户C实例)。spawn 后 await:客户端断开也不取消。
+async fn detached(
+    name: &str,
+    fut: impl std::future::Future<Output = axum::response::Response> + Send + 'static,
+) -> axum::response::Response {
+    match tokio::spawn(fut).await {
+        Ok(r) => r,
+        Err(e) => err500(&format!("{name} task: {e}")),
+    }
+}
+
 pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    detached("create", create_inner(st, b)).await
+}
+
+async fn create_inner(st: AppState, b: Value) -> axum::response::Response {
     let started = std::time::Instant::now();
     let db = st.cfg.db_path();
     let key = match store::master_key(&st.cfg.data_dir) {
@@ -869,6 +886,10 @@ pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum
 // ── start / stop / delete(byo 原地 start;hagb/oss 走重建) ──────────────────
 
 pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    detached("start", start_inner(st, cid)).await
+}
+
+async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(c)) => c,
@@ -960,6 +981,10 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
 }
 
 pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    detached("stop", stop_inner(st, cid)).await
+}
+
+async fn stop_inner(st: AppState, cid: String) -> axum::response::Response {
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(ch)) => ch,
@@ -1013,6 +1038,10 @@ pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::
 }
 
 pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    detached("delete", delete_inner(st, cid)).await
+}
+
+async fn delete_inner(st: AppState, cid: String) -> axum::response::Response {
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(ch)) => ch,
@@ -1796,6 +1825,24 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn detached_operation_finishes_after_request_is_cancelled() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let request = tokio::spawn(detached("test", async move {
+            let _ = started_tx.send(());
+            finish_rx.await.unwrap();
+            let _ = done_tx.send(());
+            Json(json!({"ok": true})).into_response()
+        }));
+        started_rx.await.unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        finish_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), done_rx).await.unwrap().unwrap();
+    }
 
     #[test]
     fn reload_ok_judges_put_file_failure_as_failure() {
