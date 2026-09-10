@@ -748,7 +748,7 @@ pub async fn login(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
         Ok(port) => port,
         Err(e) => return err_detail(StatusCode::BAD_GATEWAY, &format!("noVNC forward: {e}")),
     };
-    Json(json!({ "url": webutil::login_url(port, &ch.vnc_password.unwrap_or_default()) })).into_response()
+    Json(json!({ "url": webutil::login_url(port, &ch.vnc_password.unwrap_or_default(), &ch.vpn_type) })).into_response()
 }
 
 pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp: Multipart) -> axum::response::Response {

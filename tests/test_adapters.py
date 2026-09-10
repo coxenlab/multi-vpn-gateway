@@ -22,7 +22,7 @@ def test_easyconnect_kwargs_match_legacy():
         "cap_add": ["NET_ADMIN"],
         "environment": {"USE_NOVNC": "1", "PASSWORD": "vncpw01", "EXIT": "",
                         "FAKE_HWADDR": "02:00:00:00:00:01", "EC_VER": "7.6.3",
-                        "DISABLE_PKG_VERSION_XML": "1", "VNC_SIZE": "1110x620"},
+                        "DISABLE_PKG_VERSION_XML": "1"},
         "hostname": "abc123",
         "volumes": {"vpndata-abc123": {"bind": "/root", "mode": "rw"}},
         "ports": {"8080/tcp": ("127.0.0.1", None)},

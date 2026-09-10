@@ -179,9 +179,10 @@ pub fn plan_rules(patterns: &[String], forced: Option<&str>, existing: &[(String
 
 /// 对照 main.py login 的 url 构造(命门 #4:Web 栈用 Docker loopback 映射；桌面栈由 app SSH 转发持有端口)。
 /// path 须带尾斜杠:镜像内 tinyproxy 把 /websockify 301→/websockify/,WS 握手不跟随 301。
-pub fn login_url(port: i64, vnc_password: &str) -> String {
+pub fn login_url(port: i64, vnc_password: &str, vpn_type: &str) -> String {
+    let resize = if vpn_type == "atrust" { "scale" } else { "remote" };
     format!(
-        "http://127.0.0.1:{port}/vnc.html?path=websockify/&autoconnect=true&resize=scale&password={vnc_password}"
+        "http://127.0.0.1:{port}/vnc.html?path=websockify/&autoconnect=true&resize={resize}&password={vnc_password}"
     )
 }
 
@@ -451,12 +452,13 @@ mod tests {
 
     #[test]
     fn login_url_has_websockify_path_and_password() {
-        let u = login_url(45678, "deadbeef");
+        let u = login_url(45678, "deadbeef", "atrust");
         assert!(u.contains("127.0.0.1:45678/vnc.html"));
         assert!(u.contains("path=websockify/"), "尾斜杠不可少(tinyproxy 301 不被 WS 跟随)");
         assert!(u.contains("autoconnect=true"));
         assert!(u.contains("resize=scale"));
         assert!(u.contains("password=deadbeef"));
+        assert!(login_url(45678, "deadbeef", "easyconnect").contains("resize=remote"));
     }
 
     fn rl(kind: &str, pat: &str, en: i64) -> crate::store::Rule {

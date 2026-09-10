@@ -172,8 +172,9 @@ def login(cid):
     manager.ensure_novnc_bridge(cid)   # arm64 镜像 websockify 自愈,否则 noVNC 连不上
     # path 必须带尾斜杠:镜像内 tinyproxy 把 /websockify 301 重定向到 /websockify/,
     # 而 WebSocket 握手不跟随 301 → 不加斜杠会「无法连接到服务器」。
+    resize = "scale" if ch["vpn_type"] == "atrust" else "remote"
     url = (f"http://127.0.0.1:{port}/vnc.html"
-           f"?path=websockify/&autoconnect=true&resize=scale&password={ch['vnc_password']}")
+           f"?path=websockify/&autoconnect=true&resize={resize}&password={ch['vnc_password']}")
     return {"url": url}
 
 

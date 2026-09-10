@@ -79,7 +79,9 @@ def test_login_url(client):
     cid = _create(client)["id"]
     j = client.get(f"/api/channels/{cid}/login").json()
     assert "/vnc.html" in j["url"] and "127.0.0.1:18080" in j["url"]
-    assert "resize=scale" in j["url"]
+    assert "resize=remote" in j["url"]
+    atrust = _create(client, vpn_type="atrust")["id"]
+    assert "resize=scale" in client.get(f"/api/channels/{atrust}/login").json()["url"]
 
 
 def test_logs(client):
