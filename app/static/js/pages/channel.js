@@ -139,6 +139,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     let vncUrl = null;
     const vncStageTemplate = $("#vnc-stage").cloneNode(true);
     const vncView = createVncLifecycle({
+      channelId: () => ch.id,
       isActive: () => ch && ch.status !== "stopped" && ch.login_method !== "headless"
         && document.querySelector('.tab[data-tab="login"]').classList.contains("active"),
       open: loadVnc,
@@ -149,11 +150,11 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         vncUrl = null;
       },
     });
-    async function loadVnc({ signal, current }) {
+    async function loadVnc({ signal, current, login }) {
       const fbHost = $("#vnc-feedback");
       fbHost.replaceChildren(fb.spinner("正在打开登录窗口…"));
       try {
-        const res = await api.login(ch.id);
+        const res = await login();
         if (!current()) return;
         if (res.login_mode === "headless" || !res.url) {
           fbHost.innerHTML = "";

@@ -594,7 +594,7 @@ pub fn spawn(state: AppState) {
                 Ok(None) => {}
                 Err(e) => { crate::ev!(warn, "tunnel", "tunnel_check_failed", "SSH 转发进程状态检查失败", { "error": e.to_string() }); }
             }
-            // 暂停时仍清理/记录已退出的 noVNC 进程，只由 watchdog_tick 内部开关挡住 ensure 动作。
+            // 暂停时仍回收无人观看/过期的 noVNC 入口，只由内部开关挡住恢复动作。
             let ensure_due = self_heal_resumed || woke || tick_count.is_multiple_of(3);
             tokio::spawn(crate::novnc::watchdog_tick(state.clone(), ensure_due));
 

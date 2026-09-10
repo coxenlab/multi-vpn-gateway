@@ -30,8 +30,8 @@
   const TIMEOUT_MS = 25000;
   const LONG_TIMEOUT_MS = 20 * 60 * 1000;
 
-  async function request(method, url, body, { timeout = TIMEOUT_MS } = {}) {
-    const opt = { method, headers: {} };
+  async function request(method, url, body, { timeout = TIMEOUT_MS, keepalive = false } = {}) {
+    const opt = { method, headers: {}, keepalive };
     if (body !== undefined) {
       opt.headers["Content-Type"] = "application/json";
       opt.body = JSON.stringify(body);
@@ -97,7 +97,9 @@
     importConfig: (doc) => req("POST", "/api/config/import", doc),
     create: (data) => req("POST", "/api/channels", data, { timeout: LONG_TIMEOUT_MS }),
     update: (id, data) => req("PATCH", `/api/channels/${id}`, data),
-    login: (id) => req("GET", `/api/channels/${id}/login`),
+    login: (id, { viewer } = {}) => req("GET", `/api/channels/${id}/login${viewer ? "?viewer=" + encodeURIComponent(viewer) : ""}`, undefined, { timeout: 45000 }),
+    renewLoginViewer: (id, viewer) => req("PUT", `/api/channels/${id}/login/viewers/${encodeURIComponent(viewer)}`),
+    releaseLoginViewer: (id, viewer) => req("DELETE", `/api/channels/${id}/login/viewers/${encodeURIComponent(viewer)}`, undefined, { keepalive: true }),
     upload: async (id, file) => {
       const fd = new FormData();
       fd.append("file", file, file.name);

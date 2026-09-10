@@ -31,6 +31,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/connections", get(api::connections))
         .route("/api/channels/:cid/logs", get(api::logs))
         .route("/api/channels/:cid/login", get(api::login))
+        .route("/api/channels/:cid/login/viewers/:viewer", axum::routing::put(api::renew_login_viewer).delete(api::release_login_viewer))
         .route("/api/channels/:cid/upload", axum::routing::post(api::upload))
         .route("/api/channels/:cid/note", get(api::note_get).put(api::note_put))
         .route("/api/channels/:cid/status", get(api::status))
@@ -480,6 +481,23 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
         assert_eq!(v["login_mode"], "headless");
+    }
+
+    #[tokio::test]
+    async fn login_viewer_routes_validate_and_release_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let viewer = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        for (method, uri, expected) in [
+            ("GET", "/api/channels/missing/login?viewer=invalid".to_string(), StatusCode::BAD_REQUEST),
+            ("PUT", format!("/api/channels/missing/login/viewers/{viewer}"), StatusCode::NOT_FOUND),
+            ("DELETE", format!("/api/channels/missing/login/viewers/{viewer}"), StatusCode::OK),
+            ("DELETE", format!("/api/channels/missing/login/viewers/{viewer}"), StatusCode::OK),
+        ] {
+            let response = app.clone().oneshot(Request::builder().method(method).uri(uri).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
     }
 
     #[tokio::test]

@@ -126,6 +126,7 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | POST | `/api/channels` | 建通道并起容器(`name, vpn_type, server, ec_ver, login_method, username, password, probe_url, config{}`) |
 | PATCH | `/api/channels/{cid}` | 修改通道字段；实际变化的连接参数会重建目标容器，名称/验证地址等元信息不重建；桌面另支持 `routing_enabled` |
 | GET | `/api/channels/{cid}/login` | noVNC 登录地址 `{url}`;无头适配器返回 `{login_mode:"headless"}` |
+| PUT / DELETE | `/api/channels/{cid}/login/viewers/{viewer}` | 仅桌面：续期 / 释放 `login?viewer=<UUID>` 获取的观看标识；login 返回 `viewer_id` 和 60 秒有效期；未传标识的旧客户端保留原生命周期 |
 | POST | `/api/channels/{cid}/upload` | multipart 上传 → `{ok, package}`(BYO 安装器经 `put_archive` 落数据卷) |
 | GET | `/api/channels/{cid}/status` | **跑 SOCKS5 探活** → `{status, connected, latency_ms}` |
 | GET | `/api/channels/{cid}/health` | 自动刷新读取共享探活缓存，含 `checked_at` / `stale`；过期先返回旧结果并后台更新，手动检测继续用 `/status` |

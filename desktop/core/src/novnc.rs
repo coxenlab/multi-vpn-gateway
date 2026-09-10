@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use tokio::process::{Child, Command};
@@ -14,13 +14,40 @@ use tokio::sync::Mutex;
 
 use crate::AppState;
 
-pub type Handle = Arc<Mutex<HashMap<String, Child>>>;
-
-pub fn handle() -> Handle {
-    Arc::new(Mutex::new(HashMap::new()))
+#[derive(Default)]
+pub struct Forward {
+    child: Option<Child>,
+    viewers: HashMap<String, Instant>,
+    legacy: bool,
 }
 
-static ENSURE_LOCK: Mutex<()> = Mutex::const_new(());
+impl Forward {
+    fn watched(&mut self, now: Instant) -> bool {
+        self.viewers.retain(|_, expires| *expires > now);
+        self.legacy || !self.viewers.is_empty()
+    }
+}
+
+#[derive(Default)]
+pub struct Pool {
+    forwards: Mutex<HashMap<String, Forward>>,
+    operations: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl Pool {
+    async fn operation(&self, cid: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self.operations.lock().unwrap().entry(cid.into()).or_default().clone();
+        lock.lock_owned().await
+    }
+}
+
+pub type Handle = Arc<Pool>;
+pub const VIEWER_TTL_SECONDS: u64 = 60;
+
+pub fn handle() -> Handle {
+    Arc::new(Pool::default())
+}
+
 static WATCHDOG_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// 让内核挑一个当前空闲的 loopback 高位端口，随即释放；SSH 的
@@ -51,20 +78,72 @@ async fn serves(port: u16) -> bool {
         .unwrap_or(false)
 }
 
-/// 幂等确保某通道 noVNC 入口可用，返回并持久化宿主端口。
-pub async fn ensure(state: &AppState, cid: &str) -> Result<i64> {
-    let _guard = ENSURE_LOCK.lock().await;
+/// 调用方先持有通道 lifecycle.access；旧客户端无 viewer 时保留原有常驻行为。
+pub async fn acquire(state: &AppState, cid: &str, viewer: Option<&str>) -> Result<i64> {
+    let _guard = state.novnc.operation(cid).await;
+    if let Some(viewer) = viewer {
+        anyhow::ensure!(valid_viewer(viewer), "无效的登录视图标识");
+        let mut forwards = state.novnc.forwards.lock().await;
+        if let Some(forward) = forwards.get_mut(cid) {
+            forward.watched(Instant::now());
+            anyhow::ensure!(forward.viewers.contains_key(viewer) || forward.viewers.len() < 64,
+                "同时打开的登录视图过多");
+        }
+    }
+    let port = ensure_bounded(state, cid).await?;
+    let mut forwards = state.novnc.forwards.lock().await;
+    let forward = forwards.entry(cid.into()).or_default();
+    if let Some(viewer) = viewer {
+        forward.viewers.insert(viewer.into(), Instant::now() + Duration::from_secs(VIEWER_TTL_SECONDS));
+    } else {
+        forward.legacy = true;
+    }
+    Ok(port)
+}
+
+pub fn valid_viewer(viewer: &str) -> bool {
+    (32..=64).contains(&viewer.len()) && viewer.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+}
+
+pub async fn renew(state: &AppState, cid: &str, viewer: &str) -> bool {
+    let _guard = state.novnc.operation(cid).await;
+    let mut forwards = state.novnc.forwards.lock().await;
+    let Some(forward) = forwards.get_mut(cid) else { return false; };
+    let now = Instant::now();
+    forward.watched(now);
+    let Some(expires) = forward.viewers.get_mut(viewer) else { return false; };
+    *expires = now + Duration::from_secs(VIEWER_TTL_SECONDS);
+    true
+}
+
+pub async fn release(state: &AppState, cid: &str, viewer: &str) {
+    let _guard = state.novnc.operation(cid).await;
+    let watched = {
+        let mut forwards = state.novnc.forwards.lock().await;
+        let Some(forward) = forwards.get_mut(cid) else { return; };
+        forward.viewers.remove(viewer);
+        forward.watched(Instant::now())
+    };
+    if !watched { drop_for_unlocked(state, cid).await; }
+}
+
+async fn ensure_unlocked(state: &AppState, cid: &str) -> Result<i64> {
     let db = state.cfg.db_path();
     let ch = crate::store::get_channel(&db, cid)?
         .ok_or_else(|| anyhow!("通道不存在:{cid}"))?;
     if ch.login_method == "headless" {
         return Err(anyhow!("无头通道没有 noVNC:{cid}"));
     }
+    anyhow::ensure!(matches!(ch.status.as_str(), "running" | "logged_in"), "通道尚未运行:{cid}");
+    let owned = state.novnc.forwards.lock().await.get(cid).is_some_and(|f| f.child.is_some());
+    let alive = owned && take_exited(state, cid).await?.is_none();
     if let Some(port) = ch.novnc_port.and_then(|value| u16::try_from(value).ok()) {
-        if port != 0 && serves(port).await {
+        if alive && port != 0 && serves(port).await {
             return Ok(i64::from(port));
         }
     }
+    let docker = state.docker().ok_or_else(|| anyhow!("docker 不可用,取不到通道容器 IP"))?;
+    crate::manager::ensure_novnc_bridge(&docker, cid).await;
 
     let mut last = None;
     for attempt in 0..4 {
@@ -85,6 +164,16 @@ pub async fn ensure(state: &AppState, cid: &str) -> Result<i64> {
     Err(error)
 }
 
+async fn ensure_bounded(state: &AppState, cid: &str) -> Result<i64> {
+    match tokio::time::timeout(Duration::from_secs(20), ensure_unlocked(state, cid)).await {
+        Ok(result) => result,
+        Err(_) => {
+            drop_child(state, cid).await;
+            Err(anyhow!("登录入口尚未就绪，请稍后重新打开"))
+        }
+    }
+}
+
 async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
     let docker = state
         .docker()
@@ -99,7 +188,7 @@ async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
         .and_then(|value| u16::try_from(value).ok())
         .filter(|port| *port != 0);
 
-    drop_for_unlocked(state, cid).await;
+    drop_child(state, cid).await;
     let port = old_port.filter(|port| port_available(*port)).unwrap_or(alloc_host_port()?);
     let ssh_config = crate::vm::ssh_config_path(&state.cfg.vm_profile);
     if !ssh_config.exists() {
@@ -119,7 +208,7 @@ async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let child = cmd.spawn().map_err(|error| anyhow!("拉起 noVNC SSH 转发失败:{error}"))?;
-    state.novnc.lock().await.insert(cid.to_string(), child);
+    state.novnc.forwards.lock().await.entry(cid.to_string()).or_default().child = Some(child);
     crate::ev!(info, "novnc", "forward_spawn", "noVNC SSH 转发进程已拉起", {
         "cid": cid, "port": port, "target": forward.guest.as_str()
     });
@@ -127,7 +216,7 @@ async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
     for _ in 0..30 {
         if serves(port).await {
             if let Err(error) = crate::store::set_novnc_port(&db, cid, i64::from(port)) {
-                drop_for_unlocked(state, cid).await;
+                drop_child(state, cid).await;
                 return Err(anyhow!("noVNC 端口落库失败:{error}"));
             }
             crate::ev!(info, "novnc", "forward_ready", "noVNC SSH 转发已就绪", {
@@ -144,7 +233,7 @@ async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    drop_for_unlocked(state, cid).await;
+    drop_child(state, cid).await;
     Err(anyhow!("noVNC SSH 转发已拉起但 HTTP 仍未就绪"))
 }
 
@@ -152,46 +241,53 @@ pub async fn take_exited(
     state: &AppState,
     cid: &str,
 ) -> Result<Option<std::process::ExitStatus>> {
-    let mut children = state.novnc.lock().await;
-    let status = match children.get_mut(cid) {
+    let mut children = state.novnc.forwards.lock().await;
+    let status = match children.get_mut(cid).and_then(|f| f.child.as_mut()) {
         Some(child) => child.try_wait()?,
         None => None,
     };
     if status.is_some() {
-        children.remove(cid);
+        if let Some(forward) = children.get_mut(cid) { forward.child = None; }
     }
     Ok(status)
 }
 
 /// 通道 stop/remove 时回收对应子进程；DB 端口保留，下一次启动优先复用。
 pub async fn drop_for(state: &AppState, cid: &str) {
-    let _guard = ENSURE_LOCK.lock().await;
+    let _guard = state.novnc.operation(cid).await;
     drop_for_unlocked(state, cid).await;
 }
 
 async fn drop_for_unlocked(state: &AppState, cid: &str) {
-    let child = state.novnc.lock().await.remove(cid);
+    let child = state.novnc.forwards.lock().await.remove(cid).and_then(|f| f.child);
+    if let Some(mut child) = child { let _ = child.kill().await; }
+}
+
+async fn drop_child(state: &AppState, cid: &str) {
+    let child = state.novnc.forwards.lock().await.get_mut(cid).and_then(|f| f.child.take());
     if let Some(mut child) = child {
         let _ = child.kill().await;
     }
 }
 
-/// 看门狗每拍清理退出句柄；每三拍或睡眠唤醒时做端到端 ensure。
+/// 每拍回收无人观看的入口；只对仍有观看者的通道做局部恢复。
 pub async fn watchdog_tick(state: AppState, ensure_due: bool) {
     let Ok(_guard) = WATCHDOG_LOCK.try_lock() else { return; };
-    let channels = match crate::store::list_channels(&state.cfg.db_path()) {
-        Ok(channels) => channels,
-        Err(error) => {
-            crate::ev!(warn, "novnc", "forward_failed", "noVNC 看门狗读取通道失败", {
-                "error": error.to_string()
-            });
-            return;
-        }
-    };
-    for channel in channels {
+    let ids: Vec<_> = state.novnc.forwards.lock().await.keys().cloned().collect();
+    for cid in ids {
+        let Ok(_operation) = state.lifecycle.access(&cid).await else { continue; };
+        let _ensure = state.novnc.operation(&cid).await;
+        let watched = state.novnc.forwards.lock().await.get_mut(&cid).is_some_and(|f| f.watched(Instant::now()));
+        if !watched { drop_for_unlocked(&state, &cid).await; continue; }
+        let channel = match crate::store::get_channel(&state.cfg.db_path(), &cid) {
+            Ok(Some(channel)) => channel,
+            Ok(None) => { drop_for_unlocked(&state, &cid).await; continue; }
+            Err(_) => continue,
+        };
         if channel.login_method == "headless"
             || !matches!(channel.status.as_str(), "running" | "logged_in")
         {
+            drop_for_unlocked(&state, &cid).await;
             continue;
         }
         let exited = match take_exited(&state, &channel.id).await {
@@ -209,7 +305,7 @@ pub async fn watchdog_tick(state: AppState, ensure_due: bool) {
             });
         }
         if (ensure_due || exited.is_some()) && state.self_heal_enabled() {
-            if let Err(error) = ensure(&state, &channel.id).await {
+            if let Err(error) = ensure_bounded(&state, &channel.id).await {
                 crate::ev!(error, "novnc", "forward_failed", "noVNC SSH 转发自愈失败", {
                     "cid": channel.id.as_str(), "error": error.to_string()
                 });
@@ -256,7 +352,7 @@ mod tests {
             novnc: handle(),
             self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
-        let guard = ENSURE_LOCK.lock().await;
+        let guard = state.novnc.operation("c1").await;
         let mut task = tokio::spawn({
             let state = state.clone();
             async move { drop_for(&state, "c1").await }
@@ -270,14 +366,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_is_idempotent_when_stored_endpoint_serves() {
+    async fn owned_forward_leases_isolate_viewers_and_expire_without_healing() {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 512];
-            let _ = socket.read(&mut request).await;
-            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await.unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 512];
+                let _ = socket.read(&mut request).await;
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await.unwrap();
+            }
         });
 
         let dir = tempfile::tempdir().unwrap();
@@ -315,7 +413,40 @@ mod tests {
             self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
 
-        assert_eq!(ensure(&state, "c1").await.unwrap(), i64::from(port));
-        assert!(state.novnc.lock().await.is_empty(), "ready probe must not spawn a child");
+        let first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let second = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert!(acquire(&state, "c1", Some(first)).await.is_err(), "unowned listener is not our SSH forward");
+        assert!(state.novnc.forwards.lock().await.is_empty());
+        watchdog_tick(state.clone(), true).await;
+        assert!(state.novnc.forwards.lock().await.is_empty(), "running channel alone must not start noVNC");
+        let child = Command::new("sleep").arg("60").kill_on_drop(true).spawn().unwrap();
+        let pid = child.id().unwrap();
+        state.novnc.forwards.lock().await.insert("c1".into(), Forward { child: Some(child), ..Default::default() });
+        assert_eq!(acquire(&state, "c1", Some(first)).await.unwrap(), i64::from(port));
+        assert_eq!(acquire(&state, "c1", Some(second)).await.unwrap(), i64::from(port));
+        assert_eq!(state.novnc.forwards.lock().await["c1"].child.as_ref().unwrap().id(), Some(pid));
+        release(&state, "other", first).await;
+        release(&state, "c1", first).await;
+        assert!(!renew(&state, "c1", first).await);
+        assert!(renew(&state, "c1", second).await);
+        assert_eq!(state.novnc.forwards.lock().await["c1"].child.as_ref().unwrap().id(), Some(pid));
+        release(&state, "c1", second).await;
+        assert!(state.novnc.forwards.lock().await.is_empty());
+        assert!(!Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().await.unwrap().success());
+
+        let child = Command::new("sleep").arg("60").kill_on_drop(true).spawn().unwrap();
+        state.novnc.forwards.lock().await.insert("c1".into(), Forward {
+            child: Some(child), viewers: HashMap::from([(first.into(), Instant::now())]), legacy: false,
+        });
+        state.set_self_heal_enabled(false);
+        assert!(!renew(&state, "c1", first).await, "expired viewer cannot silently revive");
+        watchdog_tick(state.clone(), false).await;
+        assert!(state.novnc.forwards.lock().await.is_empty(), "expiry cleanup is independent of self-heal");
+
+        state.novnc.forwards.lock().await.insert("c1".into(), Forward { legacy: true, ..Default::default() });
+        watchdog_tick(state.clone(), false).await;
+        assert!(state.novnc.forwards.lock().await.contains_key("c1"), "old clients retain their legacy lifetime");
+        drop_for(&state, "c1").await;
+        server.abort();
     }
 }

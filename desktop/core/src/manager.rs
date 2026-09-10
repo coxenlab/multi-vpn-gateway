@@ -300,7 +300,7 @@ pub async fn logs(docker: &bollard::Docker, cid: &str, tail: i64) -> Vec<String>
 
 // ── Task 4: create_channel + stop/start/remove/novnc_port ─────────────────
 
-/// 对照 create_channel:起容器并(hagb/byo)返回 novnc 端口;oss 返回 None
+/// 起容器，noVNC 端口按需在 login 接口建立。
 /// (凭据注入由调用方紧随其后经 oss_connect 做,见命门 #5)。返回 (container_id, novnc_port)。
 ///
 /// 宿主架构差异:Python 用 `socket.gethostbyname("mihomo")` 设 oss 容器 DNS;Rust core
@@ -333,6 +333,7 @@ pub async fn create_channel(
         None
     };
 
+    crate::novnc::drop_for(state, &ch.id).await;
     let id = crate::docker::create_from_plan(docker, &plan, dns).await?;
 
     if spec.runtime == "hagb" {
@@ -351,13 +352,8 @@ pub async fn create_channel(
             crate::ev!(warn, "manager", "gai_conf_failed", "写入容器 gai.conf(IPv4 优先)失败", { "channel": ch.id.clone(), "error": e.to_string() });
         }
     }
-    if spec.runtime == "oss" {
-        // 凭据注入(oss_connect)在调用方紧随其后做;这里只起容器。
-        return Ok((id, None));
-    }
-    // hagb/byo:容器 8080 不 publish；宿主入口由 app 独立 SSH 子进程持有。
-    let port = crate::novnc::ensure(state, &ch.id).await?;
-    Ok((id, Some(port)))
+    // 显示入口失败不再把已启动的 VPN 容器判为创建失败；oss 凭据仍由调用方注入。
+    Ok((id, None))
 }
 
 /// 对照 docker-py `containers.run()` 的自动拉:镜像已在 VM → 直接返回;否则走镜像源

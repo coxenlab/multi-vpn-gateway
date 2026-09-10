@@ -153,6 +153,7 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | POST | `/api/channels` | create channel + start container (`name, vpn_type, server, ec_ver, login_method, username, password, probe_url, config{}`) |
 | PATCH | `/api/channels/{cid}` | update channel fields; changed connection parameters recreate the target container, while metadata does not; desktop also accepts `routing_enabled` |
 | GET | `/api/channels/{cid}/login` | `{url}` (noVNC) — or `{login_mode:"headless"}` for headless adapters |
+| PUT / DELETE | `/api/channels/{cid}/login/viewers/{viewer}` | desktop only: renew / release a view acquired by `login?viewer=<UUID>`; response includes `viewer_id` and a 60-second lease; no-viewer clients retain legacy lifetime |
 | POST | `/api/channels/{cid}/upload` | multipart upload → `{ok, package}` (BYO installer streamed into the data volume via `put_archive`) |
 | GET | `/api/channels/{cid}/status` | **runs a SOCKS5 probe** → `{status, connected, latency_ms}` |
 | GET | `/api/channels/{cid}/health` | shared probe cache for automatic refresh, with `checked_at` / `stale`; stale results refresh in the background; manual checks still use `/status` |

@@ -35,11 +35,17 @@ impl Lifecycle {
     }
 
     pub async fn mutate(&self, cid: &str) -> anyhow::Result<OwnedMutexGuard<()>> {
+        let guard = self.access(cid).await?;
+        self.slot(cid).generation.fetch_add(1, Ordering::SeqCst);
+        Ok(guard)
+    }
+
+    /// 登录视图等资源操作与启停串行，但不使连通缓存失效。
+    pub async fn access(&self, cid: &str) -> anyhow::Result<OwnedMutexGuard<()>> {
         anyhow::ensure!(!self.closing.load(Ordering::SeqCst), "应用正在退出");
         let slot = self.slot(cid);
         let guard = slot.operation.clone().lock_owned().await;
         anyhow::ensure!(!self.closing.load(Ordering::SeqCst), "应用正在退出");
-        slot.generation.fetch_add(1, Ordering::SeqCst);
         Ok(guard)
     }
 

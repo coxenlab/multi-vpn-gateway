@@ -744,7 +744,17 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
 
 // ── login / upload / status(命门 #1 探活、#5 上传安装器) ────────────────────
 
-pub async fn login(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+#[derive(Deserialize, Default)]
+pub struct LoginQuery { pub viewer: Option<String> }
+
+pub async fn login(State(st): State<AppState>, Path(cid): Path<String>, Query(q): Query<LoginQuery>) -> axum::response::Response {
+    if q.viewer.as_deref().is_some_and(|v| !crate::novnc::valid_viewer(v)) {
+        return err_detail(StatusCode::BAD_REQUEST, "无效的登录视图标识");
+    }
+    let _operation = match st.lifecycle.access(&cid).await {
+        Ok(guard) => guard,
+        Err(e) => return err503(&e.to_string()),
+    };
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(c)) => c,
@@ -754,16 +764,25 @@ pub async fn login(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     if ch.login_method == "headless" {
         return Json(json!({ "login_mode": "headless" })).into_response();
     }
-    let docker = match st.docker() {
-        Some(d) => d,
-        None => return err500("docker unavailable"),
-    };
-    manager::ensure_novnc_bridge(&docker, &cid).await;
-    let port = match crate::novnc::ensure(&st, &cid).await {
+    let port = match crate::novnc::acquire(&st, &cid, q.viewer.as_deref()).await {
         Ok(port) => port,
         Err(e) => return err_detail(StatusCode::BAD_GATEWAY, &format!("noVNC forward: {e}")),
     };
-    Json(json!({ "url": webutil::login_url(port, &ch.vnc_password.unwrap_or_default(), &ch.vpn_type) })).into_response()
+    Json(json!({ "url": webutil::login_url(port, &ch.vnc_password.unwrap_or_default(), &ch.vpn_type),
+        "viewer_id": q.viewer, "viewer_ttl_seconds": crate::novnc::VIEWER_TTL_SECONDS })).into_response()
+}
+
+pub async fn renew_login_viewer(State(st): State<AppState>, Path((cid, viewer)): Path<(String, String)>) -> axum::response::Response {
+    if !crate::novnc::valid_viewer(&viewer) { return err_detail(StatusCode::BAD_REQUEST, "无效的登录视图标识"); }
+    if crate::novnc::renew(&st, &cid, &viewer).await {
+        Json(json!({ "ok": true })).into_response()
+    } else { err404("登录视图已过期，请重新打开") }
+}
+
+pub async fn release_login_viewer(State(st): State<AppState>, Path((cid, viewer)): Path<(String, String)>) -> axum::response::Response {
+    if !crate::novnc::valid_viewer(&viewer) { return err_detail(StatusCode::BAD_REQUEST, "无效的登录视图标识"); }
+    crate::novnc::release(&st, &cid, &viewer).await;
+    Json(json!({ "ok": true })).into_response()
 }
 
 pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp: Multipart) -> axum::response::Response {
@@ -951,10 +970,6 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
             detail["error"] = json!(e.to_string());
             crate::events::audit_failed("channel_start", "通道已启动但状态落库失败", detail);
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
-        }
-        manager::ensure_novnc_bridge(&docker, &cid).await;
-        if let Err(e) = crate::novnc::ensure(&st, &cid).await {
-            return err_detail(StatusCode::BAD_GATEWAY, &format!("noVNC forward: {e}"));
         }
         // 状态联动:byo 原地 start 不走重建路径,也要 rebuild 让停用期折叠掉的规则恢复生效。
         let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;

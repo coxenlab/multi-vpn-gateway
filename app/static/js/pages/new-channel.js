@@ -273,6 +273,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     }
     const vncPlaceholder = $("#vnc-placeholder").cloneNode(true);
     const vncView = createVncLifecycle({
+      channelId: () => createdId,
       isActive: () => createdId && cur === 2 && !isHeadless(),
       open: loadVnc,
       close: () => {
@@ -282,12 +283,12 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         wizVncUrl = null;
       },
     });
-    async function loadVnc({ signal, current }) {
+    async function loadVnc({ signal, current, login }) {
       const ph = document.getElementById("vnc-placeholder");
       $("#vnc-err").innerHTML = "";
       try {
         if (ph) ph.replaceChildren(fb.spinner("正在打开登录窗口…"));
-        const { url } = await api.login(createdId);
+        const { url } = await login();
         if (!current()) return;
         // 容器内登录界面启动慢:探到在伺服再塞 iframe,否则早加载会白屏
         if (ph) ph.replaceChildren(fb.spinner("等待登录界面就绪…首次启动可能需要一两分钟"));
