@@ -48,6 +48,31 @@ def test_probe_no_url():
     assert ok is False and ms is None
 
 
+def test_dns_recovery_still_requires_real_probe(monkeypatch):
+    import manager
+    attempts = iter([(False, None), (False, None)])
+    monkeypatch.setattr(manager, "_probe_once", lambda ch: next(attempts))
+    monkeypatch.setattr(manager, "_recover_hagb_dns", lambda ch: True)
+    assert manager.probe({"id": "c1"}) == (False, None)
+
+
+def test_healthy_probe_does_not_restart_dns_proxy(monkeypatch):
+    import manager
+    monkeypatch.setattr(manager, "_probe_once", lambda ch: (True, 12))
+    def forbidden(ch):
+        raise AssertionError("healthy probe must not attempt recovery")
+    monkeypatch.setattr(manager, "_recover_hagb_dns", forbidden)
+    assert manager.probe({"id": "c1"}) == (True, 12)
+
+
+def test_dns_recovery_retries_original_probe(monkeypatch):
+    import manager
+    attempts = iter([(False, None), (True, 42)])
+    monkeypatch.setattr(manager, "_probe_once", lambda ch: next(attempts))
+    monkeypatch.setattr(manager, "_recover_hagb_dns", lambda ch: True)
+    assert manager.probe({"id": "c1"}) == (True, 42)
+
+
 def test_create_channel_uses_adapter_kwargs(monkeypatch):
     import manager, adapters, registry
 

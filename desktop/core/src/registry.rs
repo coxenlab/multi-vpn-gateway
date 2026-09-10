@@ -25,6 +25,8 @@ pub struct AdapterSpec {
     #[serde(default)]
     pub desc: Option<String>,
     pub runtime: String,
+    #[serde(default)]
+    pub dns_recovery_tun: Option<String>,
     pub image: String,
     #[serde(default)]
     pub versioned: bool,

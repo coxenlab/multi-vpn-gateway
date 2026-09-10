@@ -207,6 +207,39 @@ fn probe_container_name(cid: &str) -> String {
 /// (socks5h 远程解析)打 probe_url。语义不变:容忍自签证书(`-k`)、6s 超时、status<500 才算通。
 /// docker 不可用 / 空 probe_url / 起不来 →(false, None)。
 pub async fn probe(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelPublic) -> (bool, Option<i64>) {
+    let first = probe_once(docker, cfg, ch).await;
+    if !first.0 && recover_hagb_dns(docker, ch).await {
+        // 修复标记不是登录判据:重走原 probe_url 的 SOCKS5 远端解析。
+        return probe_once(docker, cfg, ch).await;
+    }
+    first
+}
+
+const DNS_RECOVERY_SCRIPT: &str = include_str!("../../../app/hagb_dns_recover.sh");
+
+async fn recover_hagb_dns(docker: Option<&bollard::Docker>, ch: &ChannelPublic) -> bool {
+    let Some(docker) = docker else { return false };
+    let Ok(spec) = crate::registry::get(&ch.vpn_type) else { return false };
+    let Some(tun) = spec.dns_recovery_tun else { return false };
+    let Ok(url) = reqwest::Url::parse(&ch.probe_url) else { return false };
+    let Some(host) = url.host_str() else { return false };
+    if host.parse::<std::net::IpAddr>().is_ok() { return false; }
+    let Some(port) = url.port_or_known_default() else { return false };
+    let port = port.to_string();
+    let name = format!("vpn-{}", ch.id);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(18), crate::docker::exec_capture(
+        docker, &name, vec!["timeout", "18", "bash", "-c", DNS_RECOVERY_SCRIPT, "vpnmgr-dns-recover", host, &port, url.scheme(), &tun],
+    )).await;
+    let recovered = matches!(result, Ok(Ok(ref s)) if s.lines().any(|l| l == "VPNMGR_DNS_RECOVERED"));
+    if recovered {
+        crate::ev!(info, "manager", "dns_cache_recovered", "通道域名代理已恢复,重新检测内网连通", { "cid": ch.id });
+    } else if matches!(&result, Err(_) | Ok(Err(_))) || matches!(&result, Ok(Ok(s)) if s.contains("VPNMGR_DNS_START_FAILED") || s.contains("VPNMGR_DNS_NOT_READY") || s.contains("VPNMGR_DNS_OLD_LISTENER_BUSY")) {
+        crate::ev!(warn, "manager", "dns_cache_recovery_failed", "通道域名代理恢复未完成,稍后可重试", { "cid": ch.id });
+    }
+    recovered
+}
+
+async fn probe_once(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelPublic) -> (bool, Option<i64>) {
     if ch.probe_url.is_empty() {
         return (false, None);
     }

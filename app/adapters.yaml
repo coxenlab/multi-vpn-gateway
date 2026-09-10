@@ -5,6 +5,7 @@ adapters:
     label: EasyConnect
     desc: 深信服 EasyConnect
     runtime: hagb
+    dns_recovery_tun: tun0
     image: "hagb/docker-easyconnect:{version}"
     versioned: true
     version_repo: hagb/docker-easyconnect
@@ -30,6 +31,7 @@ adapters:
     label: aTrust
     desc: 深信服 aTrust，在登录窗口手动登录
     runtime: hagb
+    dns_recovery_tun: utun7
     image: "hagb/docker-atrust:latest"   # 上游无版本 tag(只有 latest/vncless)
     versioned: false
     arch: [amd64, arm64]

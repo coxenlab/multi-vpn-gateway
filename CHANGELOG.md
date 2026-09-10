@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Fixed / 修复
+- hagb 通道探活失败后可对照域名/IP 通路恢复 Dante 负 DNS 缓存；按容器代次限制恢复频率，成功仍以原内网 SOCKS 探活为准。
 - **桌面版 VM 出站「时通时断」根因**:VM 出站走 lima usernet(gvisor-tap-vsock v0.8.9),其 TCP forwarder 在途上限硬编码 10、宿主侧拨号无超时,macOS 对不可达地址 connect 75s 才超时。通道容器里没被隧道 / 客户端代理接管的私网目标(aTrust 探测的内网备用线路、未登录通道的探活、绑定但服务端未下发的网段)漏到 VM 出口,10 个即占死整 VM 出站,所有通道一起抖、登录报「服务器不可达」(上游 containers/gvisor-tap-vsock#676,修复 #698 已合并未发布)。现在 app 启动时在 VM 的 `DOCKER-USER` 链下发「私网出站守卫」(来自 VPN 网段、目标为私网且非 docker 网段 / VM 网段 / 宿主直连局域网段 → 立即 REJECT),看门狗每分钟经 SSH 原子下发、睡醒换网立即重下发;覆盖 VPN 网段的 IPv4 转发;不覆盖 VM OUTPUT、其他网络及 IPv6。看门狗提示连续 3 次失败并将拨号占槽标为可能原因。
 - 桌面版通道 `create` / `start` / `stop` / `delete` 处理统一脱离 HTTP 请求生命周期:前端跳转 / 刷新取消请求时不再出现「容器已动、库未写、无审计」的半完成状态。
 

@@ -10,6 +10,9 @@ import requests
 import urllib3
 import yaml
 import docker
+from pathlib import Path
+from urllib.parse import urlsplit
+import ipaddress
 from datetime import datetime, timezone
 
 # 探活不校验证书(verify=False):内网目标多为自签证书,屏蔽随之而来的告警。
@@ -252,7 +255,40 @@ def remove(cid):
         pass
 
 
+_DNS_RECOVERY_SCRIPT = Path(__file__).with_name("hagb_dns_recover.sh").read_text()
+
+
+def _recover_hagb_dns(ch):
+    try:
+        tun = registry.get(ch.get("vpn_type", "")).get("dns_recovery_tun")
+        if not tun:
+            return False
+        url = urlsplit(ch.get("probe_url", ""))
+        host = url.hostname
+        if not host or url.scheme not in ("http", "https"):
+            return False
+        try:
+            ipaddress.ip_address(host)
+            return False
+        except ValueError:
+            pass
+        port = url.port or (443 if url.scheme == "https" else 80)
+        result = dc.containers.get(f"vpn-{ch['id']}").exec_run(
+            ["timeout", "18", "bash", "-c", _DNS_RECOVERY_SCRIPT, "vpnmgr-dns-recover",
+             host.encode("idna").decode(), str(port), url.scheme, tun], user="root")
+        return result.exit_code == 0 and b"VPNMGR_DNS_RECOVERED" in result.output.splitlines()
+    except Exception:
+        return False
+
+
 def probe(ch):
+    first = _probe_once(ch)
+    if not first[0] and _recover_hagb_dns(ch):
+        return _probe_once(ch)  # 恢复动作本身不算登录成功。
+    return first
+
+
+def _probe_once(ch):
     """经该通道 SOCKS5 访问内网探测地址。返回 (通否, 往返毫秒|None)。socks5h=远程解析。"""
     if not ch.get("probe_url"):
         return False, None
