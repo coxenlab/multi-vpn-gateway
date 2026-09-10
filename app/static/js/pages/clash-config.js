@@ -5,6 +5,9 @@ import "../preflightPanel.js";
 import "../environment.js";
 import "../runtime-events.js";
 import { loadWithSystem } from "../page-data.js";
+import { setupUsernetStatus } from "../usernet-status.js";
+
+    const renderUsernetStatus = setupUsernetStatus();
 
     const cmt = (s) => `<span class="cmt">${fb.esc(s)}</span>`;
     const key = (s) => `<span class="key">${fb.esc(s)}</span>`;
@@ -20,6 +23,7 @@ import { loadWithSystem } from "../page-data.js";
       fbHost.appendChild(loading);
       try {
         ({ data: chs, system: sys } = await loadWithSystem());
+        renderUsernetStatus(sys);
       } catch (e) {
         fbHost.innerHTML = "";
         fb.errorBanner(fbHost, { fromError: e, onRetry: boot, retryLabel: "重新加载" });

@@ -74,11 +74,11 @@ pub struct HealthSnapshot {
     pub healing: bool,
     /// 自动自愈已放弃(两级梯子都无效),需手动修复/查诊断。
     pub gave_up: bool,
-    /// VM 出站(usernet 用户态 NAT)僵死:宿主换网(通勤/睡醒)后 lima usernet 的 TCP
-    /// 出口会整体僵死且**永不自愈**(2026-09-01 实测:宿主直连全通、VM 内 0/8 全挂,
-    /// 重启 VM 立愈)。症状伪装成「通道已登录但探活不过」,与分流口健康完全正交,
-    /// 故单列一面旗;修复=重开 app(重建 VM),不在本模块自愈范围。
+    /// 连续出站探测失败，与分流口健康正交；不能独自证明 usernet 槽位占满。
     pub vm_egress_dead: bool,
+    pub usernet: Option<crate::usernet::Snapshot>,
+    pub egress_guard_checked_at: Option<String>,
+    pub egress_guard_applied: Option<bool>,
 }
 
 impl Default for HealthSnapshot {
@@ -90,6 +90,9 @@ impl Default for HealthSnapshot {
             healing: false,
             gave_up: false,
             vm_egress_dead: false,
+            usernet: None,
+            egress_guard_checked_at: None,
+            egress_guard_applied: None,
         }
     }
 }
@@ -462,14 +465,19 @@ async fn vm_side_probe(state: &AppState) -> String {
 
 /// 看门狗 / 启动共用:取 VPN 网段后下发 VM 层守卫;失败只记事件(看门狗下一拍再试)。
 pub async fn ensure_egress_guard(state: crate::AppState, force: bool) {
-    let Some(docker) = state.docker() else { return };
-    let Some(subnet) = crate::docker::network_subnet(&docker, &state.cfg.vpn_net).await else {
-        crate::ev!(warn, "vm", "egress_guard_failed", "VM 私网出站守卫未下发:取不到 VPN 网段", { "net": state.cfg.vpn_net.clone() });
-        return;
-    };
-    if let Err(e) = crate::vm::ensure_egress_guard(&state.cfg.vm_profile, &subnet, force).await {
+    let result = async {
+        let docker = state.docker().ok_or_else(|| anyhow::anyhow!("Docker 连接不可用"))?;
+        let subnet = crate::docker::network_subnet(&docker, &state.cfg.vpn_net).await
+            .ok_or_else(|| anyhow::anyhow!("取不到 VPN 网段"))?;
+        crate::vm::ensure_egress_guard(&state.cfg.vm_profile, &subnet, force).await
+    }.await;
+    if let Ok(mut snap) = state.health.lock() {
+        snap.egress_guard_checked_at = Some(chrono::Utc::now().to_rfc3339());
+        snap.egress_guard_applied = Some(result.is_ok());
+    }
+    if let Err(e) = result {
         crate::ev!(warn, "vm", "egress_guard_failed",
-            "VM 私网出站守卫未下发:容器漏出的私网连接会占满 VM 出站槽位", { "error": e.to_string() });
+            "VM 私网出站守卫未下发:不可达目标可能持续占用出站连接", { "error": e.to_string() });
     }
 }
 
@@ -553,10 +561,11 @@ pub fn spawn(state: AppState) {
         let mut last_health: Option<GatewayHealth> = None;
         let mut self_heal_was_enabled = true;
         let mut tick_count = 0_u64;
-        // VM 出站僵死检测:连续失败计数 + 当前定性(3 次连击 ≈ 3 分钟才转僵死,防瞬时抖动)。
+        // 三次观测通常跨约两分钟；只表示检测失败，不作为槽位耗尽的独立证明。
         const EGRESS_FAIL_BEFORE_DEAD: u32 = 3;
         let mut egress_fail_streak = 0_u32;
         let mut egress_dead = false;
+        let mut usernet = crate::usernet::Sampler::default();
         loop {
             tick.tick().await;
             tick_count = tick_count.wrapping_add(1);
@@ -654,6 +663,20 @@ pub fn spawn(state: AppState) {
                         }
                     }
                     None => {} // SSH 没探成,不计连击(故障域不同,由 vm_down 路径定性)
+                }
+                if let Some(observation) = usernet.sample_if_due(&state.cfg.vm_profile).await {
+                    let was_at_limit = state.health.lock().ok()
+                        .and_then(|s| s.usernet.as_ref().and_then(|u| u.at_default_limit));
+                    if observation.at_default_limit == Some(true) && was_at_limit != Some(true) {
+                        crate::ev!(warn, "watchdog", "usernet_dial_pressure",
+                            "关联 usernet 的 SYN_SENT 数量达到已知版本默认拨号上限；共享网络，来源待定位", {
+                                "network": observation.network, "pid": observation.pid,
+                                "syn_sent": observation.syn_sent, "runtime": observation.runtime,
+                                "destinations": observation.destinations,
+                                "attribution": observation.attribution
+                            });
+                    }
+                    if let Ok(mut snap) = state.health.lock() { snap.usernet = Some(observation); }
                 }
             }
 

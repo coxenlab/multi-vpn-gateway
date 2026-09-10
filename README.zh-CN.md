@@ -135,7 +135,7 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | POST | `/api/channels/{cid}/start` \| `/stop` | 起 / 停容器 → `{ok}` |
 | DELETE | `/api/channels/{cid}` | 删通道 → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | 容器日志 → `{lines}` |
-| GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址 |
+| GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址；桌面额外含 `usernet` 低频诊断缓存及 `egress_guard_checked_at` / `egress_guard_applied` 最近守卫核对结果 |
 | POST | `/api/system/self-heal` | 桌面版内存态自愈动作开关(`enabled`)；重开 app 自动恢复 |
 | GET \| POST | `/api/routing` | 桌面版持久化全直连总开关(`{off}`)；不改规则原始启停状态 |
 | GET | `/api/connections` | mihomo 实时连接 |

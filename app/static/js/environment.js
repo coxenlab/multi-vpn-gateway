@@ -1,7 +1,7 @@
 import { api } from "./api.js";
 import { fb } from "./feedback.js";
 import { toast, copyText } from "./app.js";
-import { pullImageTask } from "./preflightPanel.js";
+import { PreflightPanel, pullImageTask } from "./preflightPanel.js";
 /* 系统与接入页的环境诊断 / 镜像源 / 镜像清单共享逻辑。 */
 (function () {
   "use strict";

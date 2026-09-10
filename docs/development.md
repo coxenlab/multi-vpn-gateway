@@ -132,3 +132,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 完整本地检查入口为 `./verify.sh`：Python 隔离单测、Rust core/helper 测试与 clippy、桌面壳检查，以及共享页面和脚本语法检查。Cargo 使用锁文件和离线缓存；缺依赖时明确失败，不自动联网安装。该入口不启动 VM、不登录 VPN、不修改系统代理或助手；通过不等于真实运行与业务验收完成。需要真实 Docker 的旧 Rust 测试保持显式 ignored，按对应测试要求另行执行。
 
 通道自动刷新使用 `/api/channels/{id}/health`：结果含 `checked_at` 和 `stale`，稳定状态复用 30 秒、失败有界退避，过期结果标待确认并后台更新。手动检测继续使用 `/status`，不读取过期缓存。同通道并发共享一次探活；通道变更的代次校验阻止旧结果回写。共享 `api.poll` 在上一轮完成后计时，页面隐藏后暂停；监控明细与低频通道目录分别刷新。
+
+桌面出站诊断由 `usernet.rs` 随看门狗最多每 60 秒采样一次，整轮 10 秒上限、命令 3 秒上限、输出 64 KiB 上限；仅按当前 profile 的 Lima 网络配置和对应 PID 文件定位进程，并核验命令身份。`runtime_info.rs` 从映射文件一致的 Mach-O 构建信息读取依赖，按文件身份缓存；只读取 load commands 和 Go 构建信息段，不要求用户安装 Go。当前只认已核对的 gvisor-tap-vsock v0.8.9 默认 10 槽；replacement、未知依赖或格式均不推断容量。来源：[Go 构建信息格式](https://go.dev/src/debug/buildinfo/buildinfo.go)、[v0.8.9 TCP forwarder](https://github.com/containers/gvisor-tap-vsock/blob/v0.8.9/pkg/services/forwarder/tcp.go)。
+
+`/api/system` 只读缓存，设置的环境页可展开时间、SYN_SENT 总数、最多 16 个目标及最近守卫结果。共享 usernet 的连接无法唯一反查通道；多网卡配置也不证明 usernet 是默认出口。诊断只提供候选证据，不改变登录态、不触发自动重启，权限/超时/配置不明确时报告未知，历史采样保留时间标记。

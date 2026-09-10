@@ -18,6 +18,8 @@ pub mod containers;
 pub mod dockerhub;
 pub mod preflight;
 pub mod health;
+pub mod runtime_info;
+pub mod usernet;
 pub mod tunnel;
 pub mod novnc;
 pub mod events;
