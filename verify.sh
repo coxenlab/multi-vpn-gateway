@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# 静态检查和隔离单测入口;真实 VM / VPN / 浏览器验收另行执行。
+set -euo pipefail
+VERIFY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$VERIFY_ROOT"
+if [[ ! -x .venv/bin/python ]]; then
+  echo '缺少 .venv；请按 docs/development.md 安装测试依赖。' >&2
+  exit 1
+fi
+for tool in cargo node; do
+  command -v "$tool" >/dev/null || { echo "缺少 $tool" >&2; exit 1; }
+done
+.venv/bin/python -m pytest tests -q
+cargo test --locked --offline --manifest-path desktop/core/Cargo.toml
+cargo test --locked --offline --manifest-path desktop/helper/Cargo.toml
+cargo clippy --locked --offline --manifest-path desktop/core/Cargo.toml --all-targets -- -D warnings
+cargo clippy --locked --offline --manifest-path desktop/helper/Cargo.toml --all-targets -- -D warnings
+cargo check --locked --offline --manifest-path desktop/app/Cargo.toml
+.venv/bin/python - <<'PY'
+from html.parser import HTMLParser
+from pathlib import Path
+import subprocess
+
+class Scripts(HTMLParser):
+    def __init__(self):
+        super().__init__(); self.active = None; self.code = []; self.scripts = []
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'script' and 'src' not in attrs and attrs.get('type', '') in ('', 'text/javascript', 'module'):
+            self.active = attrs.get('type', ''); self.code = []
+    def handle_data(self, data):
+        if self.active is not None: self.code.append(data)
+    def handle_endtag(self, tag):
+        if tag == 'script' and self.active is not None:
+            self.scripts.append((self.active, ''.join(self.code))); self.active = None
+
+for path in sorted(Path('app/static/js').glob('*.js')):
+    subprocess.run(['node', '--check', str(path)], check=True)
+for path in sorted(Path('app/static').glob('*.html')):
+    parser = Scripts(); parser.feed(path.read_text())
+    for kind, code in parser.scripts:
+        command = ['node', '--check'] + (['--input-type=module'] if kind == 'module' else [])
+        result = subprocess.run(command, input=code, text=True, capture_output=True)
+        if result.returncode:
+            raise SystemExit(f'{path}: {result.stderr}')
+for path in [Path('verify.sh'), Path('start.sh'), *Path('desktop/app').glob('*.sh')]:
+    subprocess.run(['bash', '-n', str(path)], check=True)
+print('JavaScript / inline scripts / shell syntax passed')
+PY

@@ -104,7 +104,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 ## 现状与下一步
 
-- **已落地**:三家族适配器(hagb / oss / byo);域名 + IP-CIDR 分流规则、启停、rule-provider 与遥测;前端 5 屏接入真实 API(mock `data.js` 已移除);无 Clash 时的入口接入(PAC + 各平台一键命令);arm64 交互式 noVNC 登录。
+- **已落地**:三家族适配器(hagb / oss / byo);域名 + IP-CIDR 分流规则、启停、rule-provider 与遥测;共享 Web 前端接入真实 API(mock `data.js` 已移除);无 Clash 时的入口接入(PAC + 各平台一键命令);arm64 交互式 noVNC 登录。
 - **TODO(Phase 4)**:逐家国产 VPN 厂商 GUI 的按需预装 / 程序化登录适配器。byo 是长尾兜底(任意客户端手动装),Phase 4 才是逐家专有客户端的一等适配(预装镜像 + 自动化登录)。
 - **已落地(2026-07-16)**:「mihomo 未运行」看门狗盲区手动修复入口。转发器半僵死(容器 Up、端口 TCP 通但零响应)时 `gateway_health=healthy` 但 `mihomo_status=down`——芯片红、横幅沉默、无处可点。修复:`feedback.js` 新增盲区态横幅(danger,「分流路由(mihomo)无响应」+ 复用「手动修复」按钮走 `/api/system/heal-proxy` 两级自愈),红态芯片本身可点、重开横幅;web 版无 `gateway_health` 字段不触发。注意安装版 app 静态资源随包分发,需重建 dmg 才到用户手上。
 - **已落地(2026-08-06)**:桌面运行事件日志。关键启动、自愈、隧道、TUN、通道生命周期写入 `<data_dir>/logs/vpnmgr-YYYY-MM-DD.jsonl`(14 天、10MB/日、凭据键脱敏),「系统与接入 → 运行日志」支持 5 秒增量、筛选、搜索、复制与导出；web/旧桌面版 404 自动降级。
@@ -116,7 +116,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 ## 前端设计系统
 
-设计系统 **Neutral Modern**:浅色干净、钴蓝 `#2F6FEB` 点缀(每屏至多一处强调)、Inter(sans 作 display)、B2B 工具 / 操作台风格(不是落地页)。所有 token 在 `app/static/css/app.css` 的 `:root`;别在别处写裸 hex;不要 AI-slop(紫色渐变、emoji 图标、左边框卡片、给每个标题配图标等)。
+共享 Web 界面使用暖色浅色主题：象牙纸底、陶土橙 `--accent #ac4c22`，标题 Source Serif 4、正文 Inter、数据 JetBrains Mono。`--coral #d97757` 只作装饰，不作正文或按钮底色。所有 token 在 `app/static/css/app.css` 的 `:root`；沿用现有语义色和组件，不新增一套主题。
 
 ## 隔离开发实例
 
@@ -125,3 +125,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 `VPNMGR_VM_PROFILE` 默认 `vpnmgr`；Docker 连接、SSH、守卫和 shutdown 均从 Config 的 profile 取地址。DATA_DIR 显式设置优先；桌面调试构建使用开发默认，发布构建固定使用 Application Support。旧开发目录中的日常数据不自动迁移；升级交付前须备份并执行独立迁移/保留配置验收。
 
 单元测试用 `.venv/bin/pytest tests -q`，不要从仓库根递归扫描 handoff 符号链接。测试强制使用本轮创建的临时目录，拒绝真实 Docker/requests 网络操作。
+
+完整本地检查入口为 `./verify.sh`：Python 隔离单测、Rust core/helper 测试与 clippy、桌面壳检查，以及共享页面和脚本语法检查。Cargo 使用锁文件和离线缓存；缺依赖时明确失败，不自动联网安装。该入口不启动 VM、不登录 VPN、不修改系统代理或助手；通过不等于真实运行与业务验收完成。需要真实 Docker 的旧 Rust 测试保持显式 ignored，按对应测试要求另行执行。
+
+通道自动刷新使用 `/api/channels/{id}/health`：结果含 `checked_at` 和 `stale`，稳定状态复用 30 秒、失败有界退避，过期结果标待确认并后台更新。手动检测继续使用 `/status`，不读取过期缓存。同通道并发共享一次探活；通道变更的代次校验阻止旧结果回写。共享 `api.poll` 在上一轮完成后计时，页面隐藏后暂停；监控明细与低频通道目录分别刷新。
