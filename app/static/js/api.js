@@ -169,3 +169,5 @@
     testMirror: (host) => req("POST", "/api/mirrors/test", { host }),
   };
 })();
+
+export const api = window.api;

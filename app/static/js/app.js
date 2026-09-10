@@ -1,3 +1,4 @@
+import { api } from "./api.js";
 /* 共享交互层 —— 状态徽章、复制、toast、tab、侧栏、抽屉、迷你图。
  * 每屏 <body data-page="..."> 决定侧栏高亮。 */
 (function () {
@@ -213,3 +214,6 @@
     initShell(); initTabs(); initOverlays();
   });
 })();
+
+export const { $, $$, statusMeta, badgeHTML, kindMeta, copyText, openOverlay, closeOverlay, linePath, areaPath, latClass, parseTokens, normIp, looksLikeIp, waitNovncReady } = window;
+export const toast = (...args) => window.toast(...args);

@@ -1,5 +1,7 @@
+import { api } from "./api.js";
+import "./app.js";
 /* 全站共享「反馈层」—— 纯增量,挂 window.fb.*。
- * 依赖加载顺序:必须在 app.js 之后引入(本文件包一层 app.js 的 window.toast)。
+ * 显式依赖 app.js；本文件包一层其 window.toast，兼容已有调用。
  * 设计系统:Neutral Modern,颜色/间距一律取 css/app.css :root token,无裸 hex;
  * 动画克制(fade/slide,150-250ms ease)。命门只加反馈,不碰 /api 语义、状态机、端口、凭据。 */
 (function () {
@@ -591,3 +593,5 @@
     window.fb.checkGateway = poll; // 供手动触发(如修复后)
   })();
 })();
+
+export const fb = window.fb;

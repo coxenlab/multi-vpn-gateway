@@ -1,0 +1,180 @@
+import { api } from "../api.js";
+import { $, kindMeta, toast } from "../app.js";
+import { fb } from "../feedback.js";
+import { loadWithSystem } from "../page-data.js";
+
+    let data = null; // {docker_available, containers}
+    let sys = {};
+    let loaded = false;
+    let logsName = null; // 当前日志面板对应的容器
+    let busy = false;    // 有操作在途时暂停轮询重绘,免得按钮被刷掉
+
+    const fmtAge = (s) => (s < 60 ? `${s} 秒` : s < 3600 ? `${Math.floor(s / 60)} 分钟` : s < 86400 ? `${Math.floor(s / 3600)} 小时` : `${Math.floor(s / 86400)} 天`);
+
+    async function fetchAll() {
+      ({ data, system: sys } = await loadWithSystem(api.containers));
+      paint();
+      loaded = true;
+    }
+    async function load(isPoll) {
+      if (isPoll && busy) return;
+      if (!loaded && !isPoll) {
+        const fbk = $("#table-fallback");
+        fbk.style.display = "";
+        fbk.innerHTML = "";
+        fbk.appendChild(fb.skeleton(4));
+      }
+      try {
+        await fetchAll();
+        $("#table-fallback").style.display = "none";
+      } catch (e) {
+        if (isPoll) return; // 轮询失败静默,下一拍再试
+        const fbk = $("#table-fallback");
+        fbk.style.display = "";
+        fbk.innerHTML = "";
+        if (e.status === 404) {
+          // web 版 / 旧版后端无此接口:解释而非报错
+          fbk.innerHTML = `<div class="banner info"><div><div class="bt">此页需要桌面版</div><p>Web 版请直接用 docker 命令查看容器。</p></div></div>`;
+        } else {
+          fb.errorBanner(fbk, { fromError: e, onRetry: () => load(false), retryLabel: "重新加载" });
+        }
+      }
+    }
+
+    /* 状态灯:running=ok(死循环 bad)、restarting/starting=warn、其余 bad、missing 灰 */
+    function stateDot(x) {
+      if (x.crash_loop) return "bad";
+      if (x.state === "running") return "ok";
+      if (x.state === "restarting" || x.state === "created") return "warn";
+      if (x.state === "missing") return "";
+      return "bad";
+    }
+    const STATE_ZH = { running: "运行中", exited: "已停止", restarting: "重启中", created: "已创建", paused: "已暂停", missing: "不存在", dead: "已死亡" };
+
+    function roleCell(x) {
+      if (x.role === "infra")
+        return `<div>分流入口</div><div class="role-sub">所有分流经它转发</div>`;
+      if (x.role === "channel") {
+        const k = kindMeta(x.vpn_type);
+        return `<div>通道 · <a class="grp-name" href="channel.html?id=${fb.esc(x.channel_id)}">${fb.esc(x.channel_name)}</a></div><div class="role-sub">${fb.esc(k.label)}</div>`;
+      }
+      return `<div>残留</div><div class="role-sub">不属于任何通道，可安全清理</div>`;
+    }
+
+    function statusCell(x) {
+      const bits = [];
+      let main = STATE_ZH[x.state] || fb.esc(x.state);
+      if (x.state === "running" && x.uptime_secs != null) main += ` · ${fmtAge(x.uptime_secs)}`;
+      if (x.exit_code != null && x.exit_code !== 0) bits.push(`<div class="st-sub bad">退出码 ${x.exit_code}</div>`);
+      if (x.crash_loop) bits.push(`<div class="st-sub bad">反复重启 ${x.restart_count} 次${x.uptime_secs != null ? ` · 本次存活 ${fmtAge(x.uptime_secs)}` : ""}</div>`);
+      else if (x.restart_count > 0) bits.push(`<div class="st-sub">累计重启 ${x.restart_count} 次</div>`);
+      return `<div><span class="cdot ${stateDot(x)}"></span>${main}</div>${bits.join("")}`;
+    }
+
+    function actionsCell(x) {
+      const b = [];
+      const logBtn = `<button class="btn btn-sm btn-ghost" data-act="logs" data-name="${fb.esc(x.name)}">日志</button>`;
+      if (x.role === "infra") {
+        b.push(`<button class="btn btn-sm" data-act="heal">修复</button>`);
+        if (x.state !== "missing") b.push(logBtn);
+      } else if (x.role === "channel") {
+        const stopped = x.channel_status === "stopped" || x.channel_status === "error" || x.state === "missing" || x.state === "exited";
+        if (stopped) b.push(`<button class="btn btn-sm" data-act="start" data-cid="${fb.esc(x.channel_id)}" data-cname="${fb.esc(x.channel_name)}">启动</button>`);
+        else b.push(`<button class="btn btn-sm btn-ghost" data-act="stop" data-cid="${fb.esc(x.channel_id)}" data-cname="${fb.esc(x.channel_name)}">停止</button>`);
+        if (x.state !== "missing") b.push(logBtn);
+      } else {
+        b.push(`<button class="btn btn-sm btn-danger" data-act="clean" data-name="${fb.esc(x.name)}">清理</button>`);
+        if (x.state !== "missing") b.push(logBtn);
+      }
+      return `<div class="row-actions">${b.join("")}</div>`;
+    }
+
+    function paint() {
+      const cs = (data && data.containers) || [];
+      const deps = cs.filter((x) => x.role !== "orphan");
+      const running = cs.filter((x) => x.state === "running").length;
+      const bad = cs.filter((x) => x.crash_loop || (x.exit_code != null && x.exit_code !== 0)).length;
+      const orphans = cs.filter((x) => x.role === "orphan").length;
+      $("#s-total").textContent = deps.length;
+      $("#s-running").innerHTML = `${running}<span class="unit">/ ${cs.length}</span>`;
+      $("#s-bad").textContent = bad;
+      $("#s-orphan").textContent = orphans;
+      $("#tile-bad").classList.toggle("alert", bad > 0);
+      $("#tile-orphan").classList.toggle("mind", orphans > 0);
+      $("#t-sum").innerHTML = `通道 <span class="num">${cs.filter((x) => x.role === "channel").length}</span> · 残留 <span class="num">${orphans}</span>`;
+      $("#nav-count").textContent = cs.filter((x) => x.role === "channel").length;
+      $("#foot-port").textContent = ":" + (sys.mihomo_port || "—");
+
+      $("#tbody").innerHTML = cs.map((x) => {
+        const cls = x.crash_loop ? "crash" : x.role === "orphan" ? "orphan-row" : "";
+        const missNote = x.state === "missing" && x.role === "channel" && x.channel_status !== "stopped"
+          ? `<div class="st-sub bad">容器不存在，点「启动」重建</div>` : "";
+        return `<tr class="${cls}">
+          <td class="mono">${fb.esc(x.name)}</td>
+          <td>${roleCell(x)}</td>
+          <td>${statusCell(x)}${missNote}</td>
+          <td class="hide-sm mono t-xs">${fb.esc(x.image || "—")}</td>
+          <td>${actionsCell(x)}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="muted">暂无容器</td></tr>`;
+
+      if (data && !data.docker_available)
+        $("#table-fallback").style.display = "none"; // 表内 missing 状态已说明,不再叠加错误条
+    }
+
+    /* ── 操作(全部走既有安全通道:通道启停 = 状态机 + 重建;mihomo = heal 两级梯子) ── */
+    async function run(btn, fn, doing, done) {
+      busy = true;
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = doing;
+      try {
+        await fn();
+        if (done) toast(done, { variant: "success" });
+        await load(false);
+      } catch (e) {
+        toast(fb.friendlyError(e).title || "操作失败", { variant: "danger" });
+        btn.disabled = false;
+        btn.textContent = old;
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function showLogs(name) {
+      logsName = name;
+      $("#logs-card").style.display = "";
+      $("#logs-title").textContent = `docker logs · ${name}`;
+      const body = $("#logs-body");
+      body.replaceChildren(fb.spinner("正在拉取日志…"));
+      try {
+        const { lines } = await api.containerLogs(name, 300);
+        body.textContent = lines.length ? lines.join("\n") : "(空)";
+        body.scrollTop = body.scrollHeight;
+        $("#logs-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (e) {
+        body.innerHTML = "";
+        fb.errorBanner(body, { fromError: e, onRetry: () => showLogs(name) });
+      }
+    }
+    $("#logs-refresh").addEventListener("click", () => { if (logsName) showLogs(logsName); });
+
+    $("#tbody").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const { act, name, cid, cname } = btn.dataset;
+      if (act === "logs") return showLogs(name);
+      if (act === "heal") return run(btn, () => api.healProxy(), "重启修复中…", "分流入口已修复");
+      if (act === "start") return run(btn, () => api.start(cid), "重建中…", `「${cname}」已启动，请重新登录`);
+      if (act === "stop") return run(btn, () => api.stop(cid), "停止中…", `「${cname}」已停止`);
+      if (act === "clean") {
+        if (!await fb.confirm(`删除容器 ${name}？它不属于任何通道，删除不影响现有通道。`, {
+          title: "清理残留容器", confirmLabel: "确认清理", danger: true,
+        })) return;
+        return run(btn, () => api.containerRemove(name), "清理中…", "已清理");
+      }
+    });
+
+    load();
+    api.poll(() => load(true), 8000, { immediate: false });
+  

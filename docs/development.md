@@ -32,7 +32,8 @@
 │   ├── registry.py             # 加载 adapters.yaml;get(key) / list_adapters() / host_arch()
 │   ├── adapters.py             # runtime 分派表(_build_hagb / _build_oss / _build_byo)
 │   ├── dockerhub.py            # 实时拉取 EC 版本 tag(过滤 + arch 标记 + 缓存 + 离线兜底)
-│   └── static/                 # 前端(已接真实 API:js/api.js 封装 fetch)
+│   └── static/                 # 共享 Web 前端，每页一个 ES module 入口
+│       └── js/pages/           # 八个页面控制器；api / page-data / app / feedback 为共享模块
 ├── desktop/                    # macOS 桌面版(Tauri 壳 + Rust host-only core)
 │   └── core/src/events.rs      # 运行事件内存环 + 脱敏 JSONL + 查询/导出 API
 └── tests/                      # pytest 单测(独立于运行镜像)+ smoke.sh 栈冒烟
@@ -117,6 +118,8 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 ## 前端设计系统
 
 共享 Web 界面使用暖色浅色主题：象牙纸底、陶土橙 `--accent #ac4c22`，标题 Source Serif 4、正文 Inter、数据 JetBrains Mono。`--coral #d97757` 只作装饰，不作正文或按钮底色。所有 token 在 `app/static/css/app.css` 的 `:root`；沿用现有语义色和组件，不新增一套主题。
+
+八个根页面只加载 `js/pages/<页面名>.js`，控制器通过显式 import 组合公共 API、反馈、预检、环境和 VNC 组件；公共模块暂保留 `window` 兼容出口，页面业务函数不再靠内联脚本共享全局变量。首页卡片使用事件委托，不生成内联 onclick。`page-data.js` 共用主体与系统状态的加载规则：主体失败进入可重试错误态，系统状态失败保留主体数据并以未知状态降级。`api.js` 负责 GET 请求合并和可见性轮询。修改页面逻辑时编辑对应模块，避免在 HTML 恢复内联控制器。
 
 ## 隔离开发实例
 

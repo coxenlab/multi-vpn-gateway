@@ -34,8 +34,10 @@ class Scripts(HTMLParser):
         if tag == 'script' and self.active is not None:
             self.scripts.append((self.active, ''.join(self.code))); self.active = None
 
-for path in sorted(Path('app/static/js').glob('*.js')):
-    subprocess.run(['node', '--check', str(path)], check=True)
+for path in sorted(Path('app/static/js').rglob('*.js')):
+    result = subprocess.run(['node', '--check', '--input-type=module'], input=path.read_text(), text=True, capture_output=True)
+    if result.returncode:
+        raise SystemExit(f'{path}: {result.stderr}')
 for path in sorted(Path('app/static').glob('*.html')):
     parser = Scripts(); parser.feed(path.read_text())
     for kind, code in parser.scripts:

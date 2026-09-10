@@ -7,8 +7,7 @@
  * 不经任何后端 API / 命令行(命门 #5)。
  * 命门 #1 不动摇:本模块只是输入辅助,登录成功与否仍只认后端 SOCKS5 探活。
  *
- * 依赖:ES module(页面须以 <script type="module" src="js/vncText.js"> 引入,
- * 在 api/app/feedback 之后)。对外暴露 window.vncText.{send, mountBar}。
+ * 依赖:页面控制器显式 import；window.vncText 作为兼容出口保留。
  */
 import RFB from "../vendor/novnc/core/rfb.js";
 import keysyms from "../vendor/novnc/core/input/keysymdef.js";
@@ -135,3 +134,5 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
 
   window.vncText = { send, mountBar };
 })();
+
+export const vncText = window.vncText;

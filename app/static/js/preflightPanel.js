@@ -1,3 +1,6 @@
+import { api } from "./api.js";
+import { fb } from "./feedback.js";
+import { toast } from "./app.js";
 // 共享体检面板:渲染 checks + 接 fix 按钮 + 轮询 + 自动重检。
 // 用法:const pf = PreflightPanel(hostEl, {vpnType, version, onPass}); pf.run();
 (function () {
@@ -6,9 +9,8 @@
     install_docker: "tutorials/install-docker.html",
     switch_registry_mirror: "tutorials/registry-mirror.html",
   };
-  // 转义统一走 feedback.js 的 fb.esc(全站唯一实现);本文件早于 feedback.js 加载,但 row()/run()
-  // 均运行时触发(其时 fb 已就位),与本文件既有 `window.fb && fb.*` 惯用法一致;反馈层缺失则不渲染(fail-closed)。
-  const esc = (s) => (window.fb && window.fb.esc) ? window.fb.esc(s) : "";
+  // 依赖由模块显式加载，转义统一走共享反馈层。
+  const esc = fb.esc;
 
   function row(c) {
     const fix = c.fix && c.fix.kind === "auto"
@@ -97,3 +99,5 @@
     return { run };
   };
 })();
+
+export const { PreflightPanel, pullImageTask } = window;
