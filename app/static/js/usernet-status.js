@@ -24,6 +24,7 @@ export function setupUsernetStatus() {
       ["等待建连数", observed ? String(sample.syn_sent) : "未知"],
       ["版本默认上限", runtime.default_dial_limit == null ? "未知，不推断是否占满" : String(runtime.default_dial_limit)],
       ["运行版本", `Lima ${runtime.lima || "未知"} · gvisor-tap-vsock ${runtime.gvisor_tap_vsock || "未知"}${runtime.gvisor_replaced ? "（自定义替换）" : ""}`],
+      ...(runtime.gvisor_patch ? [["出站补丁", runtime.gvisor_patch]] : []),
       ["私网基础防护", guard],
     ];
     host.innerHTML = `<p class="t-sm">${fb.esc(state)}</p><dl class="kv-list">${rows.map(([label, value]) => `<dt>${fb.esc(label)}</dt><dd>${fb.esc(value)}</dd>`).join("")}</dl>

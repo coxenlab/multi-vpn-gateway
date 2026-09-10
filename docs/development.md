@@ -147,6 +147,8 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 通道自动刷新使用 `/api/channels/{id}/health`：结果含 `checked_at` 和 `stale`，稳定状态复用 30 秒、失败有界退避，过期结果标待确认并后台更新。手动检测继续使用 `/status`，不读取过期缓存。同通道并发共享一次探活；通道变更的代次校验阻止旧结果回写。共享 `api.poll` 在上一轮完成后计时，页面隐藏后暂停；监控明细与低频通道目录分别刷新。
 
-桌面出站诊断由 `usernet.rs` 随看门狗最多每 60 秒采样一次，整轮 10 秒上限、命令 3 秒上限、输出 64 KiB 上限；仅按当前 profile 的 Lima 网络配置和对应 PID 文件定位进程，并核验命令身份。`runtime_info.rs` 从映射文件一致的 Mach-O 构建信息读取依赖，按文件身份缓存；只读取 load commands 和 Go 构建信息段，不要求用户安装 Go。当前只认已核对的 gvisor-tap-vsock v0.8.9 默认 10 槽；replacement、未知依赖或格式均不推断容量。来源：[Go 构建信息格式](https://go.dev/src/debug/buildinfo/buildinfo.go)、[v0.8.9 TCP forwarder](https://github.com/containers/gvisor-tap-vsock/blob/v0.8.9/pkg/services/forwarder/tcp.go)。
+桌面出站诊断由 `usernet.rs` 随看门狗最多每 60 秒采样一次，整轮 10 秒上限、命令 3 秒上限、输出 64 KiB 上限；仅按当前 profile 的 Lima 网络配置和对应 PID 文件定位进程，并核验命令身份。`runtime_info.rs` 从映射文件一致的 Mach-O 构建信息读取依赖，按文件身份缓存；只读取 load commands 和 Go 构建信息段，不要求用户安装 Go。识别 gvisor-tap-vsock v0.8.9 默认 10 槽，以及明确版本 `v2.1.2-vpnmgr.698.8b4db4a` 的回移候选 128 槽；replacement、未知依赖或格式均不推断容量。版本识别是诊断参照，不是签名验证。来源：[Go 构建信息格式](https://go.dev/src/debug/buildinfo/buildinfo.go)、[v0.8.9 TCP forwarder](https://github.com/containers/gvisor-tap-vsock/blob/v0.8.9/pkg/services/forwarder/tcp.go)。
+
+桌面 runtime 构建使用 `desktop/app/runtime-sources.lock.json` 固定 Lima 源码提交、Colima/Docker 官方资源 SHA256 和 Go 1.26.1。开发机需该 Go 版本及 Xcode；最终用户无需安装。`stage-runtime.sh` 默认构建 baseline，`VPNMGR_RUNTIME_VARIANT=gvisor698 ./build-dmg.sh` 显式选择候选。候选只回移 [上游 #698](https://github.com/containers/gvisor-tap-vsock/pull/698) 的三个库文件，校验改前/改后哈希，不更新 Lima 的 go.mod/go.sum；整版本替换另有 UDP API 不兼容及依赖升级，未采用。源码/构建缓存默认在 `~/Library/Caches/vpnmgr-build/runtime/`，缓存损坏则停止；暂存前验证所有产物、签名及配套 guestagent，附 manifest 和 Go 构建信息，下一次打包不会再用 Homebrew 文件静默覆盖候选。当前仅支持 macOS arm64；真实网络切换/Clash/睡醒和长时间验收通过前，候选不作为默认安装版本。
 
 `/api/system` 只读缓存，设置的环境页可展开时间、SYN_SENT 总数、最多 16 个目标及最近守卫结果。共享 usernet 的连接无法唯一反查通道；多网卡配置也不证明 usernet 是默认出口。诊断只提供候选证据，不改变登录态、不触发自动重启，权限/超时/配置不明确时报告未知，历史采样保留时间标记。

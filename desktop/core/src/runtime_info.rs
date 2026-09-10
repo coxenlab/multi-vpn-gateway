@@ -12,6 +12,7 @@ pub struct RuntimeInfo {
     pub lima: Option<String>,
     pub gvisor_tap_vsock: Option<String>,
     pub gvisor_replaced: bool,
+    pub gvisor_patch: Option<String>,
     /// 已核对上游源码的默认上限，仅是诊断参照，不等于当前 SYN_SENT 数量。
     pub default_dial_limit: Option<usize>,
 }
@@ -48,20 +49,38 @@ fn decode(data: &[u8]) -> Result<RuntimeInfo> {
     ensure!(framed.len() >= 33 && framed[framed.len() - 17] == b'\n', "invalid module framing");
     let modules = std::str::from_utf8(&framed[16..framed.len() - 16])?;
     let mut info = RuntimeInfo { go, ..Default::default() };
+    let mut dependency_checksum = false;
+    let mut packaged_lima = false;
+    let mut backport = false;
     let mut lines = modules.lines().peekable();
     while let Some(line) = lines.next() {
         let fields: Vec<_> = line.split('\t').collect();
         if fields.first() == Some(&"dep") && fields.get(1) == Some(&"github.com/containers/gvisor-tap-vsock") {
             info.gvisor_tap_vsock = fields.get(2).map(|s| s.to_string());
             info.gvisor_replaced = lines.peek().is_some_and(|s| s.starts_with("=>\t"));
+            dependency_checksum = fields.get(3).is_some_and(|s| !s.is_empty());
+        }
+        // -trimpath 会隐藏 ldflags；构建标签仍可从实际二进制读回，不依赖旁置 manifest。
+        if let Some(tags) = line.strip_prefix("build\t-tags=") {
+            let tags: Vec<_> = tags.trim_matches('"').split(',').collect();
+            packaged_lima = tags.contains(&"vpnmgr_lima_2_1_2");
+            backport = tags.contains(&"vpnmgr_gvisor_698_8b4db4a");
         }
         if let Some((_, version)) = line.split_once("github.com/lima-vm/lima/v2/pkg/version.Version=") {
             info.lima = version.split([' ', '"', '\'']).next().map(str::to_owned);
         }
     }
+    if packaged_lima {
+        info.lima = Some(if backport { "v2.1.2-vpnmgr.698.8b4db4a" } else { "v2.1.2" }.into());
+    }
     // v0.8.9 源码的 TCP forwarder 默认值；自定义 replacement / 未知版本不套此值。
     if info.gvisor_tap_vsock.as_deref() == Some("v0.8.9") && !info.gvisor_replaced {
-        info.default_dial_limit = Some(10);
+        if packaged_lima && backport {
+            info.gvisor_patch = Some("698@8b4db4a (v0.8.9 backport)".into());
+            info.default_dial_limit = Some(128);
+        } else if dependency_checksum || packaged_lima {
+            info.default_dial_limit = Some(10);
+        }
     }
     Ok(info)
 }
@@ -122,6 +141,11 @@ mod tests {
     fn reads_dependency_and_does_not_guess_replacements_or_future_versions() {
         let dep = "dep\tgithub.com/containers/gvisor-tap-vsock\tv0.8.9\th1:test\n";
         assert_eq!(decode(&build_blob(dep)).unwrap().default_dial_limit, Some(10));
+        let vendor_dep = "dep\tgithub.com/containers/gvisor-tap-vsock\tv0.8.9\t\n";
+        assert_eq!(decode(&build_blob(vendor_dep)).unwrap().default_dial_limit, None);
+        let patched = decode(&build_blob(&format!("{vendor_dep}build\t-tags=vpnmgr_lima_2_1_2,vpnmgr_gvisor_698_8b4db4a\n"))).unwrap();
+        assert_eq!(patched.default_dial_limit, Some(128));
+        assert!(patched.gvisor_patch.is_some());
         let replaced = decode(&build_blob(&format!("{dep}=>\t../patched\t(devel)\t\n"))).unwrap();
         assert!(replaced.gvisor_replaced);
         assert_eq!(replaced.default_dial_limit, None);

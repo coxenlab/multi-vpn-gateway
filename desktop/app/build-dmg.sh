@@ -8,7 +8,7 @@
 #    Gatekeeper 拦,需右键→打开 或 `xattr -dr com.apple.quarantine /path/to/vpnmgr.app`。公证为后续阶段。
 set -eu
 cd "$(dirname "$0")"
-./stage-runtime.sh   # 自带运行时二进制(从 Homebrew Cellar 暂存 + 重签 vz entitlement)
+./stage-runtime.sh   # 固定来源与校验值；VPNMGR_RUNTIME_VARIANT 可显式选择候选补丁
 ./stage-images.sh    # 内置镜像 tarball(docker save vpnmgr/oss-vpn | gzip)
 ./stage-vm-image.sh  # 内置 colima VM 磁盘镜像(首启免连 GitHub,预置下载缓存)
 ./stage-helper.sh    # 层3 TUN 入口:vpnmgr-helper(构建)+ mihomo darwin 二进制 → runtime/helper

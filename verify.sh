@@ -27,6 +27,7 @@ cargo check --locked --offline --manifest-path desktop/app/Cargo.toml
 .venv/bin/python - <<'PY'
 from html.parser import HTMLParser
 from pathlib import Path
+import ast
 import subprocess
 
 class Scripts(HTMLParser):
@@ -42,6 +43,8 @@ class Scripts(HTMLParser):
         if tag == 'script' and self.active is not None:
             self.scripts.append((self.active, ''.join(self.code))); self.active = None
 
+for path in Path('desktop/app').glob('*.py'):
+    ast.parse(path.read_text(), filename=str(path))
 for path in sorted(Path('app/static/js').rglob('*.js')):
     result = subprocess.run(['node', '--check', '--input-type=module'], input=path.read_text(), text=True, capture_output=True)
     if result.returncode:

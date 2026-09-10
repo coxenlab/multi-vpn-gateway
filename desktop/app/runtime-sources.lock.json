@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "platform": "darwin-arm64",
+  "go": "go1.26.1",
+  "lima": {
+    "version": "v2.1.2",
+    "commit": "2d4314e945cda21ed777fe73a078619f23fc48df",
+    "url": "https://codeload.github.com/lima-vm/lima/tar.gz/2d4314e945cda21ed777fe73a078619f23fc48df",
+    "sha256": "e7034fbb4053ffe79e463a72ec0adafce6fcbc6f6e74f7b3a7f92df30664ea35"
+  },
+  "colima": {
+    "url": "https://github.com/abiosoft/colima/releases/download/v0.10.3/colima-Darwin-arm64",
+    "sha256": "980ad8bf61a4ca370243f4cb41401a61276dcd2c2502bee7b9b86f9250169f34",
+    "size": 15656320,
+    "version": "v0.10.3"
+  },
+  "docker": {
+    "url": "https://download.docker.com/mac/static/stable/aarch64/docker-29.3.1.tgz",
+    "sha256": "7a448b9d948157f4bcf29369755389049746297d1289a0607ea3d0a811d20e75",
+    "size": 18446500,
+    "version": "29.3.1"
+  },
+  "gvisor698": {
+    "patch_sha256": "10bae3986a17b4793008ef13966b3ceb9f65079ad15a93725ba72935d00cc3e2",
+    "files": [
+      {
+        "path": "pkg/services/forwarder/tcp.go",
+        "before": "3be7d125adeb1dd2aab14925466dfa5007dd5075ec7dd84ca8508f57dfc07dad",
+        "after": "8a45bee8eb548a92df47996c8feca630414e65116d6b66bff58151ccb7c8cd82"
+      },
+      {
+        "path": "pkg/types/configuration.go",
+        "before": "02049fec76126468909f67564bc694567bf78dbe3365078a3d8d9472bac4b7fe",
+        "after": "42ec89648c9f25e7693cfbecfddeed65d46c1be3eca5c7c7d86392a5c74187de"
+      },
+      {
+        "path": "pkg/virtualnetwork/services.go",
+        "before": "5dfd437140e17a625834f5bc27a5718acb1416933ae9353b632f6e792019ca2e",
+        "after": "52d46b2d9caca23fac8540eb9f0b1e2f20705b09681d0014bc9e8e636d004e12"
+      }
+    ],
+    "upstream_commit": "8b4db4a990e9f3b7682ab7b80900ace845082dbb",
+    "base": "v0.8.9",
+    "lima_version": "v2.1.2-vpnmgr.698.8b4db4a",
+    "patch": "runtime-patches/gvisor-698.patch"
+  }
+}
