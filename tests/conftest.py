@@ -43,6 +43,9 @@ def no_external_requests(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clean_db():
+    import channel_state
+    channel_state.shutdown()
+    channel_state.startup()
     store.init()
     with store._c() as c:
         c.execute("DELETE FROM channels")
@@ -51,6 +54,7 @@ def clean_db():
         c.execute("DELETE FROM mirrors")
     store.init()       # 重新播种默认镜像源
     yield
+    channel_state.shutdown()
 
 
 @pytest.fixture

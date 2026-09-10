@@ -152,6 +152,15 @@ pub struct ChannelPublic {
     pub routing_enabled: bool,
 }
 
+/// 状态与延迟同一次写入,失败探活清掉上一次延迟。由 lifecycle 的通道操作锁保护。
+pub fn set_probe_result(db: &Path, cid: &str, status: &str, latency: Option<i64>) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    let changed = conn.execute("UPDATE channels SET status=?1, latency_ms=?2 WHERE id=?3 AND status IN ('running','logged_in')",
+        rusqlite::params![status, latency, cid])?;
+    anyhow::ensure!(changed == 1, "通道状态已变化");
+    Ok(())
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub id: i64,

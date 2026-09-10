@@ -21,6 +21,7 @@ use crate::AppState;
 /// (web 栈的 vpnmgr-app-1 / vpnmgr-mihomo-1 归 compose 管,不在桌面管辖内。)
 pub fn is_managed_name(name: &str) -> bool {
     name == crate::infra::MIHOMO_CONTAINER
+        || name == crate::docker::PROBE_CONTAINER
         || name.starts_with("vpn-")
         || name.starts_with("vpncore-probe-")
 }
@@ -118,6 +119,14 @@ pub async fn list(State(st): State<AppState>) -> axum::response::Response {
         json!({ "name": name, "role": "infra", "title": "分流核心 mihomo(vpn-router)" }),
         meta,
     ));
+    if present.iter().any(|n| n == crate::docker::PROBE_CONTAINER) {
+        let name = crate::docker::PROBE_CONTAINER;
+        let meta = match docker.as_ref() {
+            Some(d) => inspect_meta(d, name).await,
+            None => None,
+        };
+        out.push(merged(json!({"name": name, "role": "infra", "title": "内网连通探针"}), meta));
+    }
 
     // ② channel:每通道一个 vpn-{id}
     let ids: Vec<String> = chans.iter().map(|c| c.id.clone()).collect();

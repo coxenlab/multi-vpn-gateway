@@ -24,6 +24,7 @@ async fn events_api_is_incremental_capped_and_exportable() {
         vpn_net: "vpnmgr_vpnnet".into(),
     };
     let state = AppState {
+        lifecycle: Default::default(),
         cfg: Arc::new(cfg),
         docker: Arc::new(std::sync::RwLock::new(None)),
         mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),

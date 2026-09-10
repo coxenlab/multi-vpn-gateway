@@ -388,13 +388,13 @@
       startProbing();
     }
     function startProbing() {
-      clearInterval(probeTimer);
+      if (probeTimer) probeTimer(); probeTimer = null;
       const tick = async () => {
         if (connected || document.hidden) return;
         try {
-          const r = await api.status(createdId);
-          if (r.connected) {
-            connected = true; clearInterval(probeTimer);
+          const r = await api.channelHealth(createdId);
+          if (r.connected && !r.stale) {
+            connected = true; if (probeTimer) probeTimer(); probeTimer = null;
             $("#conn-line").classList.add("ok");
             $("#conn-spin").innerHTML = "";
             $("#conn-text").textContent = `已连通 · ${r.latency_ms ?? "?"} ms`;
@@ -406,8 +406,7 @@
           }
         } catch (_) { /* 下一拍再试 */ }
       };
-      tick();
-      probeTimer = setInterval(tick, 5000);
+      probeTimer = api.poll(tick, 5000);
     }
     $("#go-3").addEventListener("click", () => {
       if (!connected) $("#conn-hint").textContent = "";

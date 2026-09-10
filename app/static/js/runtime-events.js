@@ -287,7 +287,7 @@
       render();
       byId("runtime-meta").textContent = `运行日志暂时不可读：${eventsResult.reason?.reason || eventsResult.reason?.message || eventsResult.reason}`;
     }
-    setInterval(poll, 5000);
+    api.poll(poll, 5000, { immediate: false });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

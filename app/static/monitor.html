@@ -274,7 +274,7 @@
       }
       $("#foot-port").textContent = ":" + sys.mihomo_port;
       // 先起轮询(只起一次)再拉首帧 —— 即便首帧失败,后续仍会每 1.5s 自动重试自愈
-      if (!pollTimer) pollTimer = setInterval(tick, 1500);
+      if (!pollTimer) pollTimer = api.poll(tick, 1500, { immediate: false });
       await tick();
     }
     function chanName(id) { const c = chs.find(x => x.id === id); return c ? c.name : "未知通道"; }
@@ -485,12 +485,21 @@
     }
 
     /* ───────── tick：拉真实遥测 → 差分出新连接 → 合成日志行 ───────── */
-    async function tick() {
+    let tickPending = null, lastCatalog = 0;
+    function tick() {
+      if (document.hidden) return Promise.resolve();
+      if (!tickPending) tickPending = tickOnce().finally(() => { tickPending = null; });
+      return tickPending;
+    }
+    async function tickOnce() {
       let data;
       try {
-        [chs, data, nodes] = await Promise.all([
-          api.channels(), api.connections(), api.proxies().then(r => r.proxies || []),
-        ]);
+        if (Date.now() - lastCatalog > 15000) {
+          [chs, data, nodes] = await Promise.all([
+            api.channels(), api.connections(), api.proxies().then(r => r.proxies || []),
+          ]);
+          lastCatalog = Date.now();
+        } else data = await api.connections();
       } catch (e) {
         // 失败:轮询会每 1.5s 自动重试,但给用户可见的离线指示 + 一条(只一条)友好错误条
         const firstFail = !feedDown;
@@ -500,6 +509,7 @@
           toast("遥测数据加载失败,将自动重试", { variant: "danger", action: { label: "立即重试", onClick: () => tick() } });
         return;
       }
+      if (document.hidden) return;
       // 成功:更新「更新于」时间戳 + 清掉可能存在的故障错误条(自愈)
       if (!booted) { booted = true; view().innerHTML = ""; }
       clearFeedError();

@@ -34,6 +34,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/channels/:cid/upload", axum::routing::post(api::upload))
         .route("/api/channels/:cid/note", get(api::note_get).put(api::note_put))
         .route("/api/channels/:cid/status", get(api::status))
+        .route("/api/channels/:cid/health", get(api::channel_health))
         .route("/api/channels/:cid/rules", axum::routing::post(api::add_rules))
         .route("/api/rules", axum::routing::patch(api::patch_rules))
         .route(
@@ -107,6 +108,7 @@ mod tests {
             vpn_net: "vpnmgr_vpnnet".into(),
         };
         AppState {
+            lifecycle: Default::default(),
             cfg: Arc::new(cfg),
             docker: Arc::new(std::sync::RwLock::new(None)),
             mihomo: Controller::new("http://127.0.0.1:1".into(), "".into()),

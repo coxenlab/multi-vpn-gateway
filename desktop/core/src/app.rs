@@ -50,6 +50,7 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
 
     let mihomo = Controller::new(cfg.mihomo_ctrl_url.clone(), cfg.mihomo_secret.clone());
     let state = AppState {
+        lifecycle: Default::default(),
         cfg: Arc::new(cfg),
         docker: Arc::new(std::sync::RwLock::new(docker)),
         mihomo,

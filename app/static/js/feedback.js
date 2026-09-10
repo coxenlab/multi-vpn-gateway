@@ -585,7 +585,7 @@
       }
     }
 
-    const start = () => { poll(); detectRuntimeEvents(); setInterval(poll, 10000); };
+    const start = () => { detectRuntimeEvents(); window.api.poll(poll, 10000); };
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
     else start();
     window.fb.checkGateway = poll; // 供手动触发(如修复后)

@@ -236,6 +236,7 @@ mod tests {
     async fn drop_for_serializes_with_ensure_lifecycle() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState {
+            lifecycle: Default::default(),
             cfg: Arc::new(crate::config::Config {
                 vm_profile: "vpnmgr-test".into(),
                 dev_mode: true,
@@ -304,6 +305,7 @@ mod tests {
         crate::store::add_channel(&cfg.db_path(), &key, &channel, &serde_json::Map::new(), &[]).unwrap();
         crate::store::set_novnc_port(&cfg.db_path(), "c1", i64::from(port)).unwrap();
         let state = AppState {
+            lifecycle: Default::default(),
             cfg: Arc::new(cfg),
             docker: Arc::new(std::sync::RwLock::new(None)),
             mihomo: crate::mihomo::Controller::new("http://127.0.0.1:1".into(), String::new()),

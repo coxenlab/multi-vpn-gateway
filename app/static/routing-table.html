@@ -647,9 +647,9 @@
     load();
     loadEntry();
     loadDiag();
-    setInterval(() => load(true), 8000);
-    setInterval(loadEntry, 30000);
-    setInterval(loadDiag, 20000);
+    api.poll(() => load(true), 8000, { immediate: false });
+    api.poll(loadEntry, 30000, { immediate: false });
+    api.poll(loadDiag, 20000, { immediate: false });
   </script>
 </body>
 </html>

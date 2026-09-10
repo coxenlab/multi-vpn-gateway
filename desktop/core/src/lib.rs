@@ -22,12 +22,14 @@ pub mod tunnel;
 pub mod novnc;
 pub mod events;
 pub mod shutdown;
+pub mod lifecycle;
 
 use std::sync::Arc;
 
 /// 全局共享状态。bollard::Docker 与 reqwest::Client 内部是 Arc,clone 廉价。
 #[derive(Clone)]
 pub struct AppState {
+    pub lifecycle: Arc<lifecycle::Lifecycle>,
     pub cfg: Arc<config::Config>,
     /// docker 连接,可热替换:传输层坏死时看门狗经备援隧道 sock 重建连接换入
     /// (盲区 #3 自愈的最后一环,见 health.rs 模块注释)。读走 [`AppState::docker`]。

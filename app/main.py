@@ -7,6 +7,8 @@ import random
 import secrets
 import sqlite3
 import ipaddress
+import asyncio
+from contextlib import asynccontextmanager
 
 import requests
 import yaml
@@ -19,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 import store
 import manager
+import channel_state
 import registry
 import dockerhub
 import preflight
@@ -28,7 +31,16 @@ from ruleutil import (classify as _classify, norm_domain as _norm_domain,
 HERE = os.path.dirname(__file__)
 MIHOMO_HOST_PORT = os.environ.get("MIHOMO_HOST_PORT", "?")
 
-app = FastAPI(title="VPN 管理网关")
+@asynccontextmanager
+async def lifespan(app):
+    channel_state.startup()
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(channel_state.shutdown)
+
+
+app = FastAPI(title="VPN 管理网关", lifespan=lifespan)
 store.init()
 
 
@@ -77,9 +89,13 @@ def channels():
 
 
 @app.post("/api/channels")
-async def create(req: Request):
-    b = await req.json()
+def create(b: dict = Body(...)):
     cid = uuid.uuid4().hex[:8]
+    with channel_state.mutation(cid):
+        return create_inner(cid, b)
+
+
+def create_inner(cid, b):
     mac = "02:" + ":".join(f"{random.randint(0, 255):02x}" for _ in range(5))
     vnc = secrets.token_hex(4)  # 8 个十六进制字符 = tigervnc 8 字节上限内
     vtype = b.get("vpn_type", "easyconnect")
@@ -114,13 +130,13 @@ async def create(req: Request):
 
 
 @app.patch("/api/channels/{cid}")
-async def update(cid: str, req: Request):
+@channel_state.serialized
+def update(cid: str, b: dict = Body(...)):
     """编辑已有通道。接受 name/probe_url/server/username/password/ec_ver(只传要改的)。
     仅改 name/probe_url 不动容器;改了连接相关字段则重建容器使其生效(oss 无其它重连入口)。"""
     ch = store.get_channel(cid)
     if not ch:
         return JSONResponse({"error": "not found"}, status_code=404)
-    b = await req.json()
     try:
         spec = registry.get(ch["vpn_type"])
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
@@ -207,15 +223,20 @@ def note_put(cid, body: dict = Body(...)):
 
 @app.get("/api/channels/{cid}/status")
 def status(cid):
-    ch = store.get_channel(cid)
-    if not ch:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    ok, ms = manager.probe(ch)
-    new = "logged_in" if ok else ("running" if ch["status"] == "logged_in" else ch["status"])
-    store.set_status(cid, new)
-    if ms is not None:
-        store.set_latency(cid, ms)
-    return {"status": new, "connected": ok, "latency_ms": ms}
+    return probe_response(cid, fresh=True)
+
+
+@app.get("/api/channels/{cid}/health")
+def channel_health(cid):
+    return probe_response(cid, fresh=False)
+
+
+def probe_response(cid, fresh):
+    try:
+        result = channel_state.sample(cid, fresh=fresh)
+        return result if result is not None else JSONResponse({"error": "not found"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
 
 
 def _confirmed_rebuild():
@@ -338,6 +359,7 @@ async def patch_rules(req: Request):
 
 
 @app.post("/api/channels/{cid}/start")
+@channel_state.serialized
 def start(cid):
     # hagb(EC/aTrust)的守护进程与 oss 经 exec 注入的隧道都扛不住原地 docker start
     # (守护进程不重新初始化、注入的客户端进程丢失)→ 容器崩退码 1 或起来无隧道。
@@ -371,6 +393,7 @@ def start(cid):
 
 
 @app.post("/api/channels/{cid}/stop")
+@channel_state.serialized
 def stop(cid):
     manager.stop(cid)
     store.set_status(cid, "stopped")
@@ -381,6 +404,7 @@ def stop(cid):
 
 
 @app.delete("/api/channels/{cid}")
+@channel_state.serialized
 def delete(cid):
     manager.remove(cid)
     store.del_channel(cid)

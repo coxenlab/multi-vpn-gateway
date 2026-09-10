@@ -483,6 +483,10 @@ async fn create_inner(st: AppState, b: Value) -> axum::response::Response {
         Err(e) => return err500(&format!("master_key: {e}")),
     };
     let cid = rand_hex(4);
+    let _operation = match st.lifecycle.mutate(&cid).await {
+        Ok(guard) => guard,
+        Err(e) => return err503(&e.to_string()),
+    };
     let vnc = rand_hex(4);
     let vtype = {
         let t = js(&b, "vpn_type");
@@ -597,6 +601,14 @@ async fn create_inner(st: AppState, b: Value) -> axum::response::Response {
 }
 
 pub async fn update(State(st): State<AppState>, Path(cid): Path<String>, Json(b): Json<Value>) -> axum::response::Response {
+    detached("update", update_inner(st, cid, b)).await
+}
+
+async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Response {
+    let _operation = match st.lifecycle.mutate(&cid).await {
+        Ok(guard) => guard,
+        Err(e) => return err503(&e.to_string()),
+    };
     let db = st.cfg.db_path();
     let fields = b.as_object().cloned().unwrap_or_default();
     if fields.get("routing_enabled").is_some_and(|v| !v.is_boolean()) {
@@ -859,28 +871,19 @@ pub async fn note_put(
 }
 
 pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
-    let db = st.cfg.db_path();
-    let ch = match store::get_channel(&db, &cid) {
-        Ok(Some(c)) => c,
-        Ok(None) => return err404("not found"),
-        Err(e) => return err500(&format!("{e}")),
-    };
-    let (ok, ms) = manager::probe(st.docker().as_ref(), &st.cfg, &ch).await; // 命门 #1
-    crate::ev!(debug, "manager", "probe", "通道探活完成",
-        { "cid": cid.as_str(), "ok": ok, "latency_ms": ms });
-    let new = if ok {
-        "logged_in"
-    } else if ch.status == "logged_in" {
-        "running"
-    } else {
-        ch.status.as_str()
+    probe_response(crate::lifecycle::sample(st, cid, true).await)
+}
+
+pub async fn channel_health(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    probe_response(crate::lifecycle::sample(st, cid, false).await)
+}
+
+fn probe_response(result: Result<Value, String>) -> axum::response::Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err(e) if e == "not found" => err404(&e),
+        Err(e) => err503(&e),
     }
-    .to_string();
-    let _ = store::set_status(&db, &cid, &new);
-    if let Some(m) = ms {
-        let _ = store::set_latency(&db, &cid, m);
-    }
-    Json(json!({ "status": new, "connected": ok, "latency_ms": ms })).into_response()
 }
 
 // ── start / stop / delete(byo 原地 start;hagb/oss 走重建) ──────────────────
@@ -890,6 +893,10 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
 }
 
 async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
+    let _operation = match st.lifecycle.mutate(&cid).await {
+        Ok(guard) => guard,
+        Err(e) => return err503(&e.to_string()),
+    };
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(c)) => c,
@@ -985,6 +992,10 @@ pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::
 }
 
 async fn stop_inner(st: AppState, cid: String) -> axum::response::Response {
+    let _operation = match st.lifecycle.mutate(&cid).await {
+        Ok(guard) => guard,
+        Err(e) => return err503(&e.to_string()),
+    };
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(ch)) => ch,
@@ -1042,6 +1053,10 @@ pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum
 }
 
 async fn delete_inner(st: AppState, cid: String) -> axum::response::Response {
+    let _operation = match st.lifecycle.mutate(&cid).await {
+        Ok(guard) => guard,
+        Err(e) => return err503(&e.to_string()),
+    };
     let db = st.cfg.db_path();
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(ch)) => ch,

@@ -97,6 +97,7 @@ pub async fn shutdown_all(state: Option<&AppState>, cfg: &Config, stop_vm: bool,
 async fn run(state: Option<&AppState>, cfg: &Config, stop_vm: bool) {
     crate::ev!(info, "shutdown", "shutdown_begin", "退出清理开始",
         { "boot_ready": state.is_some(), "stop_vm": stop_vm });
+    if let Some(st) = state { st.lifecycle.quiesce().await; }
     // ① 入口层:TUN 路由回收(保留启用标记)+ 系统代理还原——先掐入口,避免
     //    清理期间还有新流量进到即将拆掉的链路上。
     entry::tun_park(cfg).await;

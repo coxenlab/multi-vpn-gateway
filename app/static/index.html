@@ -183,7 +183,7 @@
     };
 
     load();
-    setInterval(() => load(true), 8000);
+    api.poll(() => load(true), 8000, { immediate: false });
   </script>
 </body>
 </html>

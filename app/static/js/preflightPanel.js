@@ -27,12 +27,16 @@
   window.pullImageTask = function (image, onProgress) {
     return new Promise(function (resolve, reject) {
       api.preflightFix("pull_image", { image }).then(function (r) {
-        const iv = setInterval(async function () {
+        let failures = 0;
+        const deadline = Date.now() + 20 * 60 * 1000;
+        const stop = api.poll(async function () {
+          if (Date.now() > deadline) { stop(); reject(new Error("等待镜像任务超时，请在镜像清单核对结果")); return; }
           let st;
-          try { st = await api.preflightFixStatus(r.task_id); } catch (e) { return; }
+          try { st = await api.preflightFixStatus(r.task_id); failures = 0; }
+          catch (e) { if (++failures >= 5) { stop(); reject(e); } return; }
           if (onProgress) onProgress(st);
-          if (st.status === "done") { clearInterval(iv); resolve(st); }
-          else if (st.status === "error") { clearInterval(iv); reject(new Error(st.error || "拉取失败")); }
+          if (st.status === "done") { stop(); resolve(st); }
+          else if (st.status === "error") { stop(); reject(new Error(st.error || "拉取失败")); }
         }, 2000);
       }, reject);
     });

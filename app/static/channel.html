@@ -122,7 +122,7 @@
                   <div class="health-row"><span class="hl">状态</span><span class="hv" id="h-status">—</span></div>
                   <div class="health-row"><span class="hl">运行时长</span><span class="hv" id="h-uptime">—</span></div>
                   <div class="health-row"><span class="hl">上次检测</span><span class="hv" id="h-last">—</span></div>
-                  <p class="note" style="margin-top:var(--space-3);">每 8 秒自动检测一次是否能打开内网验证地址。</p>
+                  <p class="note" style="margin-top:var(--space-3);">自动刷新内网连通结果；检测失败时逐步延长间隔，可随时手动检测。</p>
                 </div>
               </div>
             </div>
@@ -287,7 +287,7 @@
       $("#h-status").innerHTML = badgeHTML(ch.status);
       $("#h-uptime").textContent = ch.uptime != null ? ch.uptime : "—";
     }
-    function setLastProbe() { $("#h-last").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false }); }
+    function setLastProbe(when = Date.now()) { $("#h-last").textContent = new Date(when).toLocaleTimeString("zh-CN", { hour12: false }); }
 
     /* ── 登录备注(加密落库;旧后端无 /note → 卡片保持隐藏) ── */
     const noteCard = document.querySelector('[data-od-id="ch-note"]');
@@ -412,7 +412,7 @@
       try {
         const r = await api.status(ch.id);
         await boot();
-        setLastProbe();
+        setLastProbe(r.checked_at ?? Date.now());
         if (r.connected) toast(`已连通 · ${r.latency_ms ?? "?"} ms`, { variant: "success" });
         else toast("未连通：请先在登录窗口完成登录", { variant: "danger", action: { label: "重试", onClick: () => doProbe(btn) } });
       } catch (e) {
@@ -588,19 +588,25 @@
     document.querySelector('.tab[data-tab="logs"]').addEventListener("click", () => loadLogs());
     document.querySelector('.tab[data-tab="login"]').addEventListener("click", () => { if (!$("#vnc-frame")) loadVnc(); });
 
-    /* ── 自动检测:打开即探一次,每 8 秒一次(页面不可见时暂停) ── */
+    /* ── 自动刷新:后端合并探活并退避,页面不可见时暂停 ── */
+    function probeUnconfirmed() {
+      $("#h-last").textContent += " · 待确认";
+      $("#h-status").textContent = "待确认";
+      $("#top-badge").innerHTML = '<span class="badge is-running"><i class="bdot"></i>待确认</span>';
+    }
     async function refreshStatus() {
       if (!ch || ch.status === "stopped") return;
       try {
-        const r = await api.status(ch.id);
-        setLastProbe();
-        if (r.status !== ch.status || r.latency_ms != ch.latency_ms) {
-          ch.status = r.status;
-          if (r.latency_ms != null) ch.latency_ms = r.latency_ms;
-          syncStatus();
-          renderHealth();
-        }
+        const r = await api.channelHealth(ch.id);
+        setLastProbe(r.checked_at ?? Date.now());
+        if (r.stale) { probeUnconfirmed(); return; }
+        ch.status = r.status;
+        ch.latency_ms = r.latency_ms;
+        syncStatus();
+        renderHealth();
       } catch (e) {
+        $("#h-last").textContent = "检测失败";
+        probeUnconfirmed();
         console.warn("[channel] 自动检测失败，8s 后重试:", e.message);
       }
     }
@@ -608,9 +614,7 @@
     boot(true).then(() => {
       if (!ch) return;
       if (location.hash === "#login") goLogin();
-      refreshStatus();
-      setInterval(() => { if (!document.hidden) refreshStatus(); }, 8000);
-      document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshStatus(); });
+      api.poll(refreshStatus, 8000);
     });
   </script>
 </body>

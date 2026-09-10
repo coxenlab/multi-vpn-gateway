@@ -30,7 +30,7 @@
   const TIMEOUT_MS = 25000;
   const LONG_TIMEOUT_MS = 20 * 60 * 1000;
 
-  async function req(method, url, body, { timeout = TIMEOUT_MS } = {}) {
+  async function request(method, url, body, { timeout = TIMEOUT_MS } = {}) {
     const opt = { method, headers: {} };
     if (body !== undefined) {
       opt.headers["Content-Type"] = "application/json";
@@ -45,7 +45,41 @@
     const ct = r.headers.get("content-type") || "";
     return ct.includes("application/json") ? r.json() : r.text();
   }
+  const inFlight = new Map();
+  function req(method, url, body, options) {
+    if (method !== "GET") return request(method, url, body, options);
+    if (inFlight.has(url)) return inFlight.get(url);
+    const pending = request(method, url, body, options).finally(() => inFlight.delete(url));
+    inFlight.set(url, pending);
+    return pending;
+  }
+
+  // 页面轮询共用背压和可见性生命周期；返回停止函数。
+  function poll(fn, interval, { immediate = true } = {}) {
+    let stopped = false, running = false, timer = null;
+    const run = async () => {
+      if (stopped || running || document.hidden) return;
+      running = true;
+      try { await fn(); } catch (e) { console.warn("[poll]", e.message); }
+      finally {
+        running = false;
+        if (!stopped && !document.hidden) timer = setTimeout(run, interval);
+      }
+    };
+    const visible = () => { clearTimeout(timer); if (!document.hidden) run(); };
+    const stop = () => {
+      stopped = true; clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("pagehide", stop);
+    };
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("pagehide", stop, { once: true });
+    timer = setTimeout(run, immediate ? 0 : interval);
+    return stop;
+  }
+  let healthAvailable = true;
   window.api = {
+    poll,
     channels: () => req("GET", "/api/channels"),
     vpnTypes: () => req("GET", "/api/vpn-types"),
     vpnVersions: (type) => req("GET", `/api/vpn-types/${type}/versions`),
@@ -72,7 +106,14 @@
       const ct = r.headers.get("content-type") || "";
       return ct.includes("application/json") ? r.json() : r.text();
     },
-    status: (id) => req("GET", `/api/channels/${id}/status`),
+    status: (id) => req("GET", `/api/channels/${id}/status`, undefined, { timeout: 45000 }),
+    channelHealth: async (id) => {
+      if (healthAvailable) {
+        try { return await req("GET", `/api/channels/${id}/health`, undefined, { timeout: 45000 }); }
+        catch (e) { if (e.status !== 404) throw e; healthAvailable = false; }
+      }
+      return window.api.status(id); // Web/旧桌面版保留原探活契约。
+    },
     // 登录信息备注(加密落库;旧后端 404/405 → 调用方 feature-detect 隐藏卡片)
     noteGet: (id) => req("GET", `/api/channels/${id}/note`),
     noteSet: (id, note) => req("PUT", `/api/channels/${id}/note`, { note }),

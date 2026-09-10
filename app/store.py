@@ -175,6 +175,14 @@ def set_status(cid, status):
         c.execute("UPDATE channels SET status=? WHERE id=?", (status, cid))
 
 
+def set_probe_result(cid, status, latency):
+    with _c() as c:
+        result = c.execute("UPDATE channels SET status=?, latency_ms=? WHERE id=? AND status IN ('running','logged_in')",
+                           (status, latency, cid))
+        if result.rowcount != 1:
+            raise RuntimeError("通道状态已变化")
+
+
 def set_novnc_port(cid, port):
     with _c() as c:
         c.execute("UPDATE channels SET novnc_port=? WHERE id=?", (port, cid))
