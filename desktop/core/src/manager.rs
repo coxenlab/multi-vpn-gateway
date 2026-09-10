@@ -298,27 +298,7 @@ pub async fn logs(docker: &bollard::Docker, cid: &str, tail: i64) -> Vec<String>
     }
 }
 
-// ── Task 4: create_channel + stop/start/remove/novnc_port ─────────────────
-
-/// 起容器，noVNC 端口按需在 login 接口建立。
-/// (凭据注入由调用方紧随其后经 oss_connect 做,见命门 #5)。返回 (container_id, novnc_port)。
-///
-/// 宿主架构差异:Python 用 `socket.gethostbyname("mihomo")` 设 oss 容器 DNS;Rust core
-/// 在宿主、不在 docker 网,改 inspect mihomo 在 vpn-net 上的 IP(best-effort,失败则不设 DNS,
-/// 对齐 Python 吞 OSError)。
-pub async fn create_channel(
-    state: &crate::AppState,
-    docker: &bollard::Docker,
-    ch: &ChannelPublic,
-    vnc_pwd: &str,
-) -> Result<(String, Option<i64>)> {
-    let plan = channel_plan(state, docker, ch, vnc_pwd).await?;
-    crate::novnc::drop_for(state, &ch.id).await;
-    let id = crate::docker::create_from_plan(docker, &plan, None).await?;
-    initialize_gui(docker, ch).await;
-    // 显示入口失败不再把已启动的 VPN 容器判为创建失败；oss 凭据仍由调用方注入。
-    Ok((id, None))
-}
+// ── 通道计划、初始化与启停 ─────────────────────────────────────────────
 
 /// 普通创建与候选替换共用参数；这里只准备镜像和配置，不动既有容器。
 pub async fn channel_plan(state: &crate::AppState, docker: &bollard::Docker, ch: &ChannelPublic, vnc_pwd: &str) -> Result<crate::adapters::ContainerPlan> {
@@ -417,9 +397,13 @@ pub async fn stop(docker: &bollard::Docker, cid: &str) -> Result<()> {
     crate::docker::stop(docker, &format!("vpn-{cid}")).await
 }
 
-/// 原地 start —— 仅 byo(命门:hagb/oss 走重建 create_channel)。
-pub async fn start(docker: &bollard::Docker, cid: &str) -> Result<()> {
-    crate::docker::start(docker, &format!("vpn-{cid}")).await
+/// 原地 start —— 仅 byo(命门:hagb/oss 走 replacement)。
+pub async fn start(docker: &bollard::Docker, cid: &str, expected: &str) -> Result<()> {
+    let info = docker.inspect_container(expected, None).await?;
+    anyhow::ensure!(info.id.as_deref() == Some(expected) && info.name.as_deref() == Some(&format!("/vpn-{cid}")), "原容器身份已变化，不能原地启动");
+    let _ = crate::docker::start(docker, expected).await;
+    anyhow::ensure!(docker.inspect_container(expected, None).await?.state.and_then(|s| s.running) == Some(true), "原容器启动未确认");
+    Ok(())
 }
 
 /// 删容器(忽略不存在)。
@@ -821,16 +805,6 @@ mod tests {
         assert!(out[1].contains("上一行重复") && out[1].contains("2"), "3 次 → 标记重复 2 次");
         assert_eq!(out[2], "ok");
         assert_eq!(out[3], "warn X");
-    }
-
-    // ── Task 4: create_channel 签名占位 ────────────────────────────────────
-    #[test]
-    fn create_channel_signature_compiles() {
-        // 纯编译/类型存在性占位(真实起容器在 ignore 测/手动验)
-        let _ = create_channel;
-        let _ = stop;
-        let _ = start;
-        let _ = remove;
     }
 
     // ── Task 5: oss_plan + sh(命门 #5:argv/stdin 切分) ────────────────────

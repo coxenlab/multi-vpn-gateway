@@ -127,6 +127,22 @@ def rolled_back(record, runtime, fields=None, secret_keys=()):
         c.execute("UPDATE channel_replacements SET phase='rolled_back' WHERE channel_id=?", (record.channel_id,))
 
 
+def restore_absent(record, volume, fields=None, secret_keys=(), stopped=False):
+    """初次创建或旧实例丢失的补偿：只还原设置和卷，不编造运行中的实例。"""
+    if record.payload.get('kind') != 'initial': raise ValueError('操作不是无旧实例创建')
+    with store._c() as c:
+        c.execute('BEGIN IMMEDIATE')
+        _check(c, record.channel_id, record.operation_id, 'rolling_back')
+        if fields is not None:
+            store._update_channel(c, record.channel_id, fields, secret_keys)
+        row = c.execute('UPDATE channels SET container_id=NULL,novnc_port=NULL,latency_ms=NULL,status=? WHERE id=?',
+                        ('stopped' if stopped else 'error', record.channel_id))
+        if row.rowcount != 1: raise RuntimeError('通道不存在')
+        c.execute('INSERT INTO channel_runtime(channel_id,data_volume) VALUES(?,?) ON CONFLICT(channel_id) DO UPDATE SET data_volume=excluded.data_volume',
+                  (record.channel_id, volume))
+        c.execute("UPDATE channel_replacements SET phase='rolled_back' WHERE channel_id=?", (record.channel_id,))
+
+
 def finish(cid, operation):
     with store._c() as c:
         c.execute("BEGIN IMMEDIATE")

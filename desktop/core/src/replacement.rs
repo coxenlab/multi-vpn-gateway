@@ -111,22 +111,29 @@ fn validate_source(info: &ContainerInspectResponse, cid: &str, volume: &str) -> 
     Ok(())
 }
 
-/// 调用前已拿通道变更锁。BYO 的安装在可写层，不能走此重建路径。
+/// 调用前已拿通道变更锁。没有旧实例时仍使用候选和持久化记录。
 pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Value>, force_start: bool) -> Result<()> {
     let docker = st.docker().ok_or_else(|| anyhow!("docker unavailable"))?;
     let db = st.cfg.db_path(); let key = store::master_key(&st.cfg.data_dir)?;
     ensure!(journal::get(&db, &key, &ch.id)?.is_none(), "上一次修改尚未验证，请先完成登录或恢复上一次设置");
     let spec = registry::get(&ch.vpn_type)?;
-    ensure!(spec.runtime != "byo", "自装客户端不能通过重建修改连接参数");
-    let old_id = ch.container_id.as_deref().ok_or_else(|| anyhow!("通道没有旧容器"))?;
-    let old = identity(&docker, old_id).await?;
+    ensure!(spec.runtime != "byo" || ch.container_id.is_none(), "自装客户端的安装在原容器中，不能通过重建恢复或修改连接参数");
+    let old = match ch.container_id.as_deref() { Some(old_id) => get(&docker, old_id).await?, None => None };
     let volume = journal::data_volume(&db, &ch.id)?;
-    validate_source(&old, &ch.id, &volume)?;
+    if old.is_none() && ch.container_id.is_some() { store::set_status(&db, &ch.id, "error")?; }
+    if let Some(old) = old.as_ref() {
+        ensure!(old.id == ch.container_id, "旧容器 ID 与通道不匹配");
+        validate_source(old, &ch.id, &volume)?;
+    } else { ensure!(get(&docker, &format!("vpn-{}", ch.id)).await?.is_none(), "正式容器名已被外部占用，保留现有资源"); }
+    let source_exists = match docker.inspect_volume(&volume).await {
+        Ok(_) => true, Err(e) if crate::docker::is_not_found(&e) => false, Err(e) => return Err(e.into()),
+    };
+    ensure!(old.is_none() || source_exists, "旧数据卷不存在，保留原实例");
     let desired = changed(ch, fields);
     let mut plan = manager::channel_plan(st, &docker, &desired, ch.vnc_password.as_deref().unwrap_or_default()).await?;
     let selected = docker.inspect_image(plan.config.image.as_deref().ok_or_else(|| anyhow!("候选镜像缺失"))?).await?;
     plan.config.image = Some(selected.id.ok_or_else(|| anyhow!("候选镜像缺少固定 ID"))?);
-    let helper_image = docker.inspect_image("vpnmgr/oss-vpn:latest").await?.id.ok_or_else(|| anyhow!("复制镜像缺少固定 ID"))?;
+    let helper_image = if source_exists { Some(docker.inspect_image("vpnmgr/oss-vpn:latest").await?.id.ok_or_else(|| anyhow!("复制镜像缺少固定 ID"))?) } else { None };
     let old_config = store::get_config(&db, &key, &ch.id)?;
     let mut config = old_config.clone();
     for field in ["server", "username", "password"] {
@@ -145,8 +152,9 @@ pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Val
     let operation: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
     let owner = Owner { channel: ch.id.clone(), operation: operation.clone() };
     let payload = json!({"fields":fields,"old_fields":old_fields,"old_config":old_config,"config":config,"secrets":secrets,
-        "old_id":old_id,"old_volume":volume,"old_image":old.image.as_deref().ok_or_else(|| anyhow!("旧镜像 ID 缺失"))?,"new_image":plan.config.image,
-        "old_running":running(&old)==Some(true),"old_policy":old.host_config.as_ref().and_then(|h| h.restart_policy.clone()).unwrap_or_else(|| policy(RestartPolicyNameEnum::NO)),
+        "kind":if old.is_some(){"replacement"}else{"initial"},"source_exists":source_exists,
+        "old_id":old.as_ref().and_then(|o|o.id.as_deref()),"old_volume":volume,"old_image":old.as_ref().and_then(|o|o.image.as_deref()),"new_image":plan.config.image,
+        "old_running":old.as_ref().is_some_and(|o|running(o)==Some(true)),"old_policy":old.as_ref().and_then(|o|o.host_config.as_ref()).and_then(|h| h.restart_policy.clone()).unwrap_or_else(|| policy(RestartPolicyNameEnum::NO)),
         "start":force_start || ch.status != "stopped","config_applied":false});
     journal::begin(&db, &key, &ch.id, &operation, &payload)?;
     let outcome = async {
@@ -159,18 +167,24 @@ pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Val
         let record = advance(st, &key, &record, "prepared", json!({"new_id":candidate}))?;
         let record = advance(st, &key, &record, "switching", json!({}))?;
         crate::novnc::drop_for(st, &ch.id).await;
-        set_policy(&docker, old_id, policy(RestartPolicyNameEnum::NO)).await?;
-        set_running(&docker, old_id, false).await?;
-        resources::copy_volume(&docker, &owner, old_id, &volume, &helper_image).await?;
         let canonical = format!("vpn-{}", ch.id);
-        rename(&docker, old_id, &canonical, &format!("{canonical}-previous-{operation}")).await?;
+        if let Some(old) = old.as_ref() {
+            let old_id = id(old)?;
+            set_policy(&docker, old_id, policy(RestartPolicyNameEnum::NO)).await?;
+            set_running(&docker, old_id, false).await?;
+            resources::copy_volume(&docker, &owner, old_id, &volume, helper_image.as_deref().ok_or_else(||anyhow!("复制镜像缺失"))?).await?;
+            rename(&docker, old_id, &canonical, &format!("{canonical}-previous-{operation}")).await?;
+        } else {
+            ensure!(get(&docker, &canonical).await?.is_none(), "正式容器名已被外部占用");
+            if let Some(helper_image) = helper_image.as_deref() { resources::copy_unattached_volume(&docker, &owner, &volume, helper_image).await?; }
+        }
         rename(&docker, &candidate, &owner.candidate_name(), &canonical).await?;
         let record = advance(st, &key, &record, "validating", json!({}))?;
         let (mut connected, mut latency) = (false, None);
         if payload["start"] == true {
             set_running(&docker, &candidate, true).await?;
             initialize(&docker, &desired, &config).await?;
-            if spec.runtime == "oss" {
+            if spec.runtime == "oss" || desired.login_method == "headless" {
                 for attempt in 0..3 {
                     (connected, latency) = manager::probe(Some(&docker), &st.cfg, &desired).await;
                     if connected { break; }
@@ -181,8 +195,9 @@ pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Val
         }
         let runtime = applied_runtime(&docker, &candidate, &owner.volume_name(), connected, latency).await?;
         ensure!(payload["start"] != true || runtime.status != "stopped", "候选容器在初始化时退出");
-        journal::apply(&db, &key, &record, fields, &secrets, &runtime, !connected)?;
-        Ok::<_, anyhow::Error>((candidate, !connected))
+        let waiting = !connected && (old.is_some() || source_exists || !fields.is_empty());
+        journal::apply(&db, &key, &record, fields, &secrets, &runtime, waiting)?;
+        Ok::<_, anyhow::Error>((candidate, waiting))
     }.await;
     match outcome {
         Ok((candidate, waiting)) => {
@@ -224,6 +239,13 @@ pub async fn recover(st: &AppState, cid: &str) -> Result<()> {
         set_running(&docker, id(&candidate)?, false).await?;
         if candidate.name.as_deref() == Some(&format!("/{canonical}")) { rename(&docker, id(&candidate)?, &canonical, &owner.candidate_name()).await?; }
     }
+    if p["kind"] == "initial" {
+        ensure!(get(&docker, &canonical).await?.is_none(), "正式容器名已被外部占用，保留所有资源");
+        if let Some(candidate) = owned(&docker, &owner, false).await? { remove(&docker, &candidate).await?; }
+        let secrets: Vec<String> = serde_json::from_value(p["secrets"].clone())?;
+        journal::restore_absent(&db, &key, &record, if p["config_applied"] == true { Some(object(p,"old_fields")?) } else { None }, &secrets, text(p,"old_volume")?, p["start"] == false)?;
+        return cleanup(st, cid).await;
+    }
     let old_id = text(p,"old_id")?; let old = identity(&docker, old_id).await?;
     let backup = format!("{canonical}-previous-{}", record.operation_id);
     ensure!(old.name.as_deref() == Some(&format!("/{canonical}")) || old.name.as_deref() == Some(&format!("/{backup}")), "旧容器名称已变化，拒绝自动恢复");
@@ -263,24 +285,36 @@ pub async fn cleanup(st: &AppState, cid: &str) -> Result<()> {
     let Some(record) = journal::get(&db,&key,cid)? else { return Ok(()); };
     if !matches!(record.phase.as_str(), "committed" | "rolled_back") { return Ok(()); }
     let ch = store::get_channel(&db,cid)?.ok_or_else(|| anyhow!("通道不存在"))?;
+    if record.payload["kind"] == "initial" && record.phase == "rolled_back" {
+        ensure!(ch.container_id.is_none(), "无旧实例恢复后出现未知运行实例");
+        let owner = owner(&record, false);
+        ensure!(get(&docker, &format!("vpn-{cid}")).await?.is_none(), "正式容器名已被外部占用");
+        if let Some(extra) = owned(&docker, &owner, false).await? { remove(&docker, &extra).await?; }
+        remove_volume(&docker, &owner.volume_name(), Some(&owner)).await?;
+        return journal::finish(&db, cid, &record.operation_id);
+    }
     let current = identity(&docker, ch.container_id.as_deref().ok_or_else(|| anyhow!("当前容器 ID 缺失"))?).await?;
     let p = &record.payload; let owner = owner(&record,false);
     let selected = journal::data_volume(&db,cid)?;
     validate_source(&current,cid,&selected)?;
     set_policy(&docker, id(&current)?, if record.phase == "committed" { policy(RestartPolicyNameEnum::UNLESS_STOPPED) } else { old_policy(&record)? }).await?;
-    if let Some(old) = get(&docker,text(p,"old_id")?).await? {
+    if let Some(old_id) = p["old_id"].as_str() {
+      if let Some(old) = get(&docker,old_id).await? {
         if old.id != current.id {
             ensure!(old.name.as_deref() == Some(&format!("/vpn-{cid}-previous-{}",record.operation_id)), "旧容器名称已变化");
             ensure!(running(&old) == Some(false), "旧容器仍在运行");
             remove(&docker,&old).await?;
         }
+      }
     }
     for candidate_owner in [&owner, &self::owner(&record,true)] {
         if let Some(extra) = owned(&docker,candidate_owner,false).await? {
             if extra.id != current.id { remove(&docker,&extra).await?; }
         }
     }
-    if record.phase == "committed" { remove_volume(&docker,text(p,"old_volume")?,None).await?; }
+    if record.phase == "committed" {
+        if p["source_exists"] != false { remove_volume(&docker,text(p,"old_volume")?,None).await?; }
+    }
     else { remove_volume(&docker,&owner.volume_name(),Some(&owner)).await?; }
     journal::finish(&db,cid,&record.operation_id)
 }
@@ -371,14 +405,18 @@ pub async fn before_stop(st:&AppState,cid:&str)->Result<()> {
     if record.phase=="awaiting_login" {return reconcile_waiting(st,cid).await;}
     ensure!(record.phase!="deleting","通道删除已开始，请重试删除");
     if matches!(record.phase.as_str(),"committed"|"rolled_back") {return cleanup(st,cid).await;}
+    if record.payload["kind"] == "initial" {
+        advance(st,&key,&record,&record.phase,json!({"start":false}))?;
+        return recover(st,cid).await;
+    }
     let docker=st.docker().ok_or_else(||anyhow!("docker unavailable"))?;
     let old_id=text(&record.payload,"old_id")?;
     let old=identity(&docker,old_id).await?;
     ensure!(old.name.as_deref()==Some(&format!("/vpn-{cid}")) || old.name.as_deref()==Some(&format!("/vpn-{cid}-previous-{}",record.operation_id)),"旧容器名称已变化");
     ensure!(old.mounts.as_ref().is_some_and(|m|m.iter().any(|m|m.name.as_deref()==record.payload["old_volume"].as_str())),"旧数据卷已变化");
+    advance(st,&key,&record,&record.phase,json!({"old_running":false,"start":false}))?;
     set_policy(&docker,old_id,policy(RestartPolicyNameEnum::NO)).await?;
     set_running(&docker,old_id,false).await?;
-    advance(st,&key,&record,&record.phase,json!({"old_running":false,"start":false}))?;
     recover(st,cid).await
 }
 
@@ -392,10 +430,12 @@ pub async fn discard(st:&AppState,cid:&str)->Result<bool> {
         record=journal::get(&db,&key,cid)?.ok_or_else(||anyhow!("删除记录丢失"))?;
     }
     let owner=owner(&record,false);let canonical=format!("vpn-{cid}");let mut containers=HashMap::new();
-    if let Some(old)=get(&docker,text(&record.payload,"old_id")?).await? {
+    if let Some(old_id)=record.payload["old_id"].as_str() {
+      if let Some(old)=get(&docker,old_id).await? {
         ensure!(old.name.as_deref()==Some(&format!("/{canonical}")) || old.name.as_deref()==Some(&format!("/{canonical}-previous-{}",record.operation_id)),"旧容器名称已变化");
         ensure!(old.mounts.as_ref().is_some_and(|m|m.iter().any(|m|m.name.as_deref()==record.payload["old_volume"].as_str())),"旧数据卷已变化");
         containers.insert(id(&old)?.to_string(),old);
+      }
     }
     for candidate_owner in [&owner,&self::owner(&record,true)] {
         if let Some(info)=owned(&docker,candidate_owner,true).await? {containers.insert(id(&info)?.to_string(),info);}

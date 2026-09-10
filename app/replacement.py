@@ -125,16 +125,26 @@ def replace(ch, fields, force_start=False):
     import manager
     dc = manager.dc; cid = ch['id']
     if journal.get(cid): raise RuntimeError('上一次修改尚未验证，请先完成登录或恢复上一次设置')
-    if registry.get(ch['vpn_type']).get('runtime') == 'byo': raise RuntimeError('自装客户端不能通过重建修改连接参数')
-    old = _identity(dc, ch['container_id']); volume = journal.data_volume(cid)
-    _validate_source(old, cid, volume)
+    if registry.get(ch['vpn_type']).get('runtime') == 'byo' and ch.get('container_id'):
+        raise RuntimeError('自装客户端的安装在原容器中，不能通过重建恢复或修改连接参数')
+    old = _get(dc, ch['container_id']) if ch.get('container_id') else None
+    volume = journal.data_volume(cid)
+    if old is None and ch.get('container_id'): store.set_status(cid, 'error')
+    if old is not None:
+        if old.id != ch['container_id']: raise RuntimeError('旧容器 ID 与通道不匹配')
+        _validate_source(old, cid, volume)
+    elif _get(dc, 'vpn-' + cid) is not None:
+        raise RuntimeError('正式容器名已被外部占用，保留现有资源')
+    try: dc.volumes.get(volume); source_exists = True
+    except docker.errors.NotFound: source_exists = False
+    if old is not None and not source_exists: raise RuntimeError('旧数据卷不存在，保留原实例')
     desired = _changed(ch, fields)
     plan = manager.channel_plan(desired, ch.get('vnc_password', ''))
     # 在动旧容器之前确保两份镜像都已就绪；固定 ID，后续 tag 漂移不改变本次内容。
     try: selected = dc.images.get(plan['image'])
     except docker.errors.ImageNotFound: selected = dc.images.pull(plan['image'])
     plan['image'] = selected.id
-    helper_image = dc.images.get('vpnmgr/oss-vpn:latest').id
+    helper_image = dc.images.get('vpnmgr/oss-vpn:latest').id if source_exists else None
     old_config = store.get_config(cid); config = dict(old_config)
     for k in ('server', 'username', 'password'):
         if k in fields: config[k] = fields[k] if k == 'password' else store._clean_field(k, fields[k])
@@ -144,9 +154,10 @@ def replace(ch, fields, force_start=False):
     operation = uuid.uuid4().hex
     owner = resources.Owner(cid, operation)
     payload = dict(fields=fields, old_fields=old_fields, old_config=old_config, config=config, secrets=secrets,
-                   old_id=old.id, old_volume=volume, old_image=old.image.id, new_image=selected.id,
-                   old_running=old.attrs.get('State', {}).get('Running') is True,
-                   old_policy=old.attrs.get('HostConfig', {}).get('RestartPolicy', {'Name': 'no'}),
+                   kind='replacement' if old is not None else 'initial', source_exists=source_exists,
+                   old_id=old.id if old is not None else None, old_volume=volume, old_image=old.image.id if old is not None else None, new_image=selected.id,
+                   old_running=old is not None and old.attrs.get('State', {}).get('Running') is True,
+                   old_policy=old.attrs.get('HostConfig', {}).get('RestartPolicy', {'Name': 'no'}) if old is not None else {'Name': 'no'},
                    start=force_start or ch['status'] != 'stopped', config_applied=False)
     journal.begin(cid, operation, payload)
     try:
@@ -158,10 +169,14 @@ def replace(ch, fields, force_start=False):
         candidate = resources.create_candidate(dc, plan, owner)
         record = _advance(record, 'prepared', new_id=candidate)
         record = _advance(record, 'switching')
-        _policy(old, {'Name': 'no'})
-        _running(old, False)
-        resources.copy_volume(dc, owner, old.id, volume, helper_image)
-        _rename(dc, old, 'vpn-' + cid, 'vpn-' + cid + '-previous-' + operation)
+        if old is not None:
+            _policy(old, {'Name': 'no'})
+            _running(old, False)
+            resources.copy_volume(dc, owner, old.id, volume, helper_image)
+            _rename(dc, old, 'vpn-' + cid, 'vpn-' + cid + '-previous-' + operation)
+        else:
+            if _get(dc, 'vpn-' + cid) is not None: raise RuntimeError('正式容器名已被外部占用')
+            if source_exists: resources.copy_unattached_volume(dc, owner, volume, helper_image)
         new = _identity(dc, candidate)
         _rename(dc, new, owner.candidate_name, 'vpn-' + cid)
         record = _advance(record, 'validating')
@@ -169,13 +184,13 @@ def replace(ch, fields, force_start=False):
         if payload['start']:
             _running(new, True)
             _initialize(manager, new, desired, config)
-            if registry.get(ch['vpn_type']).get('runtime') == 'oss':
+            if registry.get(ch['vpn_type']).get('runtime') == 'oss' or desired.get('login_method') == 'headless':
                 for attempt in range(3):
                     connected, latency = manager.probe(desired)
                     if connected: break
                     if attempt < 2: time.sleep(2)
                 if not connected: raise RuntimeError('新设置未通过原验证地址的 SOCKS 探活')
-        waiting = not connected
+        waiting = not connected and (old is not None or source_exists or bool(fields))
         runtime = _runtime(new, owner.volume_name, desired, connected, latency)
         if payload['start'] and runtime.status == 'stopped': raise RuntimeError('候选容器在初始化时退出')
         journal.commit(record, fields, secrets, runtime, awaiting_login=waiting)
@@ -215,6 +230,13 @@ def recover(cid):
     if candidate:
         _policy(candidate, {'Name': 'no'}); _running(candidate, False)
         if candidate.attrs.get('Name') == '/' + canonical: _rename(dc, candidate, canonical, owner.candidate_name)
+    if p.get('kind') == 'initial':
+        if _get(dc, canonical) is not None: raise RuntimeError('正式容器名已被外部占用，保留所有资源')
+        if candidate: _remove(dc, candidate)
+        journal.restore_absent(record, p['old_volume'], p['old_fields'] if p.get('config_applied') else None,
+                               p['secrets'], stopped=not p['start'])
+        cleanup(cid)
+        return
     old = _identity(dc, p['old_id'])
     if old.attrs.get('Name') not in ('/' + canonical, '/' + canonical + '-previous-' + record.operation_id):
         raise RuntimeError('旧容器名称已变化，拒绝自动恢复')
@@ -254,14 +276,24 @@ def cleanup(cid):
     dc = manager.dc; record = journal.get(cid)
     if record is None: return
     if record.phase not in ('committed', 'rolled_back'): return
-    ch = store.get_channel(cid); current = _identity(dc, ch['container_id'])
+    ch = store.get_channel(cid)
+    if record.payload.get('kind') == 'initial' and record.phase == 'rolled_back':
+        if ch.get('container_id'): raise RuntimeError('无旧实例恢复后出现未知运行实例')
+        owner = _owner(record)
+        if _get(dc, 'vpn-' + cid) is not None: raise RuntimeError('正式容器名已被外部占用')
+        extra = _owned(dc, owner)
+        if extra: _remove(dc, extra)
+        _remove_volume(dc, owner.volume_name, owner)
+        journal.finish(cid, record.operation_id)
+        return
+    current = _identity(dc, ch['container_id'])
     if current.attrs.get('Name') != '/vpn-' + cid: raise RuntimeError('当前容器身份已变化')
     p = record.payload; owner = _owner(record)
     # 先确保当前容器确实持有已提交的数据卷，再移除多余实例。
     selected = journal.data_volume(cid)
     _validate_source(current, cid, selected)
     _policy(current, {'Name': 'unless-stopped'} if record.phase == 'committed' else p['old_policy'])
-    old = _get(dc, p['old_id'])
+    old = _get(dc, p['old_id']) if p.get('old_id') else None
     if old and old.id != current.id:
         if old.attrs.get('Name') != '/vpn-' + cid + '-previous-' + record.operation_id: raise RuntimeError('旧容器名称已变化')
         if old.attrs.get('State', {}).get('Running'): raise RuntimeError('旧容器仍在运行')
@@ -271,7 +303,7 @@ def cleanup(cid):
         if extra and extra.id != current.id: _remove(dc, extra)
     if record.phase == 'committed':
         # 原卷已在准备时核实；仍被其他容器使用时保留并报告，不强制删除。
-        _remove_volume(dc, p['old_volume'])
+        if p.get('source_exists', True): _remove_volume(dc, p['old_volume'])
     else:
         _remove_volume(dc, owner.volume_name, owner)
     journal.finish(cid, record.operation_id)
@@ -359,11 +391,15 @@ def before_stop(cid):
     if record.phase == 'deleting': raise RuntimeError('通道删除已开始，请重试删除')
     if record.phase in ('committed', 'rolled_back'):
         cleanup(cid); return
+    if record.payload.get('kind') == 'initial':
+        _advance(record, record.phase, start=False)
+        recover(cid)
+        return
     old = _identity(manager.dc, record.payload['old_id'])
     if old.attrs.get('Name') not in ('/vpn-'+cid, '/vpn-'+cid+'-previous-'+record.operation_id): raise RuntimeError('旧容器名称已变化')
     if not any(m.get('Name') == record.payload['old_volume'] for m in old.attrs.get('Mounts', [])): raise RuntimeError('旧数据卷已变化')
-    _policy(old, {'Name': 'no'}); _running(old, False)
     record = _advance(record, record.phase, old_running=False, start=False)
+    _policy(old, {'Name': 'no'}); _running(old, False)
     recover(cid)
 
 
@@ -375,7 +411,7 @@ def discard(cid):
     if record.phase != 'deleting': journal.request_delete(record); record = journal.get(cid)
     owner = _owner(record); canonical = 'vpn-' + cid
     containers = {}
-    old = _get(dc, record.payload['old_id'])
+    old = _get(dc, record.payload['old_id']) if record.payload.get('old_id') else None
     if old:
         if old.attrs.get('Name') not in ('/'+canonical, '/'+canonical+'-previous-'+record.operation_id): raise RuntimeError('旧容器名称已变化')
         if not any(m.get('Name') == record.payload['old_volume'] for m in old.attrs.get('Mounts', [])): raise RuntimeError('旧数据卷已变化')

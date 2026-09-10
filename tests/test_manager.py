@@ -73,117 +73,47 @@ def test_dns_recovery_retries_original_probe(monkeypatch):
     assert manager.probe({"id": "c1"}) == (True, 42)
 
 
-def test_create_channel_uses_adapter_kwargs(monkeypatch):
+def test_channel_plan_uses_adapter_kwargs_and_gui_initialization(monkeypatch):
     import manager, adapters, registry
-
-    captured = {}
     execs = []
-
     class FakeContainer:
-        id = "deadbeef"
-        def reload(self): pass
         def exec_run(self, cmd, **kw): execs.append((cmd, kw))
-        ports = {"8080/tcp": [{"HostPort": "18080"}]}
-
-    class FakeContainers:
-        def get(self, name): raise __import__("docker").errors.NotFound("x")
-        def run(self, **kw):
-            captured.update(kw)
-            return FakeContainer()
-
-    class FakeDc:
-        containers = FakeContainers()
-
-    monkeypatch.setattr(manager, "dc", FakeDc())
-
-    ch = {"id": "abc123", "vpn_type": "easyconnect", "ec_ver": "7.6.3",
-          "mac": "02:00:00:00:00:01"}
-    cid, novnc = manager.create_channel(ch, "vncpw01")
-
-    assert cid == "deadbeef"
-    assert novnc == 18080
-    # 起容器入参 == 适配器合成结果
-    assert captured == adapters.build_run_kwargs(
-        ch, registry.get("easyconnect"), "vncpw01", manager.VPN_NET)
-    # hagb 起容器后写 gai.conf 强制 IPv4 优先(aTrust IPv6 假地址通路损坏的规避)
+    ch = {"id": "abc123", "vpn_type": "easyconnect", "ec_ver": "7.6.3", "mac": "02:00:00:00:00:01"}
+    plan = manager.channel_plan(ch, "vncpw01")
+    assert plan == adapters.build_run_kwargs(ch, registry.get("easyconnect"), "vncpw01", manager.VPN_NET)
+    manager.initialize_gui(FakeContainer(), registry.get("easyconnect"))
     assert any("gai.conf" in " ".join(cmd) for cmd, _kw in execs)
 
 
-def test_create_channel_oss_connects_via_stdin(monkeypatch):
-    import manager, adapters, registry, store
-
-    captured = {}
+def test_oss_plan_and_connect_keep_password_out_of_argv(monkeypatch):
+    import manager, adapters, registry
     execs = []
-
     class FakeContainer:
-        id = "deadbeef"
-        def reload(self): pass
-        ports = {}  # oss 无 host 端口映射
         def exec_run(self, cmd, **kw):
-            execs.append({"cmd": cmd, "kw": kw})
-            return (0, b"")
-
-    class FakeContainers:
-        def get(self, name): raise __import__("docker").errors.NotFound("x")
-        def run(self, **kw):
-            captured.update(kw)
-            return FakeContainer()
-
-    class FakeDc:
-        containers = FakeContainers()
-
-    monkeypatch.setattr(manager, "dc", FakeDc())
-    # config 解密结果由 store 提供;这里直接 stub 出明文 config
-    monkeypatch.setattr(store, "get_config",
-                        lambda cid: {"server": "https://gw", "username": "alice",
-                                     "password": "s3cret"})
-    # oss 容器解析器指向 mihomo(绕开宿主 Clash 的 :53 fake-ip 劫持);钉死 IP 以免依赖真实 DNS
+            execs.append({"cmd": cmd, "kw": kw}); return (0, b"")
     monkeypatch.setattr(manager.socket, "gethostbyname", lambda h: "10.0.0.9")
-
     ch = {"id": "oss1", "vpn_type": "anyconnect", "ec_ver": "", "mac": ""}
-    cid, novnc = manager.create_channel(ch, "vncpw01")
-
-    assert cid == "deadbeef"
-    assert novnc is None                       # oss 无 noVNC 端口
-    # 起容器入参 = 适配器合成结果 + oss 专属 dns=[mihomo]
-    expected = adapters.build_run_kwargs(
-        ch, registry.get("anyconnect"), "vncpw01", manager.VPN_NET)
+    spec = registry.get("anyconnect")
+    plan = manager.channel_plan(ch, "vncpw01")
+    expected = adapters.build_run_kwargs(ch, spec, "vncpw01", manager.VPN_NET)
     expected["dns"] = ["10.0.0.9"]
-    assert captured == expected
-    # 连接经 exec_run + stdin 注入;密码绝不出现在 cmd(命门 #5)
+    assert plan == expected
+    manager.oss_connect(FakeContainer(), spec, {"server":"https://gw", "username":"alice", "password":"s3cret"})
     assert execs, "expected an exec_run connect call"
     joined = " ".join(map(str, execs[0]["cmd"]))
     assert "s3cret" not in joined
     assert execs[0]["kw"].get("stdin") is True
-    assert "alice" in joined or "anyconnect" in joined  # 协议/账号经命令,密码经 stdin
+    assert "alice" in joined or "anyconnect" in joined
 
 
-def test_create_channel_oss_wireguard_config_not_in_argv(monkeypatch):
-    import manager, store
-
+def test_oss_wireguard_config_not_in_argv():
+    import manager, registry
     execs = []
-
     class FakeContainer:
-        id = "wgid"
-        def reload(self): pass
-        ports = {}
         def exec_run(self, cmd, **kw):
             execs.append({"cmd": cmd, "kw": kw}); return (0, b"")
-
-    class FakeContainers:
-        def get(self, name): raise __import__("docker").errors.NotFound("x")
-        def run(self, **kw): return FakeContainer()
-
-    class FakeDc:
-        containers = FakeContainers()
-
-    monkeypatch.setattr(manager, "dc", FakeDc())
     secret = "[Interface]\nPrivateKey=TOPSECRETKEY=\n"
-    monkeypatch.setattr(store, "get_config", lambda cid: {"config_file": secret})
-
-    ch = {"id": "wg1", "vpn_type": "wireguard", "ec_ver": "", "mac": ""}
-    manager.create_channel(ch, "v")
-    # wg 私钥绝不出现在任何 exec_run 命令行(命门 #5:经 stdin 写入 /config)
+    manager.oss_connect(FakeContainer(), registry.get("wireguard"), {"config_file":secret})
     for e in execs:
         assert "TOPSECRETKEY" not in " ".join(map(str, e["cmd"]))
     joined_all = " ".join(" ".join(map(str, e["cmd"])) for e in execs)

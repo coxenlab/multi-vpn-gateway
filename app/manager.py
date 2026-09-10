@@ -33,31 +33,6 @@ CFG = os.environ.get("MIHOMO_CONFIG_PATH", "/cfg/config.yaml")
 dc = docker.from_env()
 
 
-def create_channel(ch, vnc_pwd):
-    """起一个 VPN 容器。
-
-    hagb:noVNC(8080)由 Docker 分配高位随机端口映射到 127.0.0.1,返回该端口。
-    oss:无 noVNC,SOCKS5(1080)仅 docker 内网;起容器后经 stdin 注入凭据并连接,
-         novnc 返回 None。1080 绝不映射到 host(命门 #4)。
-    """
-    spec = registry.get(ch["vpn_type"])
-    kw = channel_plan(ch, vnc_pwd)
-
-    try:
-        dc.containers.get(kw["name"]).remove(force=True)
-    except docker.errors.NotFound:
-        pass
-
-    c = dc.containers.run(**kw)
-    c.reload()
-    initialize_gui(c, spec)
-    if spec.get("runtime") == "oss":
-        oss_connect(c, spec, store.get_config(ch["id"]))
-        return c.id, None
-    novnc = int(c.ports["8080/tcp"][0]["HostPort"])
-    return c.id, novnc
-
-
 def channel_plan(ch, vnc_pwd):
     """普通创建与候选共用参数；不删除或启动任何容器。"""
     spec = registry.get(ch["vpn_type"])
@@ -250,11 +225,16 @@ def stop(cid):
 
 def start(cid):
     """原地 docker start——仅 byo 用。byo 的客户端是用户手动装在可写层(非 /root 卷),
-    重建会抹掉;桌面+microsocks 在 entrypoint,扛得住原地重启。hagb/oss 走 create_channel 重建。"""
-    try:
-        dc.containers.get(f"vpn-{cid}").start()
-    except docker.errors.NotFound:
-        pass
+    重建会抹掉;桌面+microsocks 在 entrypoint,扛得住原地重启。hagb/oss 走 replacement 重建。"""
+    ch = store.get_channel(cid)
+    if not ch or not ch.get('container_id'): raise RuntimeError('原容器 ID 缺失，不能原地启动')
+    c = dc.containers.get(ch['container_id'])
+    if c.id != ch['container_id'] or c.attrs.get('Name') != '/vpn-' + cid:
+        raise RuntimeError('原容器身份已变化，不能原地启动')
+    try: c.start()
+    except requests.exceptions.RequestException: pass
+    c.reload()
+    if c.attrs.get('State', {}).get('Running') is not True: raise RuntimeError('原容器启动未确认')
 
 
 def remove(cid):

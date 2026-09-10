@@ -12,12 +12,30 @@ def test_create_channel(client):
     assert "password_enc" not in ch
 
 
+def test_create_keeps_confirmed_runtime_status(client, monkeypatch):
+    import replacement, store
+    def provision(ch, fields, force_start=False):
+        store.set_container(ch['id'], 'confirmed-candidate', None, 'logged_in')
+    monkeypatch.setattr(replacement, 'replace', provision)
+    ch = _create(client, login_method='headless')
+    assert ch['status'] == 'logged_in' and ch['container_id'] == 'confirmed-candidate'
+
+
+def test_byo_missing_instance_is_not_reported_running(client, monkeypatch):
+    import manager, store
+    cid = _create(client, vpn_type='custom')['id']
+    def missing(cid): raise RuntimeError('original instance missing')
+    monkeypatch.setattr(manager, 'start', missing)
+    response = client.post(f'/api/channels/{cid}/start')
+    assert response.status_code == 500 and store.get_channel(cid)['status'] == 'error'
+
+
 def test_editing_metadata_with_unchanged_connection_fields_does_not_reconnect(client, monkeypatch):
-    import manager
+    import manager, replacement
     cid = _create(client)["id"]
     def forbidden(*args, **kwargs):
         raise AssertionError("unchanged connection must not recreate or reload")
-    monkeypatch.setattr(manager, "create_channel", forbidden)
+    monkeypatch.setattr(replacement, "replace", forbidden)
     monkeypatch.setattr(manager, "rebuild", forbidden)
     result = client.patch(f"/api/channels/{cid}", json={"name": "new name", "server": " https://x ", "username": "", "ec_ver": "7.6.3", "password": ""})
     assert result.status_code == 200 and result.json()["name"] == "new name"
@@ -412,7 +430,7 @@ def test_start_recreates_not_inplace_docker_start(client, monkeypatch):
     """命门:EC/aTrust(hagb) 与 oss 扛不住原地 docker start(守护进程/exec 注入的隧道不重启)。
     /start 必须重建容器(docker run fresh),而非 container.start()。"""
     import manager, store, replacement
-    cid = _create(client)["id"]                          # create_channel mocked → ("cid_fake", 18080)
+    cid = _create(client)["id"]                          # replacement fixture persists cid_fake / 18080
     client.post(f"/api/channels/{cid}/stop")
     assert store.get_channel(cid)["status"] == "stopped"
 
@@ -420,7 +438,6 @@ def test_start_recreates_not_inplace_docker_start(client, monkeypatch):
         assert ch['id'] == cid and fields == {} and force_start
         store.set_container(cid, "fresh-cid", 29999, "running")
     monkeypatch.setattr(replacement, "replace", replace)
-    monkeypatch.setattr(manager, "create_channel", lambda *a: (_ for _ in ()).throw(AssertionError("必须走保留旧实例的替换流程")))
     r = client.post(f"/api/channels/{cid}/start")
     assert r.status_code == 200
     row = store.get_channel(cid)
@@ -432,16 +449,16 @@ def test_start_recreates_not_inplace_docker_start(client, monkeypatch):
 def test_byo_start_inplace_not_recreate(client, monkeypatch):
     """例外:byo 桌面容器的客户端是用户手动装在可写层(非 /root 卷),重建会抹掉 →
     /start 必须原地 docker start(桌面+microsocks 在 entrypoint,扛得住),不重建。"""
-    import manager, store
+    import manager, store, replacement
     cid = client.post("/api/channels", json={
         "name": "兜底X", "vpn_type": "custom", "login_method": "byo",
-        "probe_url": "http://p"}).json()["id"]            # create_channel mocked → ("cid_fake", 18080)
+        "probe_url": "http://p"}).json()["id"]            # replacement fixture persists cid_fake / 18080
     client.post(f"/api/channels/{cid}/stop")
 
     started = {}
     monkeypatch.setattr(manager, "start", lambda c: started.update(cid=c))
-    monkeypatch.setattr(manager, "create_channel",
-                        lambda c, vnc: (_ for _ in ()).throw(AssertionError("byo 不应重建")))
+    monkeypatch.setattr(replacement, "replace",
+                        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("byo 不应重建")))
     r = client.post(f"/api/channels/{cid}/start")
     assert r.status_code == 200
     assert started.get("cid") == cid                      # 走了原地 docker start
@@ -590,3 +607,21 @@ def test_interrupted_start_excludes_unconfirmed_runtime_from_rules(client, monke
     status = client.get(f'/api/channels/{cid}/health').json()
     assert status['replacement']['phase'] == 'preparing'
     assert status['connected'] is False
+
+
+def test_stop_persists_intent_before_changing_old_runtime(client, monkeypatch):
+    import pytest
+    from types import SimpleNamespace
+    import replacement, replacement_store as journal
+    cid = _create(client)['id']
+    journal.begin(cid, 'operation', {'old_id':'cid_fake', 'old_volume':'vpndata-'+cid, 'old_running':True, 'start':True})
+    old = SimpleNamespace(attrs={'Name':'/vpn-'+cid, 'Mounts':[{'Name':'vpndata-'+cid}]})
+    monkeypatch.setattr(replacement, '_identity', lambda dc, identity: old)
+    def interrupted(c, policy):
+        payload = journal.get(cid).payload
+        assert payload['old_running'] is False and payload['start'] is False
+        raise RuntimeError('interrupted at first runtime change')
+    monkeypatch.setattr(replacement, '_policy', interrupted)
+    with pytest.raises(RuntimeError, match='first runtime change'):
+        replacement.before_stop(cid)
+    assert journal.get(cid).payload['start'] is False

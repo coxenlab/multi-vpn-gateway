@@ -322,7 +322,7 @@ pub async fn patch_rules(
     })).into_response()
 }
 
-// ── 通道创建/编辑(命门 #5:oss 凭据经 provision→oss_connect 注入) ──────────
+// ── 通道创建/编辑(命门 #5:oss 凭据经 replacement→oss_connect 注入) ──────
 
 fn rand_hex(n: usize) -> String {
     (0..n).map(|_| format!("{:02x}", rand::random::<u8>())).collect()
@@ -459,34 +459,6 @@ pub async fn restore_channel(State(st): State<AppState>, Path(cid): Path<String>
     }).await
 }
 
-/// create_channel + (oss)oss_connect。对照 main.py create_channel 的整体语义
-/// (Phase 4 把 oss_connect 拆到调用方,命门 #5)。
-async fn provision(
-    st: &AppState,
-    ch: &store::ChannelPublic,
-    vnc_pwd: &str,
-) -> anyhow::Result<(String, Option<i64>)> {
-    let docker = st.docker().ok_or_else(|| anyhow::anyhow!("docker unavailable"))?;
-    provision_with_docker(st, &docker, ch, vnc_pwd).await
-}
-
-async fn provision_with_docker(
-    st: &AppState,
-    docker: &bollard::Docker,
-    ch: &store::ChannelPublic,
-    vnc_pwd: &str,
-) -> anyhow::Result<(String, Option<i64>)> {
-    let (id, novnc) = manager::create_channel(st, docker, ch, vnc_pwd).await?;
-    let spec = registry::get(&ch.vpn_type)?;
-    if spec.runtime == "oss" {
-        let key = store::master_key(&st.cfg.data_dir)?;
-        let config = store::get_config(&st.cfg.db_path(), &key, &ch.id)?;
-        let proto = spec.protocol.clone().unwrap_or_default();
-        manager::oss_connect(docker, &ch.id, &proto, &config).await?;
-    }
-    Ok((id, novnc))
-}
-
 /// 改状态的处理函数(create/start/stop/delete)统一脱离 HTTP 请求生命周期:前端跳转 / 刷新会
 /// 取消请求,axum 随之丢弃处理中的 future,留下「容器已动、库未写、无审计」的半完成状态
 /// (2026-09-10 客户C实例)。spawn 后 await:客户端断开也不取消。
@@ -588,41 +560,26 @@ async fn create_inner(st: AppState, b: Value) -> axum::response::Response {
             return err500(&format!("get_channel after add: {e}"));
         }
     };
-    match provision(&st, &ch, &vnc).await {
-        Ok((container_id, novnc)) => {
-            let state_persisted = match store::set_container(&db, &cid, &container_id, novnc, "running") {
-                Ok(()) => true,
-                Err(e) => {
-                    crate::events::audit_failed("channel_create", "通道容器已创建但状态落库失败", json!({
-                        "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
-                        "vpn_type": ch.vpn_type.as_str(), "before": null, "after": channel_snapshot_of(&db, &cid),
-                        "container_id": container_id.as_str(),
-                        "duration_ms": started.elapsed().as_millis() as u64, "result": "failed", "error": e.to_string()
-                    }));
-                    false
-                }
-            };
-            // 对照 Python create:响应回通道(不含 reload_status);重载未达成仅记日志,不阻断建通道。
+    match crate::replacement::replace(&st, &ch, &Default::default(), true).await {
+        Ok(()) => {
             let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
             if !reload_ok(&reload) {
                 crate::ev!(error, "api", "mihomo_reload_failed", "创建通道后 mihomo 重载未达成",
                     { "operation": "create", "cid": cid.as_str(), "error": reload.as_str() });
             }
-            if state_persisted {
-                crate::events::audit("channel_create", "通道创建完成", json!({
-                    "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
-                    "vpn_type": ch.vpn_type.as_str(), "before": null, "after": channel_snapshot_of(&db, &cid),
-                    "duration_ms": started.elapsed().as_millis() as u64, "result": "ok"
-                }));
-            }
+            crate::events::audit("channel_create", "通道创建完成，连通状态以探活为准", json!({
+                "target_kind":"channel", "target_id":cid, "target_name":ch.name,
+                "vpn_type":ch.vpn_type, "before":null, "after":channel_snapshot_of(&db,&cid),
+                "duration_ms":started.elapsed().as_millis() as u64, "result":"ok"
+            }));
             channel_json(&db, &cid)
         }
         Err(e) => {
             let _ = store::set_status(&db, &cid, "error");
             crate::events::audit_failed("channel_create", "通道创建失败", json!({
-                "target_kind": "channel", "target_id": cid.as_str(), "target_name": ch.name.as_str(),
-                "vpn_type": ch.vpn_type.as_str(), "before": null, "after": channel_snapshot_of(&db, &cid),
-                "duration_ms": started.elapsed().as_millis() as u64, "result": "failed", "error": e.to_string()
+                "target_kind":"channel", "target_id":cid, "target_name":ch.name,
+                "vpn_type":ch.vpn_type, "before":null, "after":channel_snapshot_of(&db,&cid),
+                "duration_ms":started.elapsed().as_millis() as u64, "result":"failed", "error":e.to_string()
             }));
             err500(&format!("{e}"))
         }
@@ -989,9 +946,11 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
         Err(e) => return err500(&format!("启动未完成: {e}")),
     }
     let runtime = registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
-    if runtime == "byo" {
+    if runtime == "byo" && ch.container_id.is_some() {
         // byo 客户端装在可写层,扛得住原地重启 → 不重建
-        if let Err(e) = manager::start(&docker, &cid).await {
+        if let Err(e) = manager::start(&docker, &cid, ch.container_id.as_deref().unwrap_or_default()).await {
+            let _ = store::set_status(&db, &cid, "error");
+            let _ = manager::rebuild(&st.cfg, Some(&docker), &db).await;
             let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "in_place");
             detail["error"] = json!(e.to_string());
             crate::events::audit_failed("channel_start", "通道启动失败", detail);
@@ -1016,52 +975,19 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
         );
         return Json(json!({ "ok": true })).into_response();
     }
-    // 有旧实例时先准备独立候选；失败保留旧设置与数据。
-    if ch.container_id.is_some() {
-        if let Err(e) = crate::replacement::replace(&st, &ch, &Default::default(), true).await {
-            if crate::replacement_store::public_status(&db, &cid).ok().flatten().is_some_and(|p| !matches!(p["phase"].as_str(), Some("committed" | "rolled_back" | "awaiting_login"))) {
-                let _ = store::set_status(&db, &cid, "error");
-            }
-            let _ = manager::rebuild(&st.cfg, Some(&docker), &db).await;
-            return err500(&format!("启动未完成: {e}"));
+    // 所有创建均先准备独立候选；旧实例丢失时也保留原数据卷。
+    if let Err(e) = crate::replacement::replace(&st, &ch, &Default::default(), true).await {
+        if ch.container_id.is_none() || crate::replacement_store::public_status(&db, &cid).ok().flatten().is_some_and(|p| !matches!(p["phase"].as_str(), Some("committed" | "rolled_back" | "awaiting_login"))) {
+            let _ = store::set_status(&db, &cid, "error");
         }
-        let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
-        let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid), "replace");
-        detail["reload_status"] = json!(reload);
-        crate::events::audit("channel_start", "通道替换已应用，连通状态以探活为准", detail);
-        return Json(json!({"ok":true})).into_response();
+        let _ = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+        return err500(&format!("启动未完成: {e}"));
     }
-    // 没有旧实例的初始化路径另行收敛；Docker outcome 确认前不改 DB。
-    let vnc = ch.vnc_password.clone().unwrap_or_default();
-    match provision_with_docker(&st, &docker, &ch, &vnc).await {
-        Ok((container_id, novnc)) => {
-            if let Err(e) = store::set_container(&db, &cid, &container_id, novnc, "running") {
-                let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "recreate");
-                detail["error"] = json!(e.to_string());
-                detail["container_id"] = json!(container_id.as_str());
-                crate::events::audit_failed("channel_start", "通道容器已启动但状态落库失败", detail);
-                return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_container: {e}"));
-            }
-            // 对照 Python start:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
-            let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
-            if !reload_ok(&reload) {
-                crate::ev!(error, "api", "mihomo_reload_failed", "启动通道后 mihomo 重载未达成",
-                    { "operation": "start", "cid": cid.as_str(), "error": reload.as_str() });
-            }
-            crate::events::audit(
-                "channel_start",
-                "通道启动完成",
-                audit_detail("ok", channel_snapshot_of(&db, &cid), "recreate"),
-            );
-            Json(json!({ "ok": true })).into_response()
-        }
-        Err(e) => {
-            let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "recreate");
-            detail["error"] = json!(e.to_string());
-            crate::events::audit_failed("channel_start", "通道启动失败", detail);
-            err500(&format!("{e}"))
-        }
-    }
+    let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid), "replace");
+    detail["reload_status"] = json!(reload);
+    crate::events::audit("channel_start", "通道启动已应用，连通状态以探活为准", detail);
+    Json(json!({"ok":true})).into_response()
 }
 
 pub async fn stop(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {

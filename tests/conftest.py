@@ -75,9 +75,12 @@ def make_channel():
 
 @pytest.fixture
 def client(monkeypatch):
-    import manager
+    import manager, replacement
     monkeypatch.setattr(manager, "rebuild", lambda: 204)
-    monkeypatch.setattr(manager, "create_channel", lambda ch, vnc: ("cid_fake", 18080))
+    def provision(ch, fields, force_start=False):
+        assert not ch.get('container_id'), 'existing replacement requires its own fixture'
+        store.set_container(ch['id'], 'cid_fake', 18080, 'running')
+    monkeypatch.setattr(replacement, 'replace', provision)
     monkeypatch.setattr(manager, "stop", lambda cid: None)
     monkeypatch.setattr(manager, "novnc_port", lambda cid: 18080)        # 不碰真 docker:登录 url 用此端口
     monkeypatch.setattr(manager, "ensure_novnc_bridge", lambda cid: None)

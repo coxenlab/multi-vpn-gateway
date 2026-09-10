@@ -10,7 +10,6 @@ use bollard::Docker;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
-use crate::adapters::ContainerPlan;
 
 /// 解析 VM 的 docker.sock(对照 spike::spike_socket):DOCKER_HOST 去 unix:// 前缀,否则 colima 默认 profile。
 pub fn docker_socket() -> String {
@@ -222,25 +221,6 @@ pub async fn is_running(docker: &Docker, name: &str) -> bool {
         .and_then(|i| i.state)
         .and_then(|s| s.running)
         .unwrap_or(false)
-}
-
-/// 由 ContainerPlan 创建并启动;dns 非空注入 HostConfig.dns(oss)。幂等(先力删同名)。
-pub async fn create_from_plan(docker: &Docker, plan: &ContainerPlan, dns: Option<Vec<String>>) -> Result<String> {
-    let _ = rm_force(docker, &plan.name).await;
-    let mut config = plan.config.clone();
-    if let Some(servers) = dns {
-        let hc = config.host_config.get_or_insert_with(Default::default);
-        hc.dns = Some(servers);
-    }
-    let res = docker
-        .create_container(Some(CreateContainerOptions { name: plan.name.clone(), platform: None }), config)
-        .await
-        .map_err(|e| anyhow!("create {}: {e}", plan.name))?;
-    docker
-        .start_container(&plan.name, None::<StartContainerOptions<String>>)
-        .await
-        .map_err(|e| anyhow!("start {}: {e}", plan.name))?;
-    Ok(res.id)
 }
 
 pub async fn container_ip_on_net(docker: &Docker, name: &str, net: &str) -> Option<String> {
@@ -654,7 +634,8 @@ mod tests {
                 ..Default::default()
             },
         };
-        create_from_plan(&d, &plan, None).await.unwrap();
+        d.create_container(Some(CreateContainerOptions { name: name.to_string(), platform: None }), plan.config).await.unwrap();
+        d.start_container(name, None::<StartContainerOptions<String>>).await.unwrap();
         exec_inject_stdin(&d, name, vec!["sh", "-c", "cat > /tmp/secret"], b"s3cr3t").await.unwrap();
         let out = exec_capture(&d, name, vec!["cat", "/tmp/secret"]).await.unwrap();
         assert_eq!(out.trim(), "s3cr3t");

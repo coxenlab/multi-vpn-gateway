@@ -96,27 +96,46 @@ const COPY_SCRIPT: &str = "set -euo pipefail; find /target -mindepth 1 -delete; 
 
 /// 调用前旧容器必须已停止；目标卷只属于本次候选，tar 数据不经过宿主内存或日志。
 pub async fn copy_volume(docker: &Docker, owner: &Owner, old_container: &str, source: &str, image: &str) -> Result<()> {
-    owner.validate()?;
-    let target = owner.volume_name();
-    ensure!(volume_name_valid(source) && source != target, "源卷与候选卷无效或相同");
-    ensure!(image.strip_prefix("sha256:").is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))), "复制工具必须固定到已加载镜像 ID");
-    let old = docker.inspect_container(old_container, None).await?;
-    ensure!(old.id.as_deref() == Some(old_container) && old.name.as_deref() == Some(&format!("/vpn-{}", owner.channel)), "旧容器身份与通道不匹配");
-    ensure!(old.state.as_ref().and_then(|s| s.running) == Some(false), "复制数据前必须停止旧通道");
-    ensure!(old.mounts.as_ref().is_some_and(|m| m.iter().any(|m| m.name.as_deref() == Some(source))), "源卷不属于旧容器");
-    let volume = docker.inspect_volume(&target).await?;
-    ensure!(owner.owns(Some(&volume.labels), "candidate"), "候选数据卷归属不匹配");
-    for name in [source, target.as_str()] {
+    ensure!(!old_container.is_empty(), "复制旧通道必须指定原容器 ID");
+    copy_volume_inner(docker, owner, Some(old_container), source, image).await
+}
+
+/// 原容器已丢失时只复制无人使用的旧命名卷，不创建缺失的源卷。
+pub async fn copy_unattached_volume(docker: &Docker, owner: &Owner, source: &str, image: &str) -> Result<()> {
+    copy_volume_inner(docker, owner, None, source, image).await
+}
+
+async fn check_volume_users(docker: &Docker, owner: &Owner, old_container: Option<&str>, source: &str, target: &str) -> Result<()> {
+    for name in [source, target] {
         let containers = docker.list_containers(Some(ListContainersOptions {
             all: true, filters: HashMap::from([("volume".to_string(), vec![name.to_string()])]), ..Default::default()
         })).await?;
         for container in containers {
+            ensure!(name != source || old_container.is_some(), "源卷已被其他容器使用");
             let id = container.id.ok_or_else(|| anyhow!("卷使用者缺少 ID"))?;
             let info = docker.inspect_container(&id, None).await?;
             ensure!(info.state.as_ref().and_then(|s| s.running) == Some(false), "数据卷仍有运行中的使用者");
-            ensure!(info.id == old.id || owner.owns(info.config.as_ref().and_then(|c| c.labels.as_ref()), "candidate"), "数据卷被其他容器使用");
+            ensure!(info.id.as_deref() == old_container || owner.owns(info.config.as_ref().and_then(|c| c.labels.as_ref()), "candidate"), "数据卷被其他容器使用");
         }
     }
+    Ok(())
+}
+
+async fn copy_volume_inner(docker: &Docker, owner: &Owner, old_container: Option<&str>, source: &str, image: &str) -> Result<()> {
+    owner.validate()?;
+    let target = owner.volume_name();
+    ensure!(volume_name_valid(source) && source != target, "源卷与候选卷无效或相同");
+    ensure!(image.strip_prefix("sha256:").is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))), "复制工具必须固定到已加载镜像 ID");
+    docker.inspect_volume(source).await?; // 防止 Docker 自动新建空源卷。
+    if let Some(old_container) = old_container {
+        let old = docker.inspect_container(old_container, None).await?;
+        ensure!(old.id.as_deref() == Some(old_container) && old.name.as_deref() == Some(&format!("/vpn-{}", owner.channel)), "旧容器身份与通道不匹配");
+        ensure!(old.state.as_ref().and_then(|s| s.running) == Some(false), "复制数据前必须停止旧通道");
+        ensure!(old.mounts.as_ref().is_some_and(|m| m.iter().any(|m| m.name.as_deref() == Some(source))), "源卷不属于旧容器");
+    }
+    let volume = docker.inspect_volume(&target).await?;
+    ensure!(owner.owns(Some(&volume.labels), "candidate"), "候选数据卷归属不匹配");
+    check_volume_users(docker, owner, old_container, source, &target).await?;
     let copy_name = owner.copy_name();
     // 遗留复制进程必须由恢复流程先核对；这里不抢占或清空正在复制的卷。
     match docker.inspect_container(&copy_name, None).await {
@@ -155,6 +174,9 @@ pub async fn copy_volume(docker: &Docker, owner: &Owner, old_container: &str, so
     let removed = matches!(docker.inspect_container(&id, None).await, Err(e) if crate::docker::is_not_found(&e));
     ensure!(removed, "复制容器清理未确认: {}", cleanup.err().map(|e| e.to_string()).unwrap_or_default());
     outcome.map_err(|_| anyhow!("数据卷复制超时"))??;
-    ensure!(docker.inspect_container(old_container, None).await?.state.and_then(|s| s.running) == Some(false), "复制期间旧通道被重新启动，候选数据不可提交");
+    check_volume_users(docker, owner, old_container, source, &target).await?;
+    if let Some(old_container) = old_container {
+        ensure!(docker.inspect_container(old_container, None).await?.state.and_then(|s| s.running) == Some(false), "复制期间旧通道被重新启动，候选数据不可提交");
+    }
     Ok(())
 }

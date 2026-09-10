@@ -96,3 +96,25 @@ def test_delete_requires_replacement_cleanup_and_persists_delete_intent(make_cha
         journal.deleted(journal.Record("c1", "stale-operation", "deleting", {}))
     journal.deleted(journal.get("c1"))
     assert store.get_channel("c1") is None and journal.get("c1") is None
+
+
+def test_restore_absent_is_atomic_and_keeps_notes(make_channel):
+    store.add_channel(make_channel('c1', password='new'))
+    store.set_container('c1', 'candidate', 18080, 'running')
+    store.set_config_field('c1', 'login_note', 'saved during initial attempt', secret=True)
+    journal.begin('c1', 'op1', {'kind': 'initial'})
+    record = journal.get('c1')
+    journal.advance(record, 'rolling_back', record.payload)
+    record = journal.get('c1')
+    with store._c() as c:
+        c.execute("CREATE TRIGGER fail_initial BEFORE INSERT ON channel_runtime BEGIN SELECT RAISE(ABORT, 'injected'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        journal.restore_absent(record, 'vpndata-c1', {'password': 'old'}, ('password',))
+    assert store.get_channel('c1')['container_id'] == 'candidate'
+    assert store.get_password('c1') == 'new' and journal.get('c1').phase == 'rolling_back'
+    with store._c() as c: c.execute('DROP TRIGGER fail_initial')
+    journal.restore_absent(record, 'vpndata-c1', {'password': 'old'}, ('password',))
+    assert store.get_channel('c1')['container_id'] is None and store.get_channel('c1')['status'] == 'error'
+    assert journal.data_volume('c1') == 'vpndata-c1' and store.get_password('c1') == 'old'
+    assert store.get_config('c1')['login_note'] == 'saved during initial attempt'
+    with pytest.raises(RuntimeError): journal.restore_absent(record, 'vpndata-c1')

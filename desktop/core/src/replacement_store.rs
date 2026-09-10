@@ -186,6 +186,25 @@ pub fn restore(db: &Path, key: Option<&str>, record: &Record, fields: Option<&Ma
     Ok(())
 }
 
+/// 初次创建或旧实例丢失的补偿：只还原设置和卷，不编造运行中的实例。
+pub fn restore_absent(db: &Path, key: &str, record: &Record, fields: Option<&Map<String, Value>>, secrets: &[String], volume: &str, stopped: bool) -> Result<()> {
+    ensure!(record.payload["kind"] == "initial", "操作不是无旧实例创建");
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    check_operation(&tx, &record.channel_id, &record.operation_id, "rolling_back")?;
+    if let Some(fields) = fields {
+        crate::store::update_channel_on(&tx, &cipher(key)?, &record.channel_id, fields, secrets)?;
+    }
+    let changed = tx.execute("UPDATE channels SET container_id=NULL,novnc_port=NULL,latency_ms=NULL,status=?1 WHERE id=?2",
+        params![if stopped { "stopped" } else { "error" }, record.channel_id])?;
+    ensure!(changed == 1, "通道不存在");
+    tx.execute("INSERT INTO channel_runtime(channel_id,data_volume) VALUES(?1,?2) ON CONFLICT(channel_id) DO UPDATE SET data_volume=excluded.data_volume",
+        params![record.channel_id, volume])?;
+    tx.execute("UPDATE channel_replacements SET phase='rolled_back' WHERE channel_id=?1", [&record.channel_id])?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// 仅在多余容器/卷清理完成后删除记录；未知写结果先 list 读回。
 pub fn finish(db: &Path, cid: &str, operation: &str) -> Result<()> {
     let mut conn = Connection::open(db)?;
@@ -224,6 +243,31 @@ pub fn deleted(db: &Path, record: &Record) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn restore_absent_is_atomic_and_keeps_notes() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap(); let key = crate::store::master_key(dir.path()).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,status,container_id) VALUES('c1','new','running','candidate')", []).unwrap();
+        crate::store::set_config_field(&db,&key,"c1","login_note","saved during initial attempt",true).unwrap();
+        begin(&db,&key,"c1","op1",&json!({"kind":"initial"})).unwrap();
+        let record = get(&db,&key,"c1").unwrap().unwrap();
+        advance(&db,&key,&record,"rolling_back",&record.payload).unwrap();
+        let record = get(&db,&key,"c1").unwrap().unwrap();
+        let fields = json!({"name":"old"});
+        conn.execute_batch("CREATE TRIGGER fail_initial BEFORE INSERT ON channel_runtime BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        assert!(restore_absent(&db,&key,&record,fields.as_object(),&[],"vpndata-c1",false).is_err());
+        let ch = crate::store::get_channel(&db,"c1").unwrap().unwrap();
+        assert_eq!(ch.container_id.as_deref(),Some("candidate")); assert_eq!(ch.name,"new");
+        conn.execute_batch("DROP TRIGGER fail_initial").unwrap();
+        restore_absent(&db,&key,&record,fields.as_object(),&[],"vpndata-c1",false).unwrap();
+        let ch = crate::store::get_channel(&db,"c1").unwrap().unwrap();
+        assert!(ch.container_id.is_none()); assert_eq!(ch.status,"error"); assert_eq!(ch.name,"old");
+        assert_eq!(data_volume(&db,"c1").unwrap(),"vpndata-c1");
+        assert_eq!(crate::store::get_config(&db,&key,"c1").unwrap()["login_note"],"saved during initial attempt");
+        assert!(restore_absent(&db,&key,&record,None,&[],"vpndata-c1",false).is_err());
+    }
 
     #[test]
     fn deletion_keeps_its_intent_until_resources_are_confirmed_removed() {

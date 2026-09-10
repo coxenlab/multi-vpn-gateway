@@ -124,11 +124,10 @@ def create_inner(cid, b):
         spec = {}
     store.add_channel(ch, config=cfg_in, secret_keys=secret_keys)
     try:
-        container_id, novnc = manager.create_channel(ch, vnc)
+        replacement.replace(store.get_channel(cid), {}, force_start=True)
     except Exception as e:
         store.set_status(cid, "error")
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
-    store.set_container(cid, container_id, novnc, "running")
     manager.rebuild()
     return store.get_channel(cid)
 
@@ -422,18 +421,18 @@ def start(cid):
         runtime = registry.get(ch["vpn_type"]).get("runtime")
     except KeyError:
         runtime = None
-    if runtime == "byo":
-        manager.start(cid)
+    if runtime == "byo" and ch.get("container_id"):
+        try: manager.start(cid)
+        except Exception as e:
+            store.set_status(cid, 'error')
+            manager.rebuild()
+            return JSONResponse({'error': f'原容器启动失败: {e}'}, status_code=500)
         store.set_status(cid, "running")
         manager.rebuild()   # 状态参与 effective_rules 折叠:回运行态要立刻恢复该通道规则
         return {"ok": True}
     # Docker outcome 确认前不改 DB；候选和恢复进度由 replacement 单独保存。
     try:
-        if ch.get('container_id'):
-            replacement.replace(ch, {}, force_start=True)
-        else:
-            container_id, novnc = manager.create_channel(ch, ch["vnc_password"])
-            store.set_container(cid, container_id, novnc, "running")
+        replacement.replace(ch, {}, force_start=True)
     except Exception as e:
         pending = replacement_store.public_status(cid)
         if not ch.get('container_id') or (pending and pending['phase'] not in ('committed', 'rolled_back', 'awaiting_login')):

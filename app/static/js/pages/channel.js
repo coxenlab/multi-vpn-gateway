@@ -9,6 +9,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     const wantId = params.get("id");
     let ch, sys;
     let restoring = false;
+    const needsStart = () => ch && ["stopped", "error", "down"].includes(ch.status);
     let k, kindLabel, containerId, hostName, methodLabel;
     const routingControlsSupported = () => sys && typeof sys.routing_off === "boolean";
     const routingOn = () => ch && (!routingControlsSupported() || (ch.routing_enabled !== false && ch.routing_enabled !== 0));
@@ -80,7 +81,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       if (!pending) return;
       const waiting = pending.phase === "awaiting_login";
       $("#replacement-title").textContent = waiting ? "新设置等待登录验证"
-        : pending.phase === "committed" ? "新设置已验证"
+        : pending.phase === "committed" ? "新设置已应用"
         : pending.phase === "rolled_back" ? "上一次设置已恢复"
         : pending.phase === "deleting" ? "正在完成通道删除" : "上次操作尚未完成";
       $("#replacement-message").textContent = waiting
@@ -164,7 +165,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     const vncStageTemplate = $("#vnc-stage").cloneNode(true);
     const vncView = createVncLifecycle({
       channelId: () => ch.id,
-      isActive: () => ch && !restoring && ch.status !== "stopped" && ch.login_method !== "headless"
+      isActive: () => ch && !restoring && !needsStart() && ch.login_method !== "headless"
         && document.querySelector('.tab[data-tab="login"]').classList.contains("active"),
       open: loadVnc,
       close: () => {
@@ -230,7 +231,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     }
 
     function syncStatus() {
-      const stopped = ch.status === "stopped";
+      const stopped = needsStart();
       const headless = ch.login_method === "headless";
       $("#top-badge").innerHTML = channelBadge();
       $("#h-status").innerHTML = badgeHTML(ch.status);
@@ -254,7 +255,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       try {
         await api.restore(ch.id);
         await boot();
-        toast("已恢复上一次设置，连通状态请重新检测", { variant: "success" });
+        toast(needsStart() ? "上一次设置已恢复，请启动通道后再登录" : "已恢复上一次设置，连通状态请重新检测", { variant: "success" });
       } catch (error) {
         await boot().catch(() => {});
         toast("恢复未完成：" + fb.friendlyError(error).title, { variant: "danger" });
@@ -327,7 +328,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     $("#cfg-edit-form").addEventListener("submit", (e) => { e.preventDefault(); submitEdit(); });
 
     async function doPower() {
-      const btn = $("#act-power"), starting = ch.status === "stopped", orig = btn.textContent;
+      const btn = $("#act-power"), starting = needsStart(), orig = btn.textContent;
       btn.disabled = true; btn.textContent = starting ? "启动中…" : "停止中…";
       try {
         if (starting) {

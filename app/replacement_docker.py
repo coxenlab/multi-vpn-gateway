@@ -80,25 +80,41 @@ def create_candidate(dc, kwargs, owner):
 
 
 def copy_volume(dc, owner, old_container, source, image):
+    if not old_container: raise ValueError('复制旧通道必须指定原容器 ID')
+    _copy_volume(dc, owner, old_container, source, image)
+
+
+def copy_unattached_volume(dc, owner, source, image):
+    """原容器已丢失时只复制无人使用的旧命名卷；不创建缺失的源卷。"""
+    _copy_volume(dc, owner, None, source, image)
+
+
+def _copy_volume(dc, owner, old_container, source, image):
     owner.validate()
     target = owner.volume_name
     if not _volume_valid(source) or source == target: raise ValueError("源卷与候选卷无效或相同")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image): raise ValueError("复制工具必须固定到已加载镜像 ID")
-    old = dc.containers.get(old_container); old.reload()
-    if old.id != old_container or old.attrs.get("Name") != f"/vpn-{owner.channel}":
-        raise RuntimeError("旧容器身份与通道不匹配")
-    if old.attrs.get("State", {}).get("Running") is not False: raise RuntimeError("复制数据前必须停止旧通道")
-    if not any(m.get("Name") == source for m in old.attrs.get("Mounts", [])):
-        raise RuntimeError("源卷不属于旧容器")
+    dc.volumes.get(source)  # Docker 的 bind 会自动新建卷，必须先确认源确实存在。
+    old = dc.containers.get(old_container) if old_container else None
+    if old is not None:
+        old.reload()
+        if old.id != old_container or old.attrs.get("Name") != f"/vpn-{owner.channel}":
+            raise RuntimeError("旧容器身份与通道不匹配")
+        if old.attrs.get("State", {}).get("Running") is not False: raise RuntimeError("复制数据前必须停止旧通道")
+        if not any(m.get("Name") == source for m in old.attrs.get("Mounts", [])):
+            raise RuntimeError("源卷不属于旧容器")
     if not owner.owns(dc.volumes.get(target).attrs.get("Labels"), "candidate"):
         raise RuntimeError("候选数据卷归属不匹配")
-    for name in (source, target):
-        for container in dc.containers.list(all=True, filters={"volume": name}):
-            container.reload()
-            if container.attrs.get("State", {}).get("Running") is not False:
-                raise RuntimeError("数据卷仍有运行中的使用者")
-            if container.id != old.id and not owner.owns(container.attrs.get("Config", {}).get("Labels"), "candidate"):
-                raise RuntimeError("数据卷被其他容器使用")
+    def check_users():
+        for name in (source, target):
+            for container in dc.containers.list(all=True, filters={"volume": name}):
+                container.reload()
+                if name == source and old is None: raise RuntimeError("源卷已被其他容器使用")
+                if container.attrs.get("State", {}).get("Running") is not False:
+                    raise RuntimeError("数据卷仍有运行中的使用者")
+                if container.id != old_container and not owner.owns(container.attrs.get("Config", {}).get("Labels"), "candidate"):
+                    raise RuntimeError("数据卷被其他容器使用")
+    check_users()
     try:
         dc.containers.get(owner.copy_name)
     except docker.errors.NotFound:
@@ -132,6 +148,8 @@ def copy_volume(dc, owner, old_container, source, image):
         try: dc.containers.get(copy.id)
         except docker.errors.NotFound: pass
         else: raise RuntimeError("复制容器清理未确认")
-    old.reload()
-    if old.attrs.get("State", {}).get("Running") is not False:
-        raise RuntimeError("复制期间旧通道被重新启动，候选数据不可提交")
+    check_users()
+    if old is not None:
+        old.reload()
+        if old.attrs.get("State", {}).get("Running") is not False:
+            raise RuntimeError("复制期间旧通道被重新启动，候选数据不可提交")
