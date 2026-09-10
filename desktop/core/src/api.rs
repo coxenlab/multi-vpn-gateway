@@ -469,6 +469,7 @@ pub async fn config_retry(State(st): State<AppState>) -> axum::response::Respons
 
 pub async fn restore_channel(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     detached("restore", async move {
+        if let Err(e) = crate::runtime::ensure(&st).await { return err503(&e.to_string()); }
         let _operation = match st.lifecycle.mutate(&cid).await { Ok(guard) => guard, Err(e) => return err503(&e.to_string()) };
         let db = st.cfg.db_path();
         match store::get_channel(&db, &cid) {
@@ -507,6 +508,7 @@ pub async fn create(State(st): State<AppState>, Json(b): Json<Value>) -> axum::r
 }
 
 async fn create_inner(st: AppState, b: Value) -> axum::response::Response {
+    if let Err(e) = crate::runtime::ensure(&st).await { return err503(&e.to_string()); }
     let started = std::time::Instant::now();
     let db = st.cfg.db_path();
     let key = match store::master_key(&st.cfg.data_dir) {
@@ -754,6 +756,16 @@ pub async fn login(State(st): State<AppState>, Path(cid): Path<String>, Query(q)
     if q.viewer.as_deref().is_some_and(|v| !crate::novnc::valid_viewer(v)) {
         return err_detail(StatusCode::BAD_REQUEST, "无效的登录视图标识");
     }
+    if st.cfg.managed_vm {
+        match store::get_channel(&st.cfg.db_path(), &cid) {
+            Ok(Some(ch)) if ch.login_method == "headless" => return Json(json!({"login_mode":"headless"})).into_response(),
+            Ok(Some(ch)) if ch.status == "stopped" => return err_detail(StatusCode::CONFLICT, "请先启动通道"),
+            Ok(Some(_)) => {},
+            Ok(None) => return err404("not found"),
+            Err(e) => return err500(&e.to_string()),
+        }
+        if let Err(e) = crate::runtime::ensure(&st).await { return err503(&e.to_string()); }
+    }
     let _operation = match st.lifecycle.access(&cid).await {
         Ok(guard) => guard,
         Err(e) => return err503(&e.to_string()),
@@ -935,6 +947,7 @@ pub async fn start(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
 }
 
 async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
+    if let Err(e) = crate::runtime::ensure(&st).await { return err503(&e.to_string()); }
     let _operation = match st.lifecycle.mutate(&cid).await {
         Ok(guard) => guard,
         Err(e) => return err503(&e.to_string()),

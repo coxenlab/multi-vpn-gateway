@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export VPNMGR_DEV_MODE=1
+export VPNMGR_MANAGED_VM=1
 export VPNMGR_VM_PROFILE=vpnmgr-dev
 export DATA_DIR="${VPNMGR_DEV_DATA_DIR:-$HOME/Library/Application Support/vpnmgr-dev}"
 export DOCKER_HOST="unix://$HOME/.colima/$VPNMGR_VM_PROFILE/docker.sock"

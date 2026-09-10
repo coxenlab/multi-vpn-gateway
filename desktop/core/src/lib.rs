@@ -31,6 +31,7 @@ pub mod events;
 pub mod shutdown;
 pub mod lifecycle;
 pub mod runtime_lifecycle;
+pub mod runtime;
 
 use std::sync::Arc;
 

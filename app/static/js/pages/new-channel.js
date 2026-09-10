@@ -174,6 +174,10 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       btn.disabled = true; btn.replaceChildren(fb.spinner("正在创建…"));
       $("#create-err").innerHTML = "";
       try {
+        if (!createdId) {
+          btn.replaceChildren(fb.spinner("准备运行环境…"));
+          await api.startRuntime();
+        }
         if (!createdId && !(await preflightOk())) {
           toast("环境检查未通过，请先修复", { variant: "danger" });
           return;

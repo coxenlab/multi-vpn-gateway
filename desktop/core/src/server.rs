@@ -19,6 +19,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/api/system", get(routes::system))
+        .route("/api/runtime/start", axum::routing::post(crate::runtime::start_route))
         .route("/api/system/heal-proxy", axum::routing::post(routes::heal_proxy))
         .route("/api/system/self-heal", axum::routing::post(api::self_heal_set))
         .route("/api/routing", get(api::routing_get).post(api::routing_set))
@@ -101,6 +102,8 @@ mod tests {
         let cfg = Config {
             vm_profile: "vpnmgr-test".into(),
             dev_mode: true,
+            managed_vm: false,
+            bundled_images_dir: None,
             ui_port: 8787,
             data_dir: db_dir.to_path_buf(),
             static_dir: std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/static")),

@@ -10,6 +10,8 @@ import { loadWithSystem } from "../page-data.js";
     const routingControlsSupported = () => typeof sys.routing_off === "boolean";
     const routingOn = (c) => !routingControlsSupported() || (c.routing_enabled !== false && c.routing_enabled !== 0);
     const channelBadge = (c) => {
+      if (sys.runtime && !["ready", "waiting"].includes(sys.runtime.phase) && c.configured_status !== "stopped")
+        return '<span class="badge is-stopped"><i class="bdot"></i>待连接</span>';
       if (!routingOn(c) && c.status === "logged_in")
         return `<span class="badge is-logged_in"><i class="bdot"></i>已连接 · 不分流</span>`;
       return badgeHTML(c.status) + (!routingOn(c) ? `<span class="badge is-stopped">不分流</span>` : "");
@@ -44,6 +46,12 @@ import { loadWithSystem } from "../page-data.js";
 
     function actionsFor(c) {
       const detail = `<a class="btn btn-sm btn-secondary spacer" href="channel.html?id=${fb.esc(c.id)}">详情</a>`;
+      if (sys.runtime && !["ready", "waiting"].includes(sys.runtime.phase)) {
+        const action = ["running", "logged_in"].includes(c.configured_status) ? "connect" : "start";
+        return `<button class="btn btn-sm btn-primary" data-action="${action}" data-id="${fb.esc(c.id)}">连接</button>${detail}`;
+      }
+      if (sys.runtime && c.status === "down")
+        return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">连接</button>${detail}`;
       if (c.status === "stopped")
         return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">启动</button>${detail}`;
       const headless = c.login_method === "headless";
@@ -113,13 +121,13 @@ import { loadWithSystem } from "../page-data.js";
     };
     // 启动(后端重建容器,复用同卷 / MAC)/ 停止。成功后 load() 重绘卡片。
     async function power(id, action, btn) {
-      const label = action === "start" ? "启动" : "停止";
+      const label = action === "connect" ? "连接" : action === "start" ? "启动" : "停止";
       btn.disabled = true;
       btn.replaceChildren(fb.spinner(label + "中…"));
       try {
-        await (action === "start" ? api.start(id) : api.stop(id));
+        await (action === "connect" ? api.startRuntime() : action === "start" ? api.start(id) : api.stop(id));
         await load();
-        toast(action === "start" ? "已启动，请登录后检测连通" : "已停止", { variant: "success" });
+        toast(action === "connect" ? "运行环境已连接，请检测通道连通" : action === "start" ? "已启动，请登录后检测连通" : "已停止", { variant: "success" });
       } catch (e) {
         toast(label + "失败：" + fb.friendlyError(e).title, {
           variant: "danger", action: { label: "重试", onClick: () => power(id, action, btn) },
@@ -133,7 +141,7 @@ import { loadWithSystem } from "../page-data.js";
       if (!button || button.disabled) return;
       const { id, action } = button.dataset;
       if (action === "probe") probe(id, button);
-      else if (action === "start" || action === "stop") power(id, action, button);
+      else if (action === "connect" || action === "start" || action === "stop") power(id, action, button);
     });
     load();
     api.poll(() => load(true), 8000, { immediate: false });

@@ -11,6 +11,8 @@ async fn events_api_is_incremental_capped_and_exportable() {
     let cfg = Config {
         vm_profile: "vpnmgr-test".into(),
         dev_mode: true,
+        managed_vm: false,
+        bundled_images_dir: None,
         ui_port: 0,
         data_dir: dir.path().to_path_buf(),
         static_dir: std::path::PathBuf::from(concat!(

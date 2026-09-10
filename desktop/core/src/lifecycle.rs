@@ -109,6 +109,10 @@ where
         if !matches!(ch.status.as_str(), "running" | "logged_in") {
             return Ok(json!({"status":ch.status,"connected":false,"latency_ms":null,"checked_at":null,"stale":false,"replacement":pending}));
         }
+        if !crate::runtime::serving(&state) {
+            return Ok(json!({"status":"running","connected":false,"latency_ms":null,"checked_at":null,
+                "stale":true,"runtime_idle":true,"replacement":pending}));
+        }
         let mut stale = None;
         let mut receiver = {
             let mut probe = slot.probe.lock().await;
@@ -265,6 +269,19 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst),1);
         sample_with(st,"c1".into(),true,run).await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst),2);
+    }
+
+    #[tokio::test]
+    async fn dormant_runtime_does_not_probe_or_report_stored_login_as_connected() {
+        let (_dir, mut st) = fixture();
+        Arc::make_mut(&mut st.cfg).managed_vm = true;
+        store::set_probe_result(&st.cfg.db_path(), "c1", "logged_in", Some(1)).unwrap();
+        let value = sample_with(st.clone(), "c1".into(), true, |_, _| async { panic!("dormant runtime probed") }).await.unwrap();
+        assert_eq!(value["connected"], false);
+        assert_eq!(value["status"], "running");
+        assert_eq!(value["runtime_idle"], true);
+        assert_eq!(value["stale"], true);
+        assert_eq!(store::get_channel(&st.cfg.db_path(), "c1").unwrap().unwrap().status, "logged_in");
     }
 
     #[tokio::test]

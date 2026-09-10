@@ -446,7 +446,10 @@ import "./app.js";
       const gh = sys.gateway_health;
       const running = sys.mihomo_status === "running";
       let ok = false, label;
-      if (sys.vm_egress_dead) label = "本地引擎断网";
+      const runtime = sys.runtime;
+      const inactive = runtime && !["ready", "waiting"].includes(runtime.phase);
+      if (inactive) label = ({ dormant: "按需运行", starting: "正在连接…", releasing: "正在释放…", failed: "启动未完成", closing: "正在退出…" })[runtime.phase] || "等待连接";
+      else if (sys.vm_egress_dead) label = "本地引擎断网";
       else if (gh === "forward_dead") label = "分流链路中断";
       else if (gh === "container_down") label = "入口未运行";
       else if (gh === "transport_dead") label = "底座中断，修复中";
@@ -454,11 +457,11 @@ import "./app.js";
       else if (gh === "vm_down") label = "本地引擎断开";
       else { ok = running; label = running ? "入口运行中" : "入口未运行"; }
       chip.classList.toggle("ok", ok);
-      chip.classList.toggle("bad", !ok);
+      chip.classList.toggle("bad", !ok && (!inactive || runtime.phase === "failed"));
       if (txt) txt.textContent = label;
       // 坏态芯片 = 常驻修复入口:点击重新展开横幅(横幅被收起后仍有地方点)。
       // 仅桌面版(有 gateway_health 字段、有 heal-proxy 端点)可点;web 版保持纯展示。
-      chip._fbCanHeal = !ok && gh !== undefined;
+      chip._fbCanHeal = !ok && !inactive && gh !== undefined;
       chip.style.cursor = chip._fbCanHeal ? "pointer" : "";
       chip.title = chip._fbCanHeal ? "点击查看修复选项" : "";
       if (!chip._fbHealBound) {
@@ -476,6 +479,15 @@ import "./app.js";
       const gh = sys && sys.gateway_health;
       window.fb.gatewayHealth = gh || null; // 供 friendlyError 按根因映射容器操作失败
       if (healInFlight) return; // 修复请求在途:别重绘横幅(保住「修复中…」禁用态)
+      const runtime = sys && sys.runtime;
+      if (runtime && !["ready", "waiting"].includes(runtime.phase)) {
+        window.fb.gatewayHealth = null;
+        wasBroken = false; healing = false;
+        if (runtime.phase === "starting") banner("warn", SVG.check, "正在准备连接", runtime.detail || "首次准备可能需要下载组件，请稍候。", "");
+        else if (runtime.phase === "failed") banner("bad", SVG.cross, "运行环境尚未就绪", runtime.error || "可再次点击通道的连接按钮重试。", "");
+        else clear();
+        return;
+      }
       // 看门狗盲区:容器/转发口探测全绿(gateway_health=healthy),但 mihomo 控制口无应答
       // (转发器半僵死:TCP 能连、无响应)。芯片会红,横幅若不接手就无处可点(2026-07-16)。
       const ctrlDown = gh === "healthy" && sys && sys.mihomo_status !== "running";

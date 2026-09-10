@@ -5,7 +5,7 @@ use crate::{store, AppState};
 use crate::api::err_detail;
 
 pub async fn system(State(st): State<AppState>) -> Json<Value> {
-    let alive = st.mihomo.alive().await;
+    let alive = crate::runtime::serving(&st) && st.mihomo.alive().await;
     let mihomo_port = st.cfg.mihomo_host_port.parse::<u64>().ok().filter(|n| *n != 0);
     let controller = st.cfg.mihomo_ctrl_port.as_ref().map(|p| format!("127.0.0.1:{p}"));
     // 分流口健康快照(看门狗维护):前端横幅据此区分「自愈中 / 已放弃 / VM 挂」。
@@ -26,6 +26,7 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "egress_guard_applied": h.egress_guard_applied,
         "self_heal_enabled": st.self_heal_enabled(),
         "vm_profile": st.cfg.vm_profile,
+        "runtime": if st.cfg.managed_vm { serde_json::to_value(st.lifecycle.runtime().snapshot()).ok() } else { None },
         "host_integrations_available": st.cfg.host_integrations_allowed(),
         "probe_cache_available": true,
         "routing_off": store::routing_off(&st.cfg.data_dir),
@@ -41,6 +42,13 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
 /// 后者在转发僵死时恒真,旧版据此反复回「已修复」而链路其实是死的(2026-08-04 事故)。
 /// 不破命门 #1:不碰登录态;只修宿主→分流口这条转发链。
 pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
+    if let Err(error) = crate::runtime::ensure(&st).await {
+        return Json(json!({"ok":false,"reachable":false,"error":error.to_string()}));
+    }
+    let _activity = match st.lifecycle.runtime().activity().await {
+        Ok(activity) => activity,
+        Err(error) => return Json(json!({"ok":false,"reachable":false,"error":error})),
+    };
     let started = std::time::Instant::now();
     crate::ev!(warn, "api", "heal_start", "开始手动修复分流链路", { "action": "manual" });
     let tunnel_err = crate::health::heal_transport(&st).await.err();

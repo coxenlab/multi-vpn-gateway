@@ -336,6 +336,8 @@ mod tests {
             cfg: Arc::new(crate::config::Config {
                 vm_profile: "vpnmgr-test".into(),
                 dev_mode: true,
+                managed_vm: false,
+                bundled_images_dir: None,
                 ui_port: 0,
                 data_dir: dir.path().to_path_buf(),
                 static_dir: dir.path().to_path_buf(),
@@ -382,6 +384,8 @@ mod tests {
         let cfg = crate::config::Config {
             vm_profile: "vpnmgr-test".into(),
             dev_mode: true,
+            managed_vm: false,
+            bundled_images_dir: None,
             ui_port: 0,
             data_dir: dir.path().to_path_buf(),
             static_dir: dir.path().to_path_buf(),

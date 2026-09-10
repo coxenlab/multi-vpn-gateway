@@ -4,6 +4,9 @@ use std::path::PathBuf;
 pub struct Config {
     pub vm_profile: String,
     pub dev_mode: bool,
+    /// 桌面壳开启按需 VM；独立 core/测试默认只连接已有 Docker。
+    pub managed_vm: bool,
+    pub bundled_images_dir: Option<PathBuf>,
     pub ui_port: u16,
     pub data_dir: PathBuf,
     pub static_dir: PathBuf,
@@ -32,6 +35,8 @@ impl Config {
         Config {
             vm_profile: get("VPNMGR_VM_PROFILE").unwrap_or_else(|| "vpnmgr".into()),
             dev_mode: get("VPNMGR_DEV_MODE").as_deref() == Some("1"),
+            managed_vm: get("VPNMGR_MANAGED_VM").as_deref() == Some("1"),
+            bundled_images_dir: get("VPNMGR_BUNDLED_IMAGES_DIR").map(PathBuf::from),
             ui_port: get("UI_PORT").and_then(|s| s.parse().ok()).unwrap_or(8787),
             data_dir: get("DATA_DIR")
                 .map(PathBuf::from)
@@ -60,6 +65,7 @@ impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(!self.vm_profile.is_empty() && self.vm_profile.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "无效 VM profile");
+        anyhow::ensure!(!self.managed_vm || self.vm_profile != "default", "桌面底座不能管理 default profile");
         if self.dev_mode {
             anyhow::ensure!(self.vm_profile != "vpnmgr" && self.vm_profile != "default",
                 "开发模式必须使用独立 VM profile");

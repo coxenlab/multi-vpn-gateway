@@ -9,6 +9,8 @@ async fn boots_and_serves_system_and_index() {
     let cfg = Config {
         vm_profile: "vpnmgr-test".into(),
         dev_mode: true,
+        managed_vm: false,
+        bundled_images_dir: None,
         ui_port: 0, // OS picks a free port
         data_dir: dir.path().to_path_buf(),
         static_dir: std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/static")),

@@ -84,6 +84,10 @@
     vpnTypes: () => req("GET", "/api/vpn-types"),
     vpnVersions: (type) => req("GET", `/api/vpn-types/${type}/versions`),
     system: () => req("GET", "/api/system"),
+    startRuntime: async () => {
+      const system = await req("GET", "/api/system");
+      if (system.runtime) return req("POST", "/api/runtime/start", undefined, { timeout: LONG_TIMEOUT_MS });
+    },
     healProxy: () => req("POST", "/api/system/heal-proxy"),
     selfHeal: (enabled) => req("POST", "/api/system/self-heal", { enabled }),
     routing: () => req("GET", "/api/routing"),

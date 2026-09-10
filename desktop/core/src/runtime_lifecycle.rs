@@ -22,6 +22,7 @@ pub struct Snapshot {
     pub start_attempt: u64,
     pub release_in_seconds: Option<u64>,
     pub error: Option<String>,
+    pub detail: String,
 }
 
 struct State {
@@ -32,6 +33,7 @@ struct State {
     attempt: u64,
     deadline: Option<Instant>,
     error: Option<String>,
+    detail: String,
     flight: Option<Flight>,
 }
 
@@ -44,7 +46,7 @@ impl Default for Coordinator {
     fn default() -> Self {
         Self {
             state: Mutex::new(State { phase: Phase::Dormant, closing: false, active: 0,
-                revision: 0, attempt: 0, deadline: None, error: None, flight: None }),
+                revision: 0, attempt: 0, deadline: None, error: None, detail: String::new(), flight: None }),
             changed: watch::channel(0).0,
         }
     }
@@ -74,6 +76,24 @@ impl Coordinator {
             active_tasks: state.active, start_attempt: state.attempt,
             release_in_seconds: state.deadline.map(|at| at.saturating_duration_since(Instant::now()).as_secs()),
             error: state.error.clone(),
+            detail: state.detail.clone(),
+        }
+    }
+
+    pub fn progress(&self, detail: impl Into<String>) {
+        let mut state = self.state.lock().unwrap();
+        state.detail = detail.into();
+        self.publish(&mut state);
+    }
+
+    /// 观测到底座不可用时，下一次显式连接可以重新初始化；不自行启动。
+    pub fn unavailable(&self, error: impl Into<String>) {
+        let mut state = self.state.lock().unwrap();
+        if !state.closing && matches!(state.phase, Phase::Ready | Phase::Waiting) {
+            state.phase = Phase::Failed;
+            state.deadline = None;
+            state.error = Some(error.into());
+            self.publish(&mut state);
         }
     }
 
@@ -269,6 +289,16 @@ mod tests {
         assert_eq!(c.snapshot().phase, Phase::Failed);
         c.quiesce().await;
         assert_eq!(c.snapshot().phase, Phase::Closing);
+    }
+
+    #[tokio::test]
+    async fn lost_runtime_waits_for_explicit_request_before_starting_again() {
+        let c = coordinator(); ready(&c).await;
+        c.unavailable("VM stopped");
+        assert_eq!(c.snapshot().phase, Phase::Failed);
+        assert_eq!(c.snapshot().start_attempt, 1);
+        ready(&c).await;
+        assert_eq!(c.snapshot().start_attempt, 2);
     }
 
     #[tokio::test]

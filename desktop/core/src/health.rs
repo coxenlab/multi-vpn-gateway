@@ -464,13 +464,14 @@ async fn vm_side_probe(state: &AppState) -> String {
 }
 
 /// 看门狗 / 启动共用:取 VPN 网段后下发 VM 层守卫;失败只记事件(看门狗下一拍再试)。
-pub async fn ensure_egress_guard(state: crate::AppState, force: bool) {
+pub async fn ensure_egress_guard(state: crate::AppState, force: bool) -> bool {
     let result = async {
         let docker = state.docker().ok_or_else(|| anyhow::anyhow!("Docker 连接不可用"))?;
         let subnet = crate::docker::network_subnet(&docker, &state.cfg.vpn_net).await
             .ok_or_else(|| anyhow::anyhow!("取不到 VPN 网段"))?;
         crate::vm::ensure_egress_guard(&state.cfg.vm_profile, &subnet, force).await
     }.await;
+    let applied = result.is_ok();
     if let Ok(mut snap) = state.health.lock() {
         snap.egress_guard_checked_at = Some(chrono::Utc::now().to_rfc3339());
         snap.egress_guard_applied = Some(result.is_ok());
@@ -479,6 +480,7 @@ pub async fn ensure_egress_guard(state: crate::AppState, force: bool) {
         crate::ev!(warn, "vm", "egress_guard_failed",
             "VM 私网出站守卫未下发:不可达目标可能持续占用出站连接", { "error": e.to_string() });
     }
+    applied
 }
 
 /// VM 出站(usernet)探活:经**独立** SSH 从 VM 内对稳定公网锚点发真实 TCP 建连
@@ -568,6 +570,14 @@ pub fn spawn(state: AppState) {
         let mut usernet = crate::usernet::Sampler::default();
         loop {
             tick.tick().await;
+            if !crate::runtime::serving(&state) {
+                wd = Watchdog::default();
+                last_wall = std::time::SystemTime::now();
+                last_health = None;
+                continue;
+            }
+            let Ok(_activity) = state.lifecycle.runtime().activity().await else { break; };
+            if !crate::runtime::serving(&state) { continue; }
             tick_count = tick_count.wrapping_add(1);
             let self_heal_enabled = state.self_heal_enabled();
             let self_heal_resumed = self_heal_enabled && !self_heal_was_enabled;

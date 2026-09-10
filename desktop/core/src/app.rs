@@ -20,7 +20,7 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
 
     // docker 可选:连不上也照常伺服(uptime 降级,UI/system 仍工作)
     let socket = cfg.docker_socket().display().to_string();
-    let docker = match docker::connect_at(&socket).await {
+    let docker = if cfg.managed_vm { None } else { match docker::connect_at(&socket).await {
         Ok(d) => {
             eprintln!("docker: connected via {socket}");
             Some(d)
@@ -29,7 +29,7 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
             eprintln!("docker: not connected ({e}); uptime degraded — start colima for full data");
             None
         }
-    };
+    }};
 
     // 命门 #4:只绑 127.0.0.1。持久化的 ui_port 被别的进程占了(AddrInUse)时重摇一个
     // 空闲口回写 infra.json 再绑(红队 F6:否则「重试」永远撞同一个口,且报错被归到 Docker 步)。
@@ -64,7 +64,7 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
 
 /// 在已绑定 listener 上跑 axum 直到关闭。起头 spawn 分流口健康看门狗(bin 与 Tauri 壳共用此入口)。
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> anyhow::Result<()> {
-    crate::replacement::recover_all(&state).await;
+    if !state.cfg.managed_vm { crate::replacement::recover_all(&state).await; }
     crate::health::spawn(state.clone());
     let app = crate::server::build_router(state);
     axum::serve(listener, app).await?;
