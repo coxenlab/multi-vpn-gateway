@@ -10,13 +10,26 @@ import { api } from "./api.js";
   /* noVNC 就绪探测:EC/aTrust 容器内 noVNC web(8080)在 status:running 后还要数十秒才起
    * (Xvfb/x11vnc/GUI 链启动慢)。iframe 若早于服务就绪就 set src → 连接被拒 → 永久白屏,
    * 且向导/详情不会自动重载它。这里先用跨源 no-cors fetch 探到 origin 在伺服再塞 src:服务起着
-   * → resolve(opaque),连接被拒 → reject。最多探 maxSec 秒,超时也返回(让用户看到 noVNC 自身
-   * 状态并可手动重载)。 */
-  window.waitNovncReady = async function (url, maxSec = 60) {
+   * → resolve(opaque),连接被拒 → reject。单次请求与整体等待都有上限;离开视图立即取消,
+   * 超时返回 false,由页面提供重试。 */
+  window.waitNovncReady = async function (url, maxSec = 60, { signal } = {}) {
     const deadline = Date.now() + maxSec * 1000;
-    while (Date.now() < deadline) {
-      try { await fetch(url, { mode: "no-cors", cache: "no-store" }); return true; }
-      catch (_) { await new Promise((r) => setTimeout(r, 2000)); }
+    while (Date.now() < deadline && !signal?.aborted) {
+      const request = new AbortController();
+      const abort = () => request.abort();
+      signal?.addEventListener("abort", abort, { once: true });
+      const timer = setTimeout(abort, Math.min(5000, deadline - Date.now()));
+      try {
+        await fetch(url, { mode: "no-cors", cache: "no-store", signal: request.signal });
+        return !signal?.aborted;
+      } catch (_) { /* 有界重试；离开登录视图立即取消。 */ }
+      finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+      if (signal?.aborted) return false;
+      await new Promise(resolve => {
+        const done = () => { clearTimeout(delay); signal?.removeEventListener("abort", done); resolve(); };
+        const delay = setTimeout(done, Math.min(2000, Math.max(0, deadline - Date.now())));
+        signal?.addEventListener("abort", done, { once: true });
+      });
     }
     return false;
   };

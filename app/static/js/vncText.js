@@ -40,8 +40,10 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
   }
 
   /* 建临时 shared RFB 连接 → 键入 text(+写容器剪贴板)→ 断开。resolve 键入的字符数。 */
-  async function send(loginUrl, text) {
+  async function send(loginUrl, text, { signal } = {}) {
     if (!text) return 0;
+    const checkActive = () => { if (signal?.aborted) throw new DOMException("登录视图已关闭", "AbortError"); };
+    checkActive();
     const { wsUrl, password } = wsInfo(loginUrl);
 
     // RFB 需要一个挂载点;隐藏容器,不渲给用户(这条连接只发输入)。
@@ -49,26 +51,42 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
     holder.style.cssText = "position:fixed;left:-9999px;width:2px;height:2px;overflow:hidden;";
     document.body.appendChild(holder);
 
-    let rfb;
+    let rfb, pasted = false;
+    const disconnect = () => {
+      if (pasted) { try { rfb?.clipboardPasteFrom(" "); } catch (_e) { /* 连接可能已关闭 */ } }
+      try { rfb?.disconnect(); } catch (_e) { /* 已断开 */ }
+    };
+    signal?.addEventListener("abort", disconnect, { once: true });
     try {
       rfb = new RFB(holder, wsUrl, { credentials: { password }, shared: true });
       rfb.clipViewport = false;
       await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("连接远程桌面超时")), CONNECT_TIMEOUT_MS);
-        rfb.addEventListener("connect", () => { clearTimeout(timer); resolve(); });
-        rfb.addEventListener("securityfailure", (e) => {
+        const finish = (error) => {
           clearTimeout(timer);
-          reject(new Error("VNC 认证失败:" + (e.detail?.reason || "密码不符")));
-        });
-        rfb.addEventListener("disconnect", () => {
-          clearTimeout(timer);
-          reject(new Error("远程桌面连接被断开"));
-        });
+          signal?.removeEventListener("abort", abort);
+          rfb.removeEventListener("connect", connect);
+          rfb.removeEventListener("securityfailure", failure);
+          rfb.removeEventListener("disconnect", ended);
+          if (error) reject(error); else resolve();
+        };
+        const connect = () => finish();
+        const failure = e => finish(new Error("VNC 认证失败:" + (e.detail?.reason || "密码不符")));
+        const ended = () => finish(signal?.aborted
+          ? new DOMException("登录视图已关闭", "AbortError") : new Error("远程桌面连接被断开"));
+        const abort = () => finish(new DOMException("登录视图已关闭", "AbortError"));
+        const timer = setTimeout(() => finish(new Error("连接远程桌面超时")), CONNECT_TIMEOUT_MS);
+        rfb.addEventListener("connect", connect);
+        rfb.addEventListener("securityfailure", failure);
+        rfb.addEventListener("disconnect", ended);
+        signal?.addEventListener("abort", abort, { once: true });
       });
       await sleep(300);                 // 服务端 session 就绪缓冲
+      checkActive();
       rfb.clipboardPasteFrom(text);     // 顺带写容器剪贴板(Ctrl+V 兜底)
+      pasted = true;
       let typed = 0;
       for (const ch of text) {
+        checkActive();
         const ks = charKeysym(ch);
         if (!ks) continue;              // 无对应 keysym 的控制字符跳过
         rfb.sendKey(ks, null);
@@ -76,12 +94,12 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
         await sleep(KEY_GAP_MS);
       }
       await sleep(150);                 // 让尾部 KeyEvent 冲出去再断
-      // 键入成功后清掉容器剪贴板:否则密码明文长驻容器 X selection,容器内任何进程
-      // 与后续 VNC 观看者可读。键入失败(typed=0)时保留,给容器内 Ctrl+V 兜底。
-      if (typed > 0) rfb.clipboardPasteFrom(" ");
+      checkActive();
       return typed;
     } finally {
-      try { rfb?.disconnect(); } catch (_e) { /* 已断开 */ }
+      // 成功、失败或关闭视图都尽力清掉已写入的剪贴板，再断开临时连接。
+      disconnect();
+      signal?.removeEventListener("abort", disconnect);
       holder.remove();
     }
   }
@@ -89,7 +107,7 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
   /* 在 host 元素里装「发送文本到容器」输入条。getUrl() 返回当前登录窗 url(未就绪返回空)。
    * onSent(text):可选;键入成功后回调(页面用它把文本留档到「登录信息备注」),
    * 带勾选开关(默认开),失败静默——留档是辅助,绝不影响键入本身。 */
-  function mountBar(host, getUrl, onSent) {
+  function mountBar(host, getUrl, onSent, { signal } = {}) {
     if (!host || host.querySelector(".vnc-sendbar")) return;
     const bar = document.createElement("div");
     bar.className = "vnc-sendbar";
@@ -106,7 +124,9 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
     const input = bar.querySelector("input");
     const btn = bar.querySelector("button");
     const recordCb = bar.querySelector("[data-record]");
+    signal?.addEventListener("abort", () => { input.value = ""; }, { once: true });
     const doSend = async () => {
+      if (signal?.aborted || btn.disabled) return;
       const text = input.value;
       if (!text) { input.focus(); return; }
       const url = getUrl();
@@ -115,13 +135,14 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
       const label = btn.textContent;
       btn.textContent = "键入中…";
       try {
-        const n = await send(url, text);
+        const n = await send(url, text, { signal });
+        if (signal?.aborted) return;
         window.toast?.(`已向容器键入 ${n} 个字符`);
         if (onSent && recordCb?.checked) {
           try { await onSent(text); } catch (_e) { /* 留档失败不影响键入 */ }
         }
       } catch (e) {
-        window.toast?.("键入失败:" + (e?.message || e), { variant: "danger" });
+        if (!signal?.aborted) window.toast?.("键入失败:" + (e?.message || e), { variant: "danger" });
       } finally {
         btn.disabled = false;
         btn.textContent = label;

@@ -3,6 +3,7 @@ import { $, $$, parseTokens, waitNovncReady, toast } from "../app.js";
 import { fb } from "../feedback.js";
 import { PreflightPanel } from "../preflightPanel.js";
 import { vncText } from "../vncText.js";
+import { createVncLifecycle } from "../vnc-lifecycle.js";
 
     api.channels().then(cs => { $("#nav-count").textContent = cs.length; }).catch(() => {});
 
@@ -20,6 +21,7 @@ import { vncText } from "../vncText.js";
         s.classList.toggle("done", i < n);
       });
       window.scrollTo({ top: 0, behavior: "smooth" });
+      vncView.sync();
     }
 
     /* ── 类型(数据驱动) ── */
@@ -227,7 +229,6 @@ import { vncText } from "../vncText.js";
       const headless = isHeadless();
       $("#login-headless").style.display = headless ? "" : "none";
       $("#login-interactive").style.display = headless ? "none" : "";
-      if (!headless) loadVnc();
       $("#conn-spin").replaceChildren(fb.spinner(""));
       startProbing();
     }
@@ -270,19 +271,33 @@ import { vncText } from "../vncText.js";
         toast("已记入登录备注");
       } catch (_e) { /* 旧后端不支持 */ }
     }
-    async function loadVnc() {
+    const vncPlaceholder = $("#vnc-placeholder").cloneNode(true);
+    const vncView = createVncLifecycle({
+      isActive: () => createdId && cur === 2 && !isHeadless(),
+      open: loadVnc,
+      close: () => {
+        $("#vnc-frame")?.replaceWith(vncPlaceholder.cloneNode(true));
+        $("#vnc-sendbar")?.remove();
+        $("#vnc-err").replaceChildren();
+        wizVncUrl = null;
+      },
+    });
+    async function loadVnc({ signal, current }) {
       const ph = document.getElementById("vnc-placeholder");
       $("#vnc-err").innerHTML = "";
       try {
         if (ph) ph.replaceChildren(fb.spinner("正在打开登录窗口…"));
         const { url } = await api.login(createdId);
+        if (!current()) return;
         // 容器内登录界面启动慢:探到在伺服再塞 iframe,否则早加载会白屏
         if (ph) ph.replaceChildren(fb.spinner("等待登录界面就绪…首次启动可能需要一两分钟"));
-        await waitNovncReady(url);
+        const ready = await waitNovncReady(url, 60, { signal });
+        if (!current()) return;
+        if (!ready) throw new Error("登录界面还未就绪，请稍后重新打开");
         let f = document.getElementById("vnc-frame");
         if (!f) {
           f = document.createElement("iframe");
-          f.id = "vnc-frame"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
+          f.id = "vnc-frame"; f.title = "VPN 登录窗口"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
           const p = document.getElementById("vnc-placeholder");
           if (p) p.replaceWith(f); else $("#login-interactive").prepend(f);
         }
@@ -290,13 +305,14 @@ import { vncText } from "../vncText.js";
         wizVncUrl = url;
         let sh = document.getElementById("vnc-sendbar");
         if (!sh) { sh = document.createElement("div"); sh.id = "vnc-sendbar"; f.insertAdjacentElement("afterend", sh); }
-        vncText.mountBar(sh, () => wizVncUrl, wizRecordTyped);
+        vncText.mountBar(sh, () => wizVncUrl, wizRecordTyped, { signal });
       } catch (e) {
+        if (!current()) return;
         if (ph) ph.textContent = "登录窗口打开失败";
-        fb.errorBanner("#vnc-err", { fromError: e, retryLabel: "重新打开", onRetry: loadVnc });
+        fb.errorBanner("#vnc-err", { fromError: e, retryLabel: "重新打开", onRetry: vncView.open });
       }
     }
-    document.getElementById("vnc-reload-wiz").addEventListener("click", (e) => { e.preventDefault(); loadVnc(); });
+    document.getElementById("vnc-reload-wiz").addEventListener("click", (e) => { e.preventDefault(); vncView.open(); });
 
     /* ── ③ 绑定规则(域名 / IP 由后端自动识别) ── */
     async function bindRules() {

@@ -3,6 +3,7 @@ import { $, $$, badgeHTML, kindMeta, copyText, closeOverlay, latClass, parseToke
 import { fb } from "../feedback.js";
 import { vncText } from "../vncText.js";
 import { loadWithSystem } from "../page-data.js";
+import { createVncLifecycle } from "../vnc-lifecycle.js";
 
     const params = new URLSearchParams(location.search);
     const wantId = params.get("id");
@@ -135,13 +136,25 @@ import { loadWithSystem } from "../page-data.js";
     });
 
     /* ── 登录 tab:真 noVNC iframe ── */
-    let loadVncGen = 0;
     let vncUrl = null;
-    async function loadVnc() {
+    const vncStageTemplate = $("#vnc-stage").cloneNode(true);
+    const vncView = createVncLifecycle({
+      isActive: () => ch && ch.status !== "stopped" && ch.login_method !== "headless"
+        && document.querySelector('.tab[data-tab="login"]').classList.contains("active"),
+      open: loadVnc,
+      close: () => {
+        $("#vnc-frame")?.replaceWith(vncStageTemplate.cloneNode(true));
+        $("#vnc-sendbar")?.remove();
+        $("#vnc-feedback").replaceChildren();
+        vncUrl = null;
+      },
+    });
+    async function loadVnc({ signal, current }) {
       const fbHost = $("#vnc-feedback");
       fbHost.replaceChildren(fb.spinner("正在打开登录窗口…"));
       try {
         const res = await api.login(ch.id);
+        if (!current()) return;
         if (res.login_mode === "headless" || !res.url) {
           fbHost.innerHTML = "";
           const stage = $("#vnc-stage");
@@ -151,13 +164,13 @@ import { loadWithSystem } from "../page-data.js";
         const { url } = res;
         const spEl = fbHost.querySelector(".fb-spinner span:last-child");
         if (spEl) spEl.textContent = "等待登录界面就绪…";
-        const gen = ++loadVncGen;
         const mountVnc = (u) => {
+          if (!current()) return;
           fbHost.innerHTML = "";
           let f = $("#vnc-frame");
           if (!f) {
             f = document.createElement("iframe");
-            f.id = "vnc-frame"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
+            f.id = "vnc-frame"; f.title = "VPN 登录窗口"; f.style.cssText = "width:100%;height:80vh;min-height:640px;border:0;border-radius:8px;resize:vertical;overflow:auto;";
             const stage = $("#vnc-stage");
             if (stage) stage.replaceWith(f);
           }
@@ -169,23 +182,25 @@ import { loadWithSystem } from "../page-data.js";
             sh.id = "vnc-sendbar";
             document.querySelector('[data-od-id="vnc"]')?.insertAdjacentElement("afterend", sh);
           }
-          vncText.mountBar(sh, () => vncUrl, recordTyped);
+          vncText.mountBar(sh, () => vncUrl, recordTyped, { signal });
         };
-        const ready = await waitNovncReady(url);
+        const ready = await waitNovncReady(url, 60, { signal });
+        if (!current()) return;
         if (!ready) {
           // 就绪探测超时:不塞 iframe(早加载会白屏);后台继续等至多 5 分钟,就绪即自动加载
           fbHost.innerHTML = "";
           fb.errorBanner(fbHost, {
             title: "登录界面还在启动", message: "首次启动可能要一两分钟，就绪后会自动打开。",
-            onRetry: () => loadVnc(), retryLabel: "重新打开",
+            onRetry: vncView.open, retryLabel: "重新打开",
           });
-          waitNovncReady(url, 300).then((ok) => { if (ok && gen === loadVncGen) mountVnc(url); });
+          waitNovncReady(url, 300, { signal }).then((ok) => { if (ok && current()) mountVnc(url); });
           return;
         }
         mountVnc(url);
       } catch (e) {
+        if (!current()) return;
         fbHost.innerHTML = "";
-        fb.errorBanner(fbHost, { fromError: e, onRetry: () => loadVnc() });
+        fb.errorBanner(fbHost, { fromError: e, onRetry: vncView.open });
       }
     }
 
@@ -202,14 +217,19 @@ import { loadWithSystem } from "../page-data.js";
       routing.hidden = !routingControlsSupported();
       routing.textContent = routingOn() ? "参与分流 · 开" : "参与分流 · 关";
       routing.setAttribute("aria-checked", String(routingOn()));
+      vncView.sync();
     }
 
     function goLogin() {
       const loginTab = document.querySelector('.tab[data-tab="login"]');
       if (loginTab) loginTab.click();
     }
-    $("#act-relogin").addEventListener("click", () => { goLogin(); if ($("#vnc-frame")) loadVnc(); });
-    $("#vnc-reload").addEventListener("click", () => loadVnc());
+    $("#act-relogin").addEventListener("click", () => {
+      const alreadyOpen = document.querySelector('.tab[data-tab="login"]').classList.contains("active");
+      goLogin();
+      if (alreadyOpen) vncView.open();
+    });
+    $("#vnc-reload").addEventListener("click", vncView.open);
 
     async function doProbe(btn) {
       const orig = btn ? btn.textContent : null;
@@ -391,7 +411,9 @@ import { loadWithSystem } from "../page-data.js";
     }
     $("#logs-refresh").addEventListener("click", () => loadLogs());
     document.querySelector('.tab[data-tab="logs"]').addEventListener("click", () => loadLogs());
-    document.querySelector('.tab[data-tab="login"]').addEventListener("click", () => { if (!$("#vnc-frame")) loadVnc(); });
+    document.querySelectorAll('[data-od-id="ch-tabs"] [data-tabs] > .tab').forEach(tab => {
+      tab.addEventListener("click", () => queueMicrotask(vncView.sync));
+    });
 
     /* ── 自动刷新:后端合并探活并退避,页面不可见时暂停 ── */
     function probeUnconfirmed() {

@@ -121,6 +121,8 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 八个根页面只加载 `js/pages/<页面名>.js`，控制器通过显式 import 组合公共 API、反馈、预检、环境和 VNC 组件；公共模块暂保留 `window` 兼容出口，页面业务函数不再靠内联脚本共享全局变量。首页卡片使用事件委托，不生成内联 onclick。`page-data.js` 共用主体与系统状态的加载规则：主体失败进入可重试错误态，系统状态失败保留主体数据并以未知状态降级。`api.js` 负责 GET 请求合并和可见性轮询。修改页面逻辑时编辑对应模块，避免在 HTML 恢复内联控制器。
 
+`vnc-lifecycle.js` 管理详情和新建向导的登录视图：仅在登录步骤可见时打开，切走、隐藏或 pagehide 时取消就绪探测并移除 iframe；返回后按需打开，过期请求不能覆盖新视图。“键入到容器”的临时 RFB 也接收同一取消信号，停止后续键入并尽力清空已写入的剪贴板。`waitNovncReady` 的单次请求上限 5 秒，整体受调用方时限约束。该层只释放浏览器连接，不停止 VPN 容器、GUI 客户端或改变连通判据；桌面后端 SSH 的回收由其自身生命周期管理。
+
 ## 隔离开发实例
 
 `desktop/app/dev.sh` 使用独立 `vpnmgr-dev` VM、`vpnmgr_dev_vpnnet` 网络、Application Support/vpnmgr-dev 数据和 48878/48879/48880 端口。`--core` 只运行 Rust HTTP 核心（VM 需事先启动）；默认运行桌面壳。开发实例禁用助手安装/替换/卸载、系统代理和 TUN 操作，自动对账与退出也不调用全局助手。非日常 profile 不挂载宿主目录、不改 SSH 配置和当前 Docker context。
