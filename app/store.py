@@ -46,6 +46,11 @@ def init():
             CREATE TABLE IF NOT EXISTS mirrors(
               id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT UNIQUE,
               priority INTEGER, enabled INTEGER DEFAULT 1);
+            CREATE TABLE IF NOT EXISTS channel_runtime(
+              channel_id TEXT PRIMARY KEY, data_volume TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS channel_replacements(
+              channel_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, phase TEXT NOT NULL,
+              payload_enc TEXT NOT NULL, created_at INTEGER NOT NULL);
             """
         )
         cols = [r[1] for r in c.execute("PRAGMA table_info(channels)").fetchall()]
@@ -143,6 +148,13 @@ def add_channel(ch, config=None, secret_keys=None):
 def update_channel(cid, fields, secret_keys=()):
     """编辑已有通道:更新允许的列 + 把 server/username/password 镜像进 config_json
     (oss 从 config 读)。文本字段经 _clean_field 去空白。只更新 fields 里出现的键。"""
+    with _c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        _update_channel(c, cid, fields, secret_keys)
+
+
+def _update_channel(c, cid, fields, secret_keys=()):
+    """同一连接上的原子更新，供替换成功时与运行态一起提交。"""
     sk = set(secret_keys)
     sets, vals = [], []
     for col in ("name", "server", "ec_ver", "username", "probe_url"):
@@ -153,15 +165,13 @@ def update_channel(cid, fields, secret_keys=()):
         pw = fields["password"]
         sets.append("password_enc=?")
         vals.append(F.encrypt(pw.encode()).decode() if pw else "")
-    with _c() as c:
-        c.execute("BEGIN IMMEDIATE")
-        if sets:
-            c.execute(f"UPDATE channels SET {', '.join(sets)} WHERE id=?", vals + [cid])
-        # 列与 config_json 同一事务;任一加密/写入失败都不能留下半更新。
-        for k in ("server", "username", "password"):
-            if k in fields:
-                secret = k in sk
-                _set_config_field(c, cid, k, fields[k] if secret else _clean_field(k, fields[k]), secret)
+    if sets:
+        c.execute(f"UPDATE channels SET {', '.join(sets)} WHERE id=?", vals + [cid])
+    # 列与 config_json 同一事务;任一加密/写入失败都不能留下半更新。
+    for k in ("server", "username", "password"):
+        if k in fields:
+            secret = k in sk
+            _set_config_field(c, cid, k, fields[k] if secret else _clean_field(k, fields[k]), secret)
 
 
 def set_container(cid, container_id, novnc, status):

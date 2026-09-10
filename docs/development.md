@@ -127,6 +127,8 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 每次入口拉起/恢复最多占用通道操作锁 20 秒；超时清理本次 SSH 并返回可重试错误，VPN 客户端继续启动。前端登录请求最多等待 45 秒（含排队），不能因 GUI 迟迟未就绪而把停止操作堵住数分钟。
 
+容器替换的持久化基础在双栈 `replacement_store`：`channel_replacements` 用原主密钥加密内部操作参数，按通道、操作代次和阶段核对；候选准备期间不写通道配置。验证成功时，字段更新、加密配置、容器状态、当前数据卷与 committed 标记同事务提交；恢复时只写确认过的运行态，保留期间新增的备注。`channel_runtime` 保存替换后选定的数据卷，未有记录时回退原 `vpndata-<cid>`。当前仅存储接口及故障/互通测试完成，容器准备、卷复制、切换和启动恢复尚未接入，不能据此认为重建已经具备回滚能力。
+
 ## 隔离开发实例
 
 `desktop/app/dev.sh` 使用独立 `vpnmgr-dev` VM、`vpnmgr_dev_vpnnet` 网络、Application Support/vpnmgr-dev 数据和 48878/48879/48880 端口。`--core` 只运行 Rust HTTP 核心（VM 需事先启动）；默认运行桌面壳。开发实例禁用助手安装/替换/卸载、系统代理和 TUN 操作，自动对账与退出也不调用全局助手。非日常 profile 不挂载宿主目录、不改 SSH 配置和当前 Docker context。

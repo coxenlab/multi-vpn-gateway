@@ -25,6 +25,11 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
         CREATE TABLE IF NOT EXISTS mirrors(
           id INTEGER PRIMARY KEY AUTOINCREMENT, host TEXT UNIQUE, priority INTEGER,
           enabled INTEGER DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS channel_runtime(
+          channel_id TEXT PRIMARY KEY, data_volume TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS channel_replacements(
+          channel_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, phase TEXT NOT NULL,
+          payload_enc TEXT NOT NULL, created_at INTEGER NOT NULL);
         "#,
     )?;
 
@@ -721,6 +726,18 @@ pub fn update_channel(
     let f = fernet_for(key)?;
     let mut conn = Connection::open(db)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    update_channel_on(&tx, &f, cid, fields, secret_keys)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn update_channel_on(
+    tx: &Connection,
+    f: &Fernet,
+    cid: &str,
+    fields: &serde_json::Map<String, Value>,
+    secret_keys: &[String],
+) -> anyhow::Result<()> {
     {
         for col in ["name", "server", "ec_ver", "username", "probe_url"] {
             if let Some(v) = fields.get(col) {
@@ -749,10 +766,9 @@ pub fn update_channel(
             let is_secret = secret.contains(col);
             let raw = value_to_string(v);
             let value = if is_secret { raw } else { clean_field(col, &raw) };
-            set_config_field_on(&tx, &f, cid, col, &value, is_secret)?;
+            set_config_field_on(tx, f, cid, col, &value, is_secret)?;
         }
     }
-    tx.commit()?;
     Ok(())
 }
 

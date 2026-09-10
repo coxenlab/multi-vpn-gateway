@@ -48,6 +48,8 @@ def clean_db():
     channel_state.startup()
     store.init()
     with store._c() as c:
+        c.execute("DELETE FROM channel_replacements")
+        c.execute("DELETE FROM channel_runtime")
         c.execute("DELETE FROM channels")
         c.execute("DELETE FROM rules")
         c.execute("DELETE FROM domains")
