@@ -682,9 +682,16 @@
         return;
       }
       const stale = h.version !== st.expected_version;
+      if (stale) {
+        tag.textContent = "待升级";
+        status.textContent = "助手版本较旧，升级后才能确认新路由是否完整生效。";
+        btn.textContent = "升级助手"; btn.dataset.mode = "install";
+        return;
+      }
       if (st.enabled && h.running) {
-        const settled = h.alive && (h.applied + shadowed) >= desired;
-        tag.textContent = h.alive ? "运行中" : "启动中"; if (settled) tag.classList.add("ok");
+        const settled = h.alive && h.pending === false && h.applied >= desired;
+        tag.textContent = !h.alive ? "启动中" : shadowed ? "部分生效" : settled ? "运行中" : "同步中";
+        if (settled) tag.classList.add("ok");
         const shadowHint = shadowed ? `，${shadowed} 条网段本机已有路由、未接管` : "";
         status.textContent = h.alive
           ? `已接管 ${h.applied}/${desired} 条网段${shadowHint}${stale ? "。助手需升级，请重新安装" : ""}`

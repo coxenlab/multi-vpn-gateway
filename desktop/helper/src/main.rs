@@ -44,8 +44,10 @@ fn mihomo_bin() -> String { format!("{BASE_DIR}/mihomo") }
 fn mihomo_log() -> String { format!("{BASE_DIR}/mihomo.log") }
 
 /// app 期望的运行态(IPC 下发,落盘 state.json,重启机后恢复)。
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
 struct Desired {
+    #[serde(default)]
+    generation: u64,
     running: bool,
     config: String,
     #[serde(default)]
@@ -56,7 +58,9 @@ struct Desired {
 
 struct Inner {
     desired: Desired,
+    applied_generation: Option<u64>,
     child: Option<Child>,
+    engine_config: String,
     /// 我们亲手 add 成功的 (cidr, is_v6)——删除只针对它,绝不碰别人的路由。
     owned: HashSet<(String, bool)>,
     /// desired 里但 add 时已存在(File exists)的网段:不接管、不删、不反复重试。
@@ -149,13 +153,15 @@ fn route_add(cidr: &str, v6: bool) -> AddResult {
 }
 
 /// 删路由(只对 owned 调用):失败多半是路由已不在,记日志即可。
-fn route_del(cidr: &str, v6: bool) {
+fn route_del(cidr: &str, v6: bool) -> bool {
     match Command::new("/sbin/route").args(route_args(false, cidr, v6, DEVICE)).output() {
+        Ok(o) if o.status.success() || String::from_utf8_lossy(&o.stderr).contains("not in table") => true,
         Ok(o) if !o.status.success() => {
             eprintln!("[helper] route delete {cidr}: {}", String::from_utf8_lossy(&o.stderr).trim());
+            false
         }
-        Err(e) => eprintln!("[helper] route delete {cidr} 执行失败: {e}"),
-        _ => {}
+        Err(e) => { eprintln!("[helper] route delete {cidr} 执行失败: {e}"); false },
+        _ => false,
     }
 }
 
@@ -186,9 +192,18 @@ fn spawn_mihomo() -> std::io::Result<Child> {
 }
 
 fn kill_child(child: &mut Option<Child>) {
-    if let Some(mut c) = child.take() {
-        let _ = c.kill();
-        let _ = c.wait();
+    if let Some(c) = child.as_mut() {
+        if c.try_wait().ok().flatten().is_none() {
+            if let Err(e) = c.kill() {
+                eprintln!("[helper] 停止引擎失败: {e}");
+                return;
+            }
+        }
+        if let Err(e) = c.wait() {
+            eprintln!("[helper] 等待引擎退出失败: {e}");
+            return;
+        }
+        *child = None;
     }
 }
 
@@ -199,11 +214,34 @@ fn kill_strays() {
 
 // ── 状态持久化 ───────────────────────────────────────────────────────────────
 
-fn save_state(d: &Desired) {
-    if let Ok(s) = serde_json::to_string(d) {
-        let _ = std::fs::write(state_path(), s);
-        let _ = std::fs::set_permissions(state_path(), std::fs::Permissions::from_mode(0o600));
+fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let parent = path.parent().ok_or_else(|| std::io::Error::other("missing parent"))?;
+    let temp = parent.join(format!(".helper-{}-{}.tmp", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)?;
+        std::fs::File::open(parent)?.sync_all()
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(temp); }
+    result
+}
+
+fn accept_desired(g: &mut Inner, desired: Desired, path: &std::path::Path) -> Result<bool, String> {
+    if desired.generation < g.desired.generation || desired.generation == 0 {
+        return Err("stale generation".into());
     }
+    if desired.generation == g.desired.generation {
+        return if desired == g.desired { Ok(false) } else { Err("generation conflict".into()) };
+    }
+    let bytes = serde_json::to_vec(&desired).map_err(|e| e.to_string())?;
+    atomic_write(path, &bytes).map_err(|e| format!("state persistence failed: {e}"))?;
+    g.desired = desired;
+    Ok(true)
 }
 
 fn load_state() -> Desired {
@@ -223,86 +261,53 @@ fn desired_set(d: &Desired) -> HashSet<(String, bool)> {
 }
 
 fn reconcile(shared: &Shared) {
-    // ① 快照(持锁,短)
-    let (running, alive, desired) = {
-        let mut g = shared.lock().unwrap();
-        let alive = child_alive(&mut g.child);
-        let desired = if g.desired.running { desired_set(&g.desired) } else { HashSet::new() };
-        (g.desired.running, alive, desired)
-    };
-
-    // ② 引擎该跑却没跑 → 起(持锁);utun 重建后内核已清路由,owned/shadowed 归零全量重加
-    if running && !alive {
-        let mut g = shared.lock().unwrap();
-        if !child_alive(&mut g.child) {
-            let _ = std::fs::write(config_path(), &g.desired.config);
-            let _ = std::fs::set_permissions(config_path(), std::fs::Permissions::from_mode(0o600));
-            match spawn_mihomo() {
-                Ok(c) => {
-                    eprintln!("[helper] mihomo 已拉起 pid={}", c.id());
-                    g.child = Some(c);
-                }
-                Err(e) => eprintln!("[helper] mihomo 拉起失败: {e}"),
-            }
-            g.owned.clear();
-            g.shadowed.clear();
-        }
-        return; // utun 未就绪,路由留到下拍
-    }
-
-    // ③ 引擎该停却在跑 → 停(持锁);utun 随子进程销毁,内核自动清路由
-    if !running {
-        let mut g = shared.lock().unwrap();
-        if child_alive(&mut g.child) {
-            eprintln!("[helper] 停止 mihomo(desired.running=false)");
-            kill_child(&mut g.child);
-        }
-        g.owned.clear();
-        g.shadowed.clear();
+    // 对账与 IPC 修改共用一把锁;旧路由批次不能跨过 stop/ensure 的代次继续落地。
+    let mut g = shared.lock().unwrap();
+    let alive = child_alive(&mut g.child);
+    if alive && g.desired.running && g.engine_config != g.desired.config {
+        kill_child(&mut g.child);
         return;
     }
-
-    // ④ running && alive:路由对账。快照 owned/shadowed 后**放锁**再 shell route,末尾回锁提交。
-    let (owned, shadowed) = {
-        let g = shared.lock().unwrap();
-        (g.owned.clone(), g.shadowed.clone())
-    };
-    let to_add: Vec<_> = desired
-        .iter()
-        .filter(|k| !owned.contains(k) && !shadowed.contains(k))
-        .cloned()
-        .collect();
-    let to_del: Vec<_> = owned.difference(&desired).cloned().collect();
-    let drop_shadow: Vec<_> = shadowed.difference(&desired).cloned().collect();
-
-    let mut add_owned = Vec::new();
-    let mut add_shadow = Vec::new();
+    if !g.desired.running {
+        kill_child(&mut g.child);
+        if !child_alive(&mut g.child) {
+            g.owned.clear(); g.shadowed.clear();
+            g.applied_generation = Some(g.desired.generation);
+        }
+        return;
+    }
+    if !alive {
+        g.applied_generation = None;
+        if let Err(e) = atomic_write(std::path::Path::new(&config_path()), g.desired.config.as_bytes()) {
+            eprintln!("[helper] 配置写入失败: {e}");
+            return;
+        }
+        match spawn_mihomo() {
+            Ok(c) => {
+                eprintln!("[helper] mihomo 已拉起 pid={}", c.id());
+                g.child = Some(c); g.engine_config = g.desired.config.clone();
+            }
+            Err(e) => eprintln!("[helper] mihomo 拉起失败: {e}"),
+        }
+        g.owned.clear(); g.shadowed.clear();
+        return; // 等下一拍确认引擎与 utun 已就绪。
+    }
+    let desired = desired_set(&g.desired);
+    let to_add: Vec<_> = desired.iter().filter(|k| !g.owned.contains(k) && !g.shadowed.contains(k)).cloned().collect();
+    let to_del: Vec<_> = g.owned.difference(&desired).cloned().collect();
     for (cidr, v6) in to_add {
         match route_add(&cidr, v6) {
-            AddResult::Added => add_owned.push((cidr, v6)),
-            AddResult::Exists => {
-                eprintln!("[helper] {cidr} 已有系统路由,不接管(shadowed)");
-                add_shadow.push((cidr, v6));
-            }
-            AddResult::Failed => {} // 下拍重试
+            AddResult::Added => { g.owned.insert((cidr, v6)); }
+            AddResult::Exists => { g.shadowed.insert((cidr, v6)); }
+            AddResult::Failed => {}
         }
     }
-    for (cidr, v6) in &to_del {
-        route_del(cidr, *v6);
+    for (cidr, v6) in to_del {
+        if route_del(&cidr, v6) { g.owned.remove(&(cidr, v6)); }
     }
-
-    let mut g = shared.lock().unwrap();
-    for k in add_owned {
-        g.owned.insert(k);
-    }
-    for k in add_shadow {
-        g.shadowed.insert(k);
-    }
-    for k in to_del {
-        g.owned.remove(&k);
-    }
-    for k in drop_shadow {
-        g.shadowed.remove(&k);
+    g.shadowed.retain(|k| desired.contains(k));
+    if g.owned == desired && g.shadowed.is_empty() {
+        g.applied_generation = Some(g.desired.generation);
     }
 }
 
@@ -310,6 +315,7 @@ fn reconcile(shared: &Shared) {
 
 fn status_json(g: &mut Inner) -> serde_json::Value {
     let alive = child_alive(&mut g.child);
+    let applied = g.applied_generation == Some(g.desired.generation) && alive == g.desired.running;
     serde_json::json!({
         "ok": true,
         "version": VERSION,
@@ -321,6 +327,9 @@ fn status_json(g: &mut Inner) -> serde_json::Value {
         "v6": g.desired.v6,
         "applied": g.owned.len(),
         "shadowed": g.shadowed.len(),
+        "generation": g.desired.generation,
+        "applied_generation": if applied { g.applied_generation } else { None },
+        "pending": !applied,
     })
 }
 
@@ -352,23 +361,35 @@ fn handle_conn(stream: UnixStream, shared: &Shared, owner: Option<u32>) {
                 let v4 = str_vec(&req, "v4");
                 let v6 = str_vec(&req, "v6");
                 let config_changed = config != g.desired.config;
-                g.desired = Desired { running: true, config, v4, v6 };
-                save_state(&g.desired);
-                if config_changed {
+                let generation = req.get("generation").and_then(|v| v.as_u64()).unwrap_or(0);
+                let desired = Desired { generation, running: true, config, v4, v6 };
+                match accept_desired(&mut g, desired, std::path::Path::new(&state_path())) {
+                Err(error) => serde_json::json!({"ok":false,"error":error,"generation":g.desired.generation}),
+                Ok(changed) => {
+                if changed && config_changed {
                     // 配置变了(实际只会是分流口变):杀掉,reconciler 按新配置重拉
                     kill_child(&mut g.child);
                     g.owned.clear();
                     g.shadowed.clear();
                 }
                 status_json(&mut g)
+                }
+                }
             }
             "stop" => {
-                g.desired.running = false;
-                save_state(&g.desired);
+                let mut desired = g.desired.clone();
+                desired.running = false;
+                desired.generation = req.get("generation").and_then(|v| v.as_u64()).unwrap_or(0);
+                match accept_desired(&mut g, desired, std::path::Path::new(&state_path())) {
+                Err(error) => serde_json::json!({"ok":false,"error":error,"generation":g.desired.generation}),
+                Ok(_) => {
                 kill_child(&mut g.child);
-                g.owned.clear();
-                g.shadowed.clear();
+                if !child_alive(&mut g.child) {
+                    g.owned.clear(); g.shadowed.clear(); g.applied_generation = Some(g.desired.generation);
+                }
                 status_json(&mut g)
+                }
+                }
             }
             _ => serde_json::json!({ "ok": false, "error": format!("未知指令: {cmd}") }),
         }
@@ -393,7 +414,9 @@ fn main() {
 
     let shared: Shared = Arc::new(Mutex::new(Inner {
         desired: load_state(),
+        applied_generation: None,
         child: None,
+        engine_config: String::new(),
         owned: HashSet::new(),
         shadowed: HashSet::new(),
     }));
@@ -427,6 +450,64 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_inner() -> Inner {
+        Inner { desired: Desired::default(), applied_generation: None, child: None,
+            engine_config: String::new(), owned: HashSet::new(), shadowed: HashSet::new() }
+    }
+
+    struct TestDir(std::path::PathBuf);
+    impl TestDir {
+        fn new() -> Self {
+            let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let path = std::env::temp_dir().join(format!("vpnmgr-helper-test-{}-{unique}", std::process::id()));
+            std::fs::create_dir(&path).unwrap(); Self(path)
+        }
+    }
+    impl Drop for TestDir { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+
+    #[test]
+    fn generation_is_persisted_and_stale_or_conflicting_requests_are_rejected() {
+        let dir = TestDir::new(); let path = dir.0.join("state.json"); let mut g = empty_inner();
+        let desired = Desired { generation: 2, running: true, config: "fixture".into(), ..Default::default() };
+        assert!(accept_desired(&mut g, desired.clone(), &path).unwrap());
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let bytes = std::fs::read(&path).unwrap();
+        let stored: Desired = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(stored.generation, 2);
+        assert!(!accept_desired(&mut g, desired.clone(), &path).unwrap());
+        let mut stale = desired.clone(); stale.generation = 1;
+        assert!(accept_desired(&mut g, stale, &path).is_err());
+        let mut conflict = desired; conflict.config = "different".into();
+        assert!(accept_desired(&mut g, conflict, &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(status_json(&mut g)["pending"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn persistence_failure_keeps_previous_desired_state() {
+        let dir = TestDir::new(); let mut g = empty_inner();
+        let desired = Desired { generation: 1, running: true, ..Default::default() };
+        assert!(accept_desired(&mut g, desired, &dir.0.join("missing/state.json")).is_err());
+        assert_eq!(g.desired.generation, 0);
+        assert!(!g.desired.running);
+    }
+
+    #[test]
+    fn stop_generation_cannot_be_overwritten_by_older_ensure() {
+        let dir = TestDir::new(); let path = dir.0.join("state.json"); let mut g = empty_inner();
+        let ensure = Desired { generation: 1, running: true, ..Default::default() };
+        accept_desired(&mut g, ensure.clone(), &path).unwrap();
+        let stop = Desired { generation: 2, running: false, ..Default::default() };
+        accept_desired(&mut g, stop, &path).unwrap();
+        assert!(accept_desired(&mut g, ensure, &path).is_err());
+        let shared = Arc::new(Mutex::new(g));
+        reconcile(&shared); // 没有子进程/路由,只确认停止代次;不调用宿主网络工具。
+        let status = status_json(&mut shared.lock().unwrap());
+        assert_eq!(status["applied_generation"], 2);
+        assert_eq!(status["pending"], false);
+    }
+
 
     #[test]
     fn route_args_v4_add() {
@@ -471,6 +552,7 @@ mod tests {
     #[test]
     fn desired_set_splits_v4_v6() {
         let d = Desired {
+            generation: 1,
             running: true,
             config: String::new(),
             v4: vec!["10.0.0.0/8".into()],
@@ -487,6 +569,7 @@ mod tests {
         let d: Desired = serde_json::from_str(r#"{"running":true,"config":"x"}"#).unwrap();
         assert!(d.running && d.v4.is_empty() && d.v6.is_empty());
         let s = serde_json::to_string(&Desired {
+            generation: 2,
             running: false,
             config: "c".into(),
             v4: vec!["1.2.3.4/32".into()],

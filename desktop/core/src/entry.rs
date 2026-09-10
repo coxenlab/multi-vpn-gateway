@@ -322,7 +322,9 @@ pub const HELPER_PLIST: &str = "/Library/LaunchDaemons/com.vpnmgr.helper.plist";
 /// TUN 设备名,与 helper 侧 pin 死同名(desktop/helper DEVICE),路由管理零猜测。
 pub const TUN_DEVICE: &str = "utun225";
 /// 期望的 helper 版本(与 desktop/helper Cargo.toml 对齐;不符 → UI 提示重装升级)。
-pub const HELPER_VERSION: &str = "0.1.0";
+pub const HELPER_VERSION: &str = "0.2.0";
+static TUN_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static TUN_PARKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// mihomo#2 冻结配置(唯一动态值 = 分流口)。要点全部来自实测/源码调研:
 /// - `auto-route: false`:不抢默认路由,由 helper 按绑定 IP-CIDR 加最长前缀路由,与 ClashX TUN 共存;
@@ -499,13 +501,65 @@ pub async fn helper_call(req: serde_json::Value) -> anyhow::Result<serde_json::V
     .map_err(|_| anyhow::anyhow!("连接 helper 超时"))??;
     let mut payload = serde_json::to_vec(&req)?;
     payload.push(b'\n');
-    s.write_all(&payload).await?;
-    s.shutdown().await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        s.write_all(&payload).await?;
+        s.shutdown().await
+    }).await.map_err(|_| anyhow::anyhow!("发送 helper 请求超时,状态待确认"))??;
     let mut buf = Vec::new();
     tokio::time::timeout(Duration::from_secs(8), s.read_to_end(&mut buf))
         .await
         .map_err(|_| anyhow::anyhow!("等待 helper 响应超时"))??;
-    Ok(serde_json::from_slice(&buf)?)
+    parse_helper_response(&buf)
+}
+
+fn parse_helper_response(buf: &[u8]) -> anyhow::Result<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_slice(buf)?;
+    anyhow::ensure!(value.get("ok").and_then(|v| v.as_bool()) == Some(true), "helper: {}",
+        value.get("error").and_then(|v| v.as_str()).unwrap_or("invalid acknowledgement"));
+    Ok(value)
+}
+
+/// 调用者持有 TUN_MUTATION_LOCK；读取当前代次后提交下一代,必须收到同代耐久 ACK。
+async fn helper_mutation(mut req: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    let stopping = req["cmd"] == "stop";
+    let current = helper_call(serde_json::json!({"cmd":"status"})).await?;
+    let Some(generation) = current.get("generation").and_then(|v| v.as_u64()) else {
+        // 升级前也必须能停止旧助手,避免退出留下旧入口。
+        if stopping {
+            let response = helper_call(req).await?;
+            ensure_helper_stopped(&response)?;
+            return Ok(response);
+        }
+        anyhow::bail!("TUN 助手需要升级后才能应用路由");
+    };
+    let next = generation.checked_add(1).ok_or_else(|| anyhow::anyhow!("helper generation exhausted"))?;
+    req["generation"] = serde_json::json!(next);
+    let response = match helper_call(req.clone()).await {
+        Ok(response) => response,
+        Err(error) => {
+            // 写结果不明时只读回确认,不能盲目重放 ensure/stop。
+            match helper_call(serde_json::json!({"cmd":"status"})).await {
+                Ok(response) if helper_matches_request(&response, &req, next) => response,
+                _ => return Err(error),
+            }
+        }
+    };
+    anyhow::ensure!(response.get("generation").and_then(|v| v.as_u64()) == Some(next), "helper ACK 代次不匹配,状态待确认");
+    if stopping { ensure_helper_stopped(&response)?; }
+    Ok(response)
+}
+
+fn helper_matches_request(response: &serde_json::Value, req: &serde_json::Value, generation: u64) -> bool {
+    response["generation"].as_u64() == Some(generation) && if req["cmd"] == "stop" {
+        response["running"] == false
+    } else {
+        response["running"] == true && ["config", "v4", "v6"].iter().all(|key| response[*key] == req[*key])
+    }
+}
+
+fn ensure_helper_stopped(value: &serde_json::Value) -> anyhow::Result<()> {
+    anyhow::ensure!(value["running"] == false && value["alive"] == false, "助手已接收停止请求,但尚未确认引擎退出");
+    Ok(())
 }
 
 /// 层3 综合状态(驱动前端卡片;读-only)。
@@ -546,11 +600,12 @@ pub async fn tun_status(cfg: &crate::config::Config) -> serde_json::Value {
 /// (helper 用 state.json + KeepAlive 自恢复,停不掉时它会复活,须让用户知道)。
 pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Result<serde_json::Value> {
     anyhow::ensure!(cfg.host_integrations_allowed(), "隔离实例禁用宿主 TUN 和助手变更");
+    let _guard = TUN_MUTATION_LOCK.lock().await;
     if enable {
         let rules = crate::store::effective_rules(&cfg.db_path()).unwrap_or_default();
         let (v4, v6) = route_sets(&rules);
         let desired_total = v4.len() + v6.len();
-        let response = helper_call(serde_json::json!({
+        let response = helper_mutation(serde_json::json!({
             "cmd": "ensure",
             "config": tun_mihomo_config(&cfg.mihomo_host_port),
             "v4": v4,
@@ -563,6 +618,7 @@ pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Res
             anyhow::anyhow!("helper 不可达(未安装或未运行):{e}")
         })?;
         set_tun_enabled(&cfg.data_dir, true)?;
+        TUN_PARKED.store(false, std::sync::atomic::Ordering::SeqCst);
         crate::ev!(info, "entry", "tun_ensure", "TUN 路由目标已下发", {
             "operation": "enable", "total": desired_total,
             "applied": response.get("applied").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -571,7 +627,7 @@ pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Res
         Ok(tun_status(cfg).await)
     } else {
         set_tun_enabled(&cfg.data_dir, false)?;
-        let stop_err = helper_call(serde_json::json!({ "cmd": "stop" })).await.err();
+        let stop_err = helper_mutation(serde_json::json!({ "cmd": "stop" })).await.err();
         let mut st = tun_status(cfg).await;
         if let Some(e) = stop_err {
             crate::ev!(error, "entry", "tun_helper_unreachable", "TUN 停用标记已清除,但助手停止失败", {
@@ -591,7 +647,9 @@ pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Res
 /// 规则变更后的路由对账(挂在 manager::rebuild 末尾,best-effort)。
 /// 只在用户已显式启用时动作;顺带自愈:分流口变了 → ensure 会带新配置让 helper 重拉 mihomo。
 pub async fn tun_sync(cfg: &crate::config::Config) {
-    if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
+    let _guard = TUN_MUTATION_LOCK.lock().await;
+    if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir)
+        || TUN_PARKED.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
     let rules = match crate::store::effective_rules(&cfg.db_path()) {
@@ -600,7 +658,7 @@ pub async fn tun_sync(cfg: &crate::config::Config) {
     };
     let (v4, v6) = route_sets(&rules);
     let desired_total = v4.len() + v6.len();
-    match helper_call(serde_json::json!({
+    match helper_mutation(serde_json::json!({
         "cmd": "ensure",
         "config": tun_mihomo_config(&cfg.mihomo_host_port),
         "v4": v4,
@@ -630,7 +688,9 @@ pub async fn tun_park(cfg: &crate::config::Config) {
     if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
         return;
     }
-    match helper_call(serde_json::json!({ "cmd": "stop" })).await {
+    TUN_PARKED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _guard = TUN_MUTATION_LOCK.lock().await;
+    match helper_mutation(serde_json::json!({ "cmd": "stop" })).await {
         Ok(_) => {
             crate::ev!(info, "entry", "tun_parked",
                 "退出清理:TUN 引擎已停、路由已回收(启用标记保留,下次启动自动恢复)",
@@ -675,6 +735,7 @@ async fn run_privileged_script(data_dir: &std::path::Path, name: &str, content: 
 /// 安装/升级 helper(一次性管理员密码)。装完 ping 确认活了才算成。
 pub async fn tun_install(cfg: &crate::config::Config) -> anyhow::Result<serde_json::Value> {
     anyhow::ensure!(cfg.host_integrations_allowed(), "隔离实例禁用宿主 TUN 和助手变更");
+    let _guard = TUN_MUTATION_LOCK.lock().await;
     if !cfg!(target_os = "macos") {
         anyhow::bail!("TUN 入口仅支持 macOS");
     }
@@ -691,18 +752,22 @@ pub async fn tun_install(cfg: &crate::config::Config) -> anyhow::Result<serde_js
     .await?;
     // bootstrap 后 helper 起 socket 要一小会儿
     for _ in 0..10 {
-        if helper_call(serde_json::json!({ "cmd": "ping" })).await.is_ok() {
-            break;
+        if let Ok(pong) = helper_call(serde_json::json!({ "cmd": "ping" })).await {
+            if pong.get("version").and_then(|v| v.as_str()) == Some(HELPER_VERSION) {
+                return Ok(tun_status(cfg).await);
+            }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    Ok(tun_status(cfg).await)
+    anyhow::bail!("安装脚本已执行,但未收到预期版本助手的确认;请检查助手状态后重试")
 }
 
 /// 卸载 helper(管理员密码)。顺带清启用标记。
 pub async fn tun_uninstall(cfg: &crate::config::Config) -> anyhow::Result<serde_json::Value> {
     anyhow::ensure!(cfg.host_integrations_allowed(), "隔离实例禁用宿主 TUN 和助手变更");
+    let _guard = TUN_MUTATION_LOCK.lock().await;
     run_privileged_script(&cfg.data_dir, "helper-uninstall.sh", &uninstall_script()).await?;
+    TUN_PARKED.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = set_tun_enabled(&cfg.data_dir, false);
     Ok(tun_status(cfg).await)
 }
@@ -710,6 +775,21 @@ pub async fn tun_uninstall(cfg: &crate::config::Config) -> anyhow::Result<serde_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_negative_ack_and_unconfirmed_stop_are_errors() {
+        assert!(parse_helper_response(br#"{"ok":false,"error":"persist failed"}"#).is_err());
+        assert!(parse_helper_response(br#"{"version":"0.2.0"}"#).is_err());
+        assert!(parse_helper_response(br#"{"ok":true,"generation":3}"#).is_ok());
+        assert!(ensure_helper_stopped(&serde_json::json!({"running":false,"alive":true})).is_err());
+        assert!(ensure_helper_stopped(&serde_json::json!({"running":false,"alive":false})).is_ok());
+        let request = serde_json::json!({"cmd":"ensure","config":"fixture","v4":[],"v6":[]});
+        let response = serde_json::json!({"generation":3,"running":true,"config":"fixture","v4":[],"v6":[]});
+        assert!(helper_matches_request(&response, &request, 3));
+        assert!(!helper_matches_request(&response, &request, 4));
+        let other = serde_json::json!({"cmd":"ensure","config":"different","v4":[],"v6":[]});
+        assert!(!helper_matches_request(&response, &other, 3));
+    }
 
     #[test]
     fn parse_version_detects_meta() {
