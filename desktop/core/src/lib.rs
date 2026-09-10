@@ -30,6 +30,7 @@ pub mod novnc;
 pub mod events;
 pub mod shutdown;
 pub mod lifecycle;
+pub mod runtime_lifecycle;
 
 use std::sync::Arc;
 

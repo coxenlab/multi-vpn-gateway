@@ -13,6 +13,13 @@ type ProbeWatch = watch::Receiver<Option<(u64, ProbeResult)>>;
 pub struct Lifecycle {
     closing: AtomicBool,
     slots: Mutex<HashMap<String, Arc<Slot>>>,
+    runtime: Arc<crate::runtime_lifecycle::Coordinator>,
+}
+
+/// 通道锁先释放，再结束底座活动；排队中的通道操作同样阻止底座释放。
+pub struct OperationGuard {
+    _channel: OwnedMutexGuard<()>,
+    _activity: crate::runtime_lifecycle::Activity,
 }
 
 #[derive(Default)]
@@ -30,27 +37,31 @@ pub struct Slot {
 }
 
 impl Lifecycle {
+    pub fn runtime(&self) -> &Arc<crate::runtime_lifecycle::Coordinator> { &self.runtime }
+
     pub fn slot(&self, cid: &str) -> Arc<Slot> {
         self.slots.lock().unwrap().entry(cid.into()).or_default().clone()
     }
 
-    pub async fn mutate(&self, cid: &str) -> anyhow::Result<OwnedMutexGuard<()>> {
+    pub async fn mutate(&self, cid: &str) -> anyhow::Result<OperationGuard> {
         let guard = self.access(cid).await?;
         self.slot(cid).generation.fetch_add(1, Ordering::SeqCst);
         Ok(guard)
     }
 
     /// 登录视图等资源操作与启停串行，但不使连通缓存失效。
-    pub async fn access(&self, cid: &str) -> anyhow::Result<OwnedMutexGuard<()>> {
+    pub async fn access(&self, cid: &str) -> anyhow::Result<OperationGuard> {
         anyhow::ensure!(!self.closing.load(Ordering::SeqCst), "应用正在退出");
+        let activity = self.runtime.activity().await.map_err(anyhow::Error::msg)?;
         let slot = self.slot(cid);
         let guard = slot.operation.clone().lock_owned().await;
         anyhow::ensure!(!self.closing.load(Ordering::SeqCst), "应用正在退出");
-        Ok(guard)
+        Ok(OperationGuard { _channel: guard, _activity: activity })
     }
 
     pub async fn quiesce(&self) {
         self.closing.store(true, Ordering::SeqCst);
+        self.runtime.quiesce().await;
         let slots: Vec<_> = self.slots.lock().unwrap().values().cloned().collect();
         for slot in slots {
             {
@@ -111,11 +122,13 @@ where
                 }
             }
             if let Some(receiver) = &probe.in_flight { receiver.clone() } else {
+                let activity = state.lifecycle.runtime.activity().await?;
                 let (sender, receiver) = watch::channel(None);
                 probe.in_flight = Some(receiver.clone());
                 let st = state.clone(); let slot = slot.clone(); let cid = cid.clone();
                 let execute = execute.clone();
                 tokio::spawn(async move {
+                    let _activity = activity;
                     let outcome = tokio::time::timeout(Duration::from_secs(32), execute(st.clone(), ch)).await;
                     let _guard = slot.operation.lock().await;
                     let current = generation == slot.generation.load(Ordering::SeqCst)
