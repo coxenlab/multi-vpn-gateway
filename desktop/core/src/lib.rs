@@ -1,6 +1,7 @@
 pub mod config;
 pub mod store;
 pub mod replacement_store;
+pub mod replacement_docker;
 pub mod docker;
 pub mod vm;
 pub mod infra;
