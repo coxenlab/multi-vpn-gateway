@@ -4,6 +4,7 @@ import contextlib
 import functools
 import threading
 import time
+import logging
 
 import store
 
@@ -56,8 +57,27 @@ def serialized(fn):
     return wrapped
 
 
+def accessed(fn):
+    @functools.wraps(fn)
+    def wrapped(cid, *args, **kwargs):
+        with slot(cid).operation:
+            if _closing: raise RuntimeError("服务正在退出")
+            return fn(cid, *args, **kwargs)
+    return wrapped
+
+
+def _cleanup_replacement(cid):
+    import replacement
+    with slot(cid).operation:
+        if _closing: return
+        try: replacement.cleanup(cid)
+        except Exception: logging.getLogger(__name__).warning("通道 %s 的旧资源清理待重试", cid)
+
+
 def _execute(current, generation, ch):
     import manager
+    import replacement
+    import replacement_store
     result = manager.probe(ch)
     with current.operation:
         if generation != current.generation or _closing:
@@ -65,8 +85,14 @@ def _execute(current, generation, ch):
         ok, ms = result
         status = "logged_in" if ok else "running"
         store.set_probe_result(ch["id"], status, ms)
+        if ok:
+            try: replacement.confirmed(ch['id'])
+            except Exception: logging.getLogger(__name__).warning("通道 %s 的替换确认待重试", ch['id'])
+        pending = replacement_store.public_status(ch['id'])
+        if pending and pending['phase'] in ('committed', 'rolled_back'):
+            _pool.submit(_cleanup_replacement, ch['id'])
         value = dict(status=status, connected=ok, latency_ms=ms,
-                     checked_at=int(time.time() * 1000), stale=False)
+                     checked_at=int(time.time() * 1000), stale=False, replacement=pending)
         with current.probes:
             current.failures = 0 if ok else current.failures + 1
             delay = 30 if ok else min(30, 5 * (2 ** min(current.failures - 1, 3)))
@@ -75,6 +101,7 @@ def _execute(current, generation, ch):
 
 
 def sample(cid, fresh=True):
+    import replacement_store
     current = slot(cid)
     while True:
         with current.operation:
@@ -83,10 +110,13 @@ def sample(cid, fresh=True):
             ch = store.get_channel(cid)
             if ch is None:
                 return None
+            pending = replacement_store.public_status(cid)
+            if pending and pending['phase'] not in ('awaiting_login', 'committed', 'rolled_back'):
+                return dict(status='error', connected=False, latency_ms=None, checked_at=None, stale=True, replacement=pending)
             generation = current.generation
         if ch["status"] not in ("running", "logged_in"):
             return dict(status=ch["status"], connected=False, latency_ms=None,
-                        checked_at=None, stale=False)
+                        checked_at=None, stale=False, replacement=pending)
         stale = None
         with current.probes:
             if _closing:

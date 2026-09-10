@@ -22,6 +22,8 @@ from fastapi.staticfiles import StaticFiles
 import store
 import manager
 import channel_state
+import replacement
+import replacement_store
 import registry
 import dockerhub
 import preflight
@@ -34,6 +36,7 @@ MIHOMO_HOST_PORT = os.environ.get("MIHOMO_HOST_PORT", "?")
 @asynccontextmanager
 async def lifespan(app):
     channel_state.startup()
+    await asyncio.to_thread(replacement.recover_all)
     try:
         yield
     finally:
@@ -75,7 +78,8 @@ def channels():
         rs = store.list_rules(c["id"])
         c["domains"] = [r for r in rs if r["kind"] == "domain"]
         c["ips"] = [r for r in rs if r["kind"] == "ip"]
-        c["volume_name"] = f"vpndata-{c['id']}"
+        c["volume_name"] = replacement_store.data_volume(c['id'])
+        c["replacement"] = replacement_store.public_status(c['id'])
         c["socks_proxy"] = f"ch-{c['id']}"
         c["socks_endpoint"] = f"vpn-{c['id']}:1080"
         up = manager.uptime(c["id"]) if c["status"] != "stopped" else None
@@ -137,6 +141,14 @@ def update(cid: str, b: dict = Body(...)):
     ch = store.get_channel(cid)
     if not ch:
         return JSONResponse({"error": "not found"}, status_code=404)
+    pending = replacement_store.public_status(cid)
+    if pending:
+        if pending['phase'] in ('committed', 'rolled_back'):
+            try: replacement.cleanup(cid)
+            except Exception:
+                return JSONResponse({"error": "上次操作的资源清理未完成，请稍后重试"}, status_code=409)
+        else:
+            return JSONResponse({"error": "上次修改尚未验证，请先完成登录或恢复上一次设置"}, status_code=409)
     for key in ("name", "server", "username", "password", "ec_ver", "probe_url"):
         if key in b and not isinstance(b[key], str):
             return JSONResponse({"error": f"{key} must be text"}, status_code=400)
@@ -149,25 +161,48 @@ def update(cid: str, b: dict = Body(...)):
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
     except KeyError:
         secret_keys = []
-    store.update_channel(cid, b, secret_keys=secret_keys)
-    # 改了连接相关字段 → 重建容器(oss 凭据从 config 读,只有重建才会重连);否则原样返回
+    # 准备期间不写字段；替换函数在实际切换成功后与运行态一次提交。
     if touched and ch.get("container_id"):
-        ch2 = store.get_channel(cid)
         try:
-            container_id, novnc = manager.create_channel(ch2, ch2["vnc_password"])
+            replacement.replace(ch, b)
         except Exception as e:
-            store.set_status(cid, "error")
+            pending = replacement_store.public_status(cid)
+            if pending and pending['phase'] not in ('committed', 'rolled_back', 'awaiting_login'):
+                store.set_status(cid, "error")
+            manager.rebuild()
             return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
-        store.set_container(cid, container_id, novnc, "running")
         manager.rebuild()
+    else:
+        store.update_channel(cid, b, secret_keys=secret_keys)
+    result = store.get_channel(cid)
+    result['replacement'] = replacement_store.public_status(cid)
+    return result
+
+
+@app.post("/api/channels/{cid}/restore")
+@channel_state.serialized
+def restore_channel(cid):
+    if not store.get_channel(cid): return JSONResponse({"error": "not found"}, status_code=404)
+    pending = replacement_store.public_status(cid)
+    if not pending or not pending['can_restore']:
+        return JSONResponse({"error": "没有可恢复的上一次设置"}, status_code=409)
+    try:
+        replacement.recover(cid)
+    except Exception as e:
+        return JSONResponse({"error": f"恢复未完成: {e}"}, status_code=500)
+    manager.rebuild()
     return store.get_channel(cid)
 
 
 @app.get("/api/channels/{cid}/login")
+@channel_state.accessed
 def login(cid):
     ch = store.get_channel(cid)
     if not ch:
         return JSONResponse({"error": "not found"}, status_code=404)
+    pending = replacement_store.public_status(cid)
+    if pending and pending['phase'] not in ('awaiting_login', 'committed', 'rolled_back'):
+        return JSONResponse({"error": "上次操作尚未恢复，请先恢复上一次设置"}, status_code=409)
     if ch.get("login_method") == "headless":
         return {"login_mode": "headless"}   # 无头无 noVNC,前端据此跳过登录屏
     # 实时读容器当前映射端口:动态 host 端口在容器重启后会变,DB 存的会过期 → noVNC 连接被拒。
@@ -378,6 +413,12 @@ def start(cid):
     if not ch:
         return JSONResponse({"error": "not found"}, status_code=404)
     try:
+        if replacement.resume(cid):
+            manager.rebuild()
+            return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"error": f"启动未完成: {e}"}, status_code=500)
+    try:
         runtime = registry.get(ch["vpn_type"]).get("runtime")
     except KeyError:
         runtime = None
@@ -386,16 +427,19 @@ def start(cid):
         store.set_status(cid, "running")
         manager.rebuild()   # 状态参与 effective_rules 折叠:回运行态要立刻恢复该通道规则
         return {"ok": True}
-    # 重建是同步的,aTrust/EC 要十几秒;期间先落「starting」,否则前端 8s 轮询拿到的
-    # 还是 stopped → 卡片一直显示「已停止」(用户以为没生效)。
-    store.set_status(cid, "starting")
+    # Docker outcome 确认前不改 DB；候选和恢复进度由 replacement 单独保存。
     try:
-        container_id, novnc = manager.create_channel(ch, ch["vnc_password"])
+        if ch.get('container_id'):
+            replacement.replace(ch, {}, force_start=True)
+        else:
+            container_id, novnc = manager.create_channel(ch, ch["vnc_password"])
+            store.set_container(cid, container_id, novnc, "running")
     except Exception as e:
-        store.set_status(cid, "error")
+        pending = replacement_store.public_status(cid)
+        if not ch.get('container_id') or (pending and pending['phase'] not in ('committed', 'rolled_back', 'awaiting_login')):
+            store.set_status(cid, "error")
         manager.rebuild()   # error 态规则折叠为不生效,配置面须同步,别留半生效
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
-    store.set_container(cid, container_id, novnc, "running")
     manager.rebuild()
     return {"ok": True}
 
@@ -403,6 +447,7 @@ def start(cid):
 @app.post("/api/channels/{cid}/stop")
 @channel_state.serialized
 def stop(cid):
+    replacement.before_stop(cid)
     manager.stop(cid)
     store.set_status(cid, "stopped")
     # 关容器即关分流:订阅面(provider/PAC)现算会立刻显示折叠,但真正在跑的 mihomo
@@ -414,8 +459,9 @@ def stop(cid):
 @app.delete("/api/channels/{cid}")
 @channel_state.serialized
 def delete(cid):
-    manager.remove(cid)
-    store.del_channel(cid)
+    if not replacement.discard(cid):
+        manager.remove(cid)
+        store.del_channel(cid)
     manager.rebuild()
     return {"ok": True}
 

@@ -300,6 +300,7 @@ pub fn confirmed(st: &AppState, cid: &str) -> Result<()> {
 pub async fn recover_all(st: &AppState) {
     let records = (|| { let key=store::master_key(&st.cfg.data_dir)?; journal::list(&st.cfg.db_path(),&key) })();
     let records = match records { Ok(r)=>r, Err(error)=> { crate::ev!(error,"replacement","recovery_failed","替换进度无法读取",{"error":error.to_string()}); return; } };
+    let had_records = !records.is_empty();
     for record in records {
         let Ok(_guard)=st.lifecycle.mutate(&record.channel_id).await else { return; };
         let result = match record.phase.as_str() {
@@ -311,6 +312,7 @@ pub async fn recover_all(st: &AppState) {
             crate::ev!(warn,"replacement","recovery_pending","替换操作恢复未完成，保留记录与数据",{"cid":record.channel_id,"error":error.to_string()});
         }
     }
+    if had_records { let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &st.cfg.db_path()).await; }
 }
 
 pub async fn reconcile_waiting(st: &AppState, cid: &str) -> Result<()> {
@@ -371,6 +373,9 @@ pub async fn before_stop(st:&AppState,cid:&str)->Result<()> {
     if matches!(record.phase.as_str(),"committed"|"rolled_back") {return cleanup(st,cid).await;}
     let docker=st.docker().ok_or_else(||anyhow!("docker unavailable"))?;
     let old_id=text(&record.payload,"old_id")?;
+    let old=identity(&docker,old_id).await?;
+    ensure!(old.name.as_deref()==Some(&format!("/vpn-{cid}")) || old.name.as_deref()==Some(&format!("/vpn-{cid}-previous-{}",record.operation_id)),"旧容器名称已变化");
+    ensure!(old.mounts.as_ref().is_some_and(|m|m.iter().any(|m|m.name.as_deref()==record.payload["old_volume"].as_str())),"旧数据卷已变化");
     set_policy(&docker,old_id,policy(RestartPolicyNameEnum::NO)).await?;
     set_running(&docker,old_id,false).await?;
     advance(st,&key,&record,&record.phase,json!({"old_running":false,"start":false}))?;

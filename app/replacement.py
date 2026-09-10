@@ -287,7 +287,12 @@ def confirmed(cid):
 
 def recover_all():
     import channel_state
-    for record in journal.records():
+    import manager
+    try: records = journal.records()
+    except Exception:
+        LOG.error('替换记录无法读取，保留所有资源等待恢复')
+        return
+    for record in records:
         try:
             with channel_state.mutation(record.channel_id):
                 if record.phase == 'awaiting_login': reconcile_waiting(record.channel_id)
@@ -295,6 +300,7 @@ def recover_all():
                 else: recover(record.channel_id)
         except Exception:
             LOG.warning('通道 %s 有待恢复的替换操作，保留记录与数据', record.channel_id)
+    if records: manager.rebuild()
 
 
 def reconcile_waiting(cid):
@@ -354,6 +360,8 @@ def before_stop(cid):
     if record.phase in ('committed', 'rolled_back'):
         cleanup(cid); return
     old = _identity(manager.dc, record.payload['old_id'])
+    if old.attrs.get('Name') not in ('/vpn-'+cid, '/vpn-'+cid+'-previous-'+record.operation_id): raise RuntimeError('旧容器名称已变化')
+    if not any(m.get('Name') == record.payload['old_volume'] for m in old.attrs.get('Mounts', [])): raise RuntimeError('旧数据卷已变化')
     _policy(old, {'Name': 'no'}); _running(old, False)
     record = _advance(record, record.phase, old_running=False, start=False)
     recover(cid)

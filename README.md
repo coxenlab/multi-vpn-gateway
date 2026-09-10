@@ -162,6 +162,7 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | PATCH | `/api/rules` | desktop batch enable / disable; locked rules are skipped → `{updated, skipped_locked, reload_status}` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | delete one rule → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | start / stop container → `{ok}` |
+| POST | `/api/channels/{cid}/restore` | restore the previous settings while a replacement awaits verification; saved login notes are retained |
 | DELETE | `/api/channels/{cid}` | delete channel → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | container logs → `{lines}` |
 | GET \| PUT | `/api/channels/{cid}/note` | encrypted login notes `{note}`, read back only through this endpoint |

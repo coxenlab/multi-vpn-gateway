@@ -126,7 +126,15 @@ pub async fn channels(State(st): State<AppState>) -> axum::response::Response {
         };
         uptime_map.insert(c.id.clone(), up);
     }
-    Json(json!(build_channels_response(chans, &rules_map, &uptime_map))).into_response()
+    let mut response = build_channels_response(chans, &rules_map, &uptime_map);
+    for channel in &mut response {
+        let cid = channel["id"].as_str().unwrap_or_default().to_string();
+        match (crate::replacement_store::public_status(&db, &cid), crate::replacement_store::data_volume(&db, &cid)) {
+            (Ok(pending), Ok(volume)) => { channel["replacement"] = json!(pending); channel["volume_name"] = json!(volume); },
+            _ => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, "replacement runtime unavailable"),
+        }
+    }
+    Json(json!(response)).into_response()
 }
 
 /// 纯函数:把通道 + 预取的 rules/uptime 组装成 /api/channels 输出(对照 main.py channels 路由)。

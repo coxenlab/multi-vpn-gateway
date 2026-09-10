@@ -425,9 +425,38 @@ fn reload_ok(status: &str) -> bool {
 }
 pub(crate) fn channel_json(db: &std::path::Path, cid: &str) -> axum::response::Response {
     match store::get_channel(db, cid) {
-        Ok(Some(c)) => Json(serde_json::to_value(&c).unwrap()).into_response(),
+        Ok(Some(c)) => {
+            let mut value = serde_json::to_value(&c).unwrap();
+            match crate::replacement_store::public_status(db, cid) {
+                Ok(pending) => value["replacement"] = json!(pending),
+                Err(e) => return err500(&format!("replacement status: {e}")),
+            }
+            Json(value).into_response()
+        }
         _ => err404("not found"),
     }
+}
+
+pub async fn restore_channel(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    detached("restore", async move {
+        let _operation = match st.lifecycle.mutate(&cid).await { Ok(guard) => guard, Err(e) => return err503(&e.to_string()) };
+        let db = st.cfg.db_path();
+        match store::get_channel(&db, &cid) {
+            Ok(Some(_)) => {},
+            Ok(None) => return err404("not found"),
+            Err(e) => return err500(&e.to_string()),
+        }
+        match crate::replacement_store::public_status(&db, &cid) {
+            Ok(Some(pending)) if pending["can_restore"] == true => {},
+            Ok(_) => return err_detail(StatusCode::CONFLICT, "没有可恢复的上一次设置"),
+            Err(e) => return err500(&e.to_string()),
+        }
+        let before = channel_snapshot_of(&db, &cid);
+        if let Err(e) = crate::replacement::recover(&st, &cid).await { return err500(&format!("恢复未完成: {e}")); }
+        let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+        crate::events::audit("channel_restore", "已恢复上一次设置，连通状态待检测", json!({"target_kind":"channel","target_id":cid,"before":before,"after":channel_snapshot_of(&db,&cid),"reload_status":reload,"result":"ok"}));
+        channel_json(&db, &cid)
+    }).await
 }
 
 /// create_channel + (oss)oss_connect。对照 main.py create_channel 的整体语义
@@ -633,6 +662,14 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         Ok(None) => return err404("not found"),
         Err(e) => return err500(&format!("{e}")),
     };
+    match crate::replacement_store::public_status(&db, &cid) {
+        Ok(Some(pending)) if matches!(pending["phase"].as_str(), Some("committed" | "rolled_back")) => {
+            if let Err(e) = crate::replacement::cleanup(&st, &cid).await { return err_detail(StatusCode::CONFLICT, &format!("上次操作的资源清理未完成: {e}")); }
+        }
+        Ok(Some(_)) => return err_detail(StatusCode::CONFLICT, "上次修改尚未验证，请先完成登录或恢复上一次设置"),
+        Ok(None) => {},
+        Err(e) => return err500(&format!("replacement status: {e}")),
+    }
     let sk = secret_keys_of(&ch.vpn_type);
     let password_changed = if let Some(value) = fields.get("password") {
         match store::get_password(&db, &key, &cid) {
@@ -667,45 +704,24 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         rollback_fields.insert("routing_enabled".into(), json!(ch.routing_enabled));
         store::update_channel(&db, &key, &cid, &rollback_fields, &sk)
     };
-    if let Err(e) = store::update_channel(&db, &key, &cid, &fields, &sk) {
-        let mut detail = audit_detail("failed", Value::Null);
-        detail["error"] = json!(e.to_string());
-        crate::events::audit_failed("channel_update", "通道更新失败", detail);
-        return err500(&format!("update_channel: {e}"));
-    }
     let provisioned = touched && ch.container_id.is_some();
-    if provisioned {
-        let ch2 = match store::get_channel(&db, &cid) {
-            Ok(Some(c)) => c,
-            _ => return err500("get_channel"),
-        };
-        let vnc = ch2.vnc_password.clone().unwrap_or_default();
-        match provision(&st, &ch2, &vnc).await {
-            Ok((container_id, novnc)) => {
-                let _ = store::set_container(&db, &cid, &container_id, novnc, "running");
-            }
-            Err(e) => {
-                if routing_changed {
-                    if let Err(rollback_error) = rollback_routing() {
-                        crate::ev!(error, "api", "routing_toggle", "更新通道失败且分流字段回滚失败",
-                            { "cid": cid.as_str(), "error": e.to_string(), "rollback_error": rollback_error.to_string() });
-                        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("routing rollback failed: {rollback_error}"));
-                    }
-                }
+    let changed = if provisioned {
+        crate::replacement::replace(&st, &ch, &fields, false).await
+    } else {
+        store::update_channel(&db, &key, &cid, &fields, &sk)
+    };
+    if let Err(e) = changed {
+        // 自动恢复成功时保留确认过的运行态；只有未恢复的操作才落 error，避免继续分流。
+        if provisioned {
+            if crate::replacement_store::public_status(&db, &cid).ok().flatten().is_some_and(|p| !matches!(p["phase"].as_str(), Some("committed" | "rolled_back" | "awaiting_login"))) {
                 let _ = store::set_status(&db, &cid, "error");
-                // 状态联动:通道落 error 后规则自动失效,同步收掉分流面(失败仅记日志)。
-                let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
-                if !reload_ok(&reload) {
-                    crate::ev!(error, "api", "mihomo_reload_failed", "通道更新失败落 error 后 mihomo 重载未达成",
-                        { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
-                }
-                let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
-                detail["error"] = json!(e.to_string());
-                detail["routing_rolled_back"] = json!(routing_changed);
-                crate::events::audit_failed("channel_update", "通道更新后重建容器失败,通道已落 error", detail);
-                return err500(&format!("{e}"));
             }
+            let _ = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
         }
+        let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("channel_update", "通道更新未完成，保留恢复记录与原数据", detail);
+        return err500(&format!("{e}"));
     }
     if provisioned || routing_changed {
         let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
@@ -756,6 +772,11 @@ pub async fn login(State(st): State<AppState>, Path(cid): Path<String>, Query(q)
         Err(e) => return err503(&e.to_string()),
     };
     let db = st.cfg.db_path();
+    match crate::replacement_store::public_status(&db, &cid) {
+        Ok(Some(pending)) if !matches!(pending["phase"].as_str(), Some("awaiting_login" | "committed" | "rolled_back")) => return err_detail(StatusCode::CONFLICT, "上次操作尚未恢复，请先恢复上一次设置"),
+        Err(e) => return err500(&e.to_string()),
+        _ => {},
+    }
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(c)) => c,
         Ok(None) => return err404("not found"),
@@ -956,6 +977,17 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
             return err503("docker unavailable");
         }
     };
+    match crate::replacement::resume(&st, &cid).await {
+        Ok(true) => {
+            let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+            let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid), "resume_pending");
+            detail["reload_status"] = json!(reload);
+            crate::events::audit("channel_start", "继续启动新设置，保留上一次设置供恢复", detail);
+            return Json(json!({"ok":true})).into_response();
+        }
+        Ok(false) => {},
+        Err(e) => return err500(&format!("启动未完成: {e}")),
+    }
     let runtime = registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
     if runtime == "byo" {
         // byo 客户端装在可写层,扛得住原地重启 → 不重建
@@ -984,7 +1016,22 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
         );
         return Json(json!({ "ok": true })).into_response();
     }
-    // hagb/oss:原地 start 扛不住 → 重建。Docker outcome 确认前不改 DB。
+    // 有旧实例时先准备独立候选；失败保留旧设置与数据。
+    if ch.container_id.is_some() {
+        if let Err(e) = crate::replacement::replace(&st, &ch, &Default::default(), true).await {
+            if crate::replacement_store::public_status(&db, &cid).ok().flatten().is_some_and(|p| !matches!(p["phase"].as_str(), Some("committed" | "rolled_back" | "awaiting_login"))) {
+                let _ = store::set_status(&db, &cid, "error");
+            }
+            let _ = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+            return err500(&format!("启动未完成: {e}"));
+        }
+        let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+        let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid), "replace");
+        detail["reload_status"] = json!(reload);
+        crate::events::audit("channel_start", "通道替换已应用，连通状态以探活为准", detail);
+        return Json(json!({"ok":true})).into_response();
+    }
+    // 没有旧实例的初始化路径另行收敛；Docker outcome 确认前不改 DB。
     let vnc = ch.vnc_password.clone().unwrap_or_default();
     match provision_with_docker(&st, &docker, &ch, &vnc).await {
         Ok((container_id, novnc)) => {
@@ -1050,6 +1097,9 @@ async fn stop_inner(st: AppState, cid: String) -> axum::response::Response {
             return err503("docker unavailable");
         }
     };
+    if let Err(e) = crate::replacement::before_stop(&st, &cid).await {
+        return err500(&format!("停止前恢复未完成: {e}"));
+    }
     if let Err(e) = manager::stop(&docker, &cid).await {
         let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
         detail["error"] = json!(e.to_string());
@@ -1114,19 +1164,25 @@ async fn delete_inner(st: AppState, cid: String) -> axum::response::Response {
             return err503("docker unavailable");
         }
     };
-    if let Err(e) = manager::remove(&docker, &cid).await {
-        let mut detail = audit_detail("failed");
-        detail["error"] = json!(e.to_string());
-        crate::events::audit_failed("channel_delete", "通道删除失败", detail);
-        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("remove: {e}"));
-    }
-    crate::novnc::drop_for(&st, &cid).await;
-    if let Err(e) = store::del_channel(&db, &cid) {
-        let mut detail = audit_detail("failed");
-        detail["error"] = json!(e.to_string());
-        detail["container_removed"] = json!(true);
-        crate::events::audit_failed("channel_delete", "通道容器已删除但配置落库失败", detail);
-        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_channel: {e}"));
+    let handled = match crate::replacement::discard(&st, &cid).await {
+        Ok(handled) => handled,
+        Err(e) => return err500(&format!("删除尚未完成: {e}")),
+    };
+    if !handled {
+        if let Err(e) = manager::remove(&docker, &cid).await {
+            let mut detail = audit_detail("failed");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("channel_delete", "通道删除失败", detail);
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("remove: {e}"));
+        }
+        crate::novnc::drop_for(&st, &cid).await;
+        if let Err(e) = store::del_channel(&db, &cid) {
+            let mut detail = audit_detail("failed");
+            detail["error"] = json!(e.to_string());
+            detail["container_removed"] = json!(true);
+            crate::events::audit_failed("channel_delete", "通道容器已删除但配置落库失败", detail);
+            return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_channel: {e}"));
+        }
     }
     // 对照 Python delete:响应 {"ok": true}(不含 reload_status);重载未达成仅记日志。
     let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;

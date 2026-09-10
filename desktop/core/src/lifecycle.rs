@@ -85,14 +85,18 @@ where
     let slot = state.lifecycle.slot(&cid);
     loop {
         if state.lifecycle.closing.load(Ordering::SeqCst) { return Err("应用正在退出".into()); }
-        let (ch, generation) = {
+        let (ch, generation, pending) = {
             let _guard = slot.operation.lock().await;
             let ch = store::get_channel(&state.cfg.db_path(), &cid).map_err(|e| e.to_string())?
                 .ok_or_else(|| "not found".to_string())?;
-            (ch, slot.generation.load(Ordering::SeqCst))
+            let pending = crate::replacement_store::public_status(&state.cfg.db_path(), &cid).map_err(|e| e.to_string())?;
+            (ch, slot.generation.load(Ordering::SeqCst), pending)
         };
+        if pending.as_ref().is_some_and(|p| !matches!(p["phase"].as_str(), Some("awaiting_login" | "committed" | "rolled_back"))) {
+            return Ok(json!({"status":"error","connected":false,"latency_ms":null,"checked_at":null,"stale":true,"replacement":pending}));
+        }
         if !matches!(ch.status.as_str(), "running" | "logged_in") {
-            return Ok(json!({"status":ch.status,"connected":false,"latency_ms":null,"checked_at":null,"stale":false}));
+            return Ok(json!({"status":ch.status,"connected":false,"latency_ms":null,"checked_at":null,"stale":false,"replacement":pending}));
         }
         let mut stale = None;
         let mut receiver = {
@@ -122,10 +126,26 @@ where
                                 crate::ev!(debug, "manager", "probe", "通道探活完成",
                                     { "cid": cid.as_str(), "ok": ok, "latency_ms": ms });
                                 let status = if ok { "logged_in" } else { "running" };
-                                store::set_probe_result(&st.cfg.db_path(), &cid, status, ms)
-                                    .map(|()| json!({"status":status,"connected":ok,"latency_ms":ms,
-                                        "checked_at":chrono::Utc::now().timestamp_millis(),"stale":false}))
-                                    .map_err(|e| e.to_string())
+                                (|| -> ProbeResult {
+                                    store::set_probe_result(&st.cfg.db_path(), &cid, status, ms).map_err(|e| e.to_string())?;
+                                    if ok {
+                                        if let Err(error) = crate::replacement::confirmed(&st, &cid) {
+                                            crate::ev!(warn,"replacement","confirm_pending","替换确认待重试",{"cid":cid,"error":error.to_string()});
+                                        }
+                                    }
+                                    let pending = crate::replacement_store::public_status(&st.cfg.db_path(), &cid).map_err(|e| e.to_string())?;
+                                    if pending.as_ref().is_some_and(|p| matches!(p["phase"].as_str(), Some("committed" | "rolled_back"))) {
+                                        let st = st.clone(); let cid = cid.clone();
+                                        tokio::spawn(async move {
+                                            let Ok(_guard) = st.lifecycle.access(&cid).await else { return; };
+                                            if let Err(error) = crate::replacement::cleanup(&st, &cid).await {
+                                                crate::ev!(warn,"replacement","cleanup_pending","旧资源清理待重试",{"cid":cid,"error":error.to_string()});
+                                            }
+                                        });
+                                    }
+                                    Ok(json!({"status":status,"connected":ok,"latency_ms":ms,
+                                        "checked_at":chrono::Utc::now().timestamp_millis(),"stale":false,"replacement":pending}))
+                                })()
                             }
                             Err(_) => Err("探活超时,连通状态待确认".into()),
                         }

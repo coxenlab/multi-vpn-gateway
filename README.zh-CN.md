@@ -135,6 +135,7 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | PATCH | `/api/rules` | 桌面版批量启停；锁定规则跳过 → `{updated, skipped_locked, reload_status}` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | 删规则 → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | 起 / 停容器 → `{ok}` |
+| POST | `/api/channels/{cid}/restore` | 替换尚未验证时恢复上一次设置；保留已保存的登录备注 |
 | DELETE | `/api/channels/{cid}` | 删通道 → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | 容器日志 → `{lines}` |
 | GET \| PUT | `/api/channels/{cid}/note` | 登录备注 `{note}`；加密存储，仅此端点读回，通道列表不暴露正文 |

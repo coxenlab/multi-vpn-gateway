@@ -411,12 +411,16 @@ def test_preflight_default_scope_skips_mihomo_probe(client, monkeypatch):
 def test_start_recreates_not_inplace_docker_start(client, monkeypatch):
     """命门:EC/aTrust(hagb) 与 oss 扛不住原地 docker start(守护进程/exec 注入的隧道不重启)。
     /start 必须重建容器(docker run fresh),而非 container.start()。"""
-    import manager, store
+    import manager, store, replacement
     cid = _create(client)["id"]                          # create_channel mocked → ("cid_fake", 18080)
     client.post(f"/api/channels/{cid}/stop")
     assert store.get_channel(cid)["status"] == "stopped"
 
-    monkeypatch.setattr(manager, "create_channel", lambda c, vnc: ("fresh-cid", 29999))
+    def replace(ch, fields, force_start=False):
+        assert ch['id'] == cid and fields == {} and force_start
+        store.set_container(cid, "fresh-cid", 29999, "running")
+    monkeypatch.setattr(replacement, "replace", replace)
+    monkeypatch.setattr(manager, "create_channel", lambda *a: (_ for _ in ()).throw(AssertionError("必须走保留旧实例的替换流程")))
     r = client.post(f"/api/channels/{cid}/start")
     assert r.status_code == 200
     row = store.get_channel(cid)
@@ -525,3 +529,64 @@ def test_config_import_skips_duplicate_and_unknown(client):
 
 def test_config_import_rejects_bad_doc(client):
     assert client.post("/api/config/import", json={"kind": "nope"}).status_code == 400
+
+
+def test_failed_replacement_keeps_saved_configuration(client, monkeypatch):
+    import replacement, store
+    cid = _create(client, password='old-fixture')['id']
+    def fail(ch, fields, force_start=False):
+        assert store.get_channel(cid)['server'] == 'https://x'
+        assert store.get_password(cid) == 'old-fixture'
+        raise RuntimeError('injected prepare failure')
+    monkeypatch.setattr(replacement, 'replace', fail)
+    response = client.patch(f'/api/channels/{cid}', json={'server': 'new-server', 'password': 'new-fixture'})
+    assert response.status_code == 500
+    row = store.get_channel(cid)
+    assert row['server'] == 'https://x' and row['container_id'] == 'cid_fake' and row['status'] == 'running'
+    assert store.get_password(cid) == 'old-fixture'
+
+
+def test_pending_replacement_blocks_edits_and_partial_login_without_exposing_payload(client):
+    import replacement_store as journal
+    cid = _create(client)['id']
+    journal.begin(cid, 'operation', {'password': 'internal-fixture-secret'})
+    response = client.get('/api/channels')
+    assert response.status_code == 200 and 'internal-fixture-secret' not in response.text
+    assert response.json()[0]['replacement'] == {'phase': 'preparing', 'can_restore': True}
+    assert client.patch(f'/api/channels/{cid}', json={'name': 'unsafe-overlap'}).status_code == 409
+    assert client.get(f'/api/channels/{cid}/login').status_code == 409
+
+
+def test_successful_fresh_probe_confirms_pending_candidate(client, monkeypatch):
+    import threading
+    import replacement, replacement_store as journal, store
+    cid = _create(client)['id']
+    journal.begin(cid, 'operation', {'new_id': 'cid_fake'})
+    for phase in ('prepared', 'switching', 'validating'):
+        record = journal.get(cid)
+        journal.advance(record, phase, record.payload)
+    journal.commit(journal.get(cid), {}, (), journal.AppliedRuntime('cid_fake', 'vpndata-fixture', None, 'running'), awaiting_login=True)
+    cleaned = threading.Event()
+    monkeypatch.setattr(replacement, 'cleanup', lambda actual: cleaned.set() if actual == cid else None)
+    result = client.get(f'/api/channels/{cid}/status')
+    assert result.status_code == 200 and result.json()['connected'] is True
+    assert journal.get(cid).phase == 'committed'
+    assert cleaned.wait(1)
+    assert store.get_channel(cid)['status'] == 'logged_in'
+
+
+def test_interrupted_start_excludes_unconfirmed_runtime_from_rules(client, monkeypatch):
+    import replacement, replacement_store as journal, store
+    cid = _create(client)['id']
+    store.add_rule(cid, 'domain', 'example.test')
+    def fail(ch, fields, force_start=False):
+        journal.begin(cid, 'operation', {})
+        raise RuntimeError('injected interrupted switch')
+    monkeypatch.setattr(replacement, 'replace', fail)
+    result = client.post(f'/api/channels/{cid}/start')
+    assert result.status_code == 500
+    assert store.get_channel(cid)['status'] == 'error'
+    assert all(not rule['enabled'] for rule in store.effective_rules())
+    status = client.get(f'/api/channels/{cid}/health').json()
+    assert status['replacement']['phase'] == 'preparing'
+    assert status['connected'] is False

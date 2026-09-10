@@ -26,6 +26,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/channels/:cid", axum::routing::patch(api::update).delete(api::delete))
         .route("/api/channels/:cid/start", axum::routing::post(api::start))
         .route("/api/channels/:cid/stop", axum::routing::post(api::stop))
+        .route("/api/channels/:cid/restore", axum::routing::post(api::restore_channel))
         .route("/api/proxies", get(routes::proxies))
         .route("/api/vpn-types", get(api::vpn_types))
         .route("/api/connections", get(api::connections))
