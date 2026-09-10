@@ -13,14 +13,16 @@ use crate::{config::Config, docker, mihomo::Controller, store, AppState};
 /// 返回已绑定 listener 与组好的 [`AppState`]。docker 连不上不致命——照常伺服
 /// (uptime 降级,UI/system 仍可用),与原 bin 行为一字不差。
 pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, AppState)> {
+    cfg.validate()?;
     crate::events::init(&cfg.data_dir);
     store::init(&cfg.db_path())?;
     let _ = store::master_key(&cfg.data_dir)?; // 确保 master key(真实 data_dir = 复用现有,零迁移)
 
     // docker 可选:连不上也照常伺服(uptime 降级,UI/system 仍工作)
-    let docker = match docker::connect().await {
+    let socket = cfg.docker_socket().display().to_string();
+    let docker = match docker::connect_at(&socket).await {
         Ok(d) => {
-            eprintln!("docker: connected via {}", docker::docker_socket());
+            eprintln!("docker: connected via {socket}");
             Some(d)
         }
         Err(e) => {

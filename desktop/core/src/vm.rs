@@ -14,9 +14,6 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-/// app 专属 profile 名(独立 VM,与用户 `default` 隔离)。
-pub const PROFILE: &str = "vpnmgr";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmStatus {
     Running,
@@ -171,6 +168,9 @@ fn start_args(profile: &str, enable_rosetta: bool) -> Vec<String> {
         // 且 ssh -L 只转 TCP(vpn-router 的 udp:true 靠它才真生效)。
         "--port-forwarder", "grpc", "--activate=false", "--cpu", "4", "--memory", "6", "--disk", "60",
     ].into_iter().map(String::from));
+    if profile != "vpnmgr" {
+        args.extend(["--mount", "none", "--ssh-config=false", "--template=false"].into_iter().map(String::from));
+    }
     args
 }
 

@@ -117,3 +117,11 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 ## 前端设计系统
 
 设计系统 **Neutral Modern**:浅色干净、钴蓝 `#2F6FEB` 点缀(每屏至多一处强调)、Inter(sans 作 display)、B2B 工具 / 操作台风格(不是落地页)。所有 token 在 `app/static/css/app.css` 的 `:root`;别在别处写裸 hex;不要 AI-slop(紫色渐变、emoji 图标、左边框卡片、给每个标题配图标等)。
+
+## 隔离开发实例
+
+`desktop/app/dev.sh` 使用独立 `vpnmgr-dev` VM、`vpnmgr_dev_vpnnet` 网络、Application Support/vpnmgr-dev 数据和 48878/48879/48880 端口。`--core` 只运行 Rust HTTP 核心（VM 需事先启动）；默认运行桌面壳。开发实例禁用助手安装/替换/卸载、系统代理和 TUN 操作，自动对账与退出也不调用全局助手。非日常 profile 不挂载宿主目录、不改 SSH 配置和当前 Docker context。
+
+`VPNMGR_VM_PROFILE` 默认 `vpnmgr`；Docker 连接、SSH、守卫和 shutdown 均从 Config 的 profile 取地址。DATA_DIR 显式设置优先；桌面调试构建使用开发默认，发布构建固定使用 Application Support。旧开发目录中的日常数据不自动迁移；升级交付前须备份并执行独立迁移/保留配置验收。
+
+单元测试用 `.venv/bin/pytest tests -q`，不要从仓库根递归扫描 handoff 符号链接。测试强制使用本轮创建的临时目录，拒绝真实 Docker/requests 网络操作。

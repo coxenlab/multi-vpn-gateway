@@ -68,7 +68,7 @@ async fn stop_all_channels(state: &AppState, cfg: &Config) {
 /// 关闭本工具启用的系统自动代理。遍历所有网络服务(不只当前默认那一个——用户换过网
 /// 时旧服务上也可能残留指向本工具 PAC 的配置),只动确实指向本工具 PAC 的服务。
 async fn park_system_proxy(cfg: &Config) {
-    if !cfg!(target_os = "macos") {
+    if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") {
         return;
     }
     let parked = entry::system_proxy_park_all(&cfg.ui_port.to_string()).await;
@@ -111,7 +111,7 @@ async fn run(state: Option<&AppState>, cfg: &Config, stop_vm: bool) {
         crate::ev!(info, "shutdown", "shutdown_done", "退出清理完成", { "ok": true });
         return;
     }
-    match tokio::time::timeout(VM_STOP_TIMEOUT, vm::stop(vm::PROFILE)).await {
+    match tokio::time::timeout(VM_STOP_TIMEOUT, vm::stop(&cfg.vm_profile)).await {
         Ok(Ok(())) => {
             crate::ev!(info, "shutdown", "vm_stopped", "退出清理:VM 已停止", { "ok": true });
         }

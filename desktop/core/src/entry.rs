@@ -510,6 +510,10 @@ pub async fn helper_call(req: serde_json::Value) -> anyhow::Result<serde_json::V
 
 /// 层3 综合状态(驱动前端卡片;读-only)。
 pub async fn tun_status(cfg: &crate::config::Config) -> serde_json::Value {
+    if !cfg.host_integrations_allowed() {
+        return serde_json::json!({"supported": false, "enabled": false, "installed": false,
+            "reason": "隔离实例禁用宿主 TUN 和助手变更"});
+    }
     let supported = cfg!(target_os = "macos");
     let resources = helper_res().is_some();
     let installed = std::path::Path::new(HELPER_PLIST).exists();
@@ -541,6 +545,7 @@ pub async fn tun_status(cfg: &crate::config::Config) -> serde_json::Value {
 /// 停用:先清标记(挡住 tun_sync 继续重放)再 stop;stop 失败不吞,回状态里挂 warning
 /// (helper 用 state.json + KeepAlive 自恢复,停不掉时它会复活,须让用户知道)。
 pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(cfg.host_integrations_allowed(), "隔离实例禁用宿主 TUN 和助手变更");
     if enable {
         let rules = crate::store::effective_rules(&cfg.db_path()).unwrap_or_default();
         let (v4, v6) = route_sets(&rules);
@@ -586,7 +591,7 @@ pub async fn tun_apply(cfg: &crate::config::Config, enable: bool) -> anyhow::Res
 /// 规则变更后的路由对账(挂在 manager::rebuild 末尾,best-effort)。
 /// 只在用户已显式启用时动作;顺带自愈:分流口变了 → ensure 会带新配置让 helper 重拉 mihomo。
 pub async fn tun_sync(cfg: &crate::config::Config) {
-    if !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
+    if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
         return;
     }
     let rules = match crate::store::effective_rules(&cfg.db_path()) {
@@ -622,7 +627,7 @@ pub async fn tun_sync(cfg: &crate::config::Config) {
 /// 会自动重新下发,无需再开一次开关。app 退出后 mihomo#2 的上游(分流口转发)
 /// 已死,路由若残留会把命中网段变黑洞,故必须停。
 pub async fn tun_park(cfg: &crate::config::Config) {
-    if !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
+    if !cfg.host_integrations_allowed() || !cfg!(target_os = "macos") || !tun_enabled(&cfg.data_dir) {
         return;
     }
     match helper_call(serde_json::json!({ "cmd": "stop" })).await {
@@ -669,6 +674,7 @@ async fn run_privileged_script(data_dir: &std::path::Path, name: &str, content: 
 
 /// 安装/升级 helper(一次性管理员密码)。装完 ping 确认活了才算成。
 pub async fn tun_install(cfg: &crate::config::Config) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(cfg.host_integrations_allowed(), "隔离实例禁用宿主 TUN 和助手变更");
     if !cfg!(target_os = "macos") {
         anyhow::bail!("TUN 入口仅支持 macOS");
     }
@@ -695,6 +701,7 @@ pub async fn tun_install(cfg: &crate::config::Config) -> anyhow::Result<serde_js
 
 /// 卸载 helper(管理员密码)。顺带清启用标记。
 pub async fn tun_uninstall(cfg: &crate::config::Config) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(cfg.host_integrations_allowed(), "隔离实例禁用宿主 TUN 和助手变更");
     run_privileged_script(&cfg.data_dir, "helper-uninstall.sh", &uninstall_script()).await?;
     let _ = set_tun_enabled(&cfg.data_dir, false);
     Ok(tun_status(cfg).await)

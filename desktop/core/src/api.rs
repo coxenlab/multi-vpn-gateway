@@ -1222,6 +1222,9 @@ pub async fn system_proxy_get(State(st): State<AppState>) -> Json<Value> {
 
 /// 一键应用/清除系统自动代理(PAC)。body `{enable: bool}`。⚠️ 改系统设置,前端按钮显式触发。
 pub async fn system_proxy_set(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    if !st.cfg.host_integrations_allowed() {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "隔离实例禁用系统代理变更"}))).into_response();
+    }
     let ui = st.cfg.ui_port.to_string();
     let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
     match entry::system_proxy_apply(&ui, enable).await {
@@ -1239,6 +1242,9 @@ pub async fn tun_get(State(st): State<AppState>) -> Json<Value> {
 
 /// 启用/停用 TUN 入口。body `{enable: bool}`。前端按钮显式触发。
 pub async fn tun_set(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+    if !st.cfg.host_integrations_allowed() {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "隔离实例禁用宿主 TUN 和助手变更"}))).into_response();
+    }
     let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
     let before = tun_snapshot(&entry::tun_status(&st.cfg).await);
     match entry::tun_apply(&st.cfg, enable).await {
@@ -1265,6 +1271,9 @@ pub async fn tun_set(State(st): State<AppState>, Json(b): Json<Value>) -> axum::
 
 /// 安装/升级 helper(触发一次管理员密码弹窗)。
 pub async fn tun_install(State(st): State<AppState>) -> axum::response::Response {
+    if !st.cfg.host_integrations_allowed() {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "隔离实例禁用宿主 TUN 和助手变更"}))).into_response();
+    }
     let before = tun_snapshot(&entry::tun_status(&st.cfg).await);
     match entry::tun_install(&st.cfg).await {
         Ok(state) => {
@@ -1286,6 +1295,9 @@ pub async fn tun_install(State(st): State<AppState>) -> axum::response::Response
 
 /// 卸载 helper(管理员密码弹窗)。
 pub async fn tun_uninstall(State(st): State<AppState>) -> axum::response::Response {
+    if !st.cfg.host_integrations_allowed() {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "隔离实例禁用宿主 TUN 和助手变更"}))).into_response();
+    }
     let before = tun_snapshot(&entry::tun_status(&st.cfg).await);
     match entry::tun_uninstall(&st.cfg).await {
         Ok(state) => {

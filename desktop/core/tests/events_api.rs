@@ -9,6 +9,8 @@ async fn events_api_is_incremental_capped_and_exportable() {
     vpnmgr_core::store::init(&dir.path().join("vpnmgr.db")).unwrap();
 
     let cfg = Config {
+        vm_profile: "vpnmgr-test".into(),
+        dev_mode: true,
         ui_port: 0,
         data_dir: dir.path().to_path_buf(),
         static_dir: std::path::PathBuf::from(concat!(

@@ -22,6 +22,8 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "gave_up": h.gave_up,
         "vm_egress_dead": h.vm_egress_dead,
         "self_heal_enabled": st.self_heal_enabled(),
+        "vm_profile": st.cfg.vm_profile,
+        "host_integrations_available": st.cfg.host_integrations_allowed(),
         "routing_off": store::routing_off(&st.cfg.data_dir),
     }))
 }

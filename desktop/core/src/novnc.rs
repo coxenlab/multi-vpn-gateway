@@ -101,14 +101,14 @@ async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
 
     drop_for_unlocked(state, cid).await;
     let port = old_port.filter(|port| port_available(*port)).unwrap_or(alloc_host_port()?);
-    let ssh_config = crate::vm::ssh_config_path(crate::vm::PROFILE);
+    let ssh_config = crate::vm::ssh_config_path(&state.cfg.vm_profile);
     if !ssh_config.exists() {
         return Err(anyhow!("ssh.config 不存在:{}(VM 未初始化?)", ssh_config.display()));
     }
     let forward = crate::tunnel::Fwd { host_port: port, guest: format!("{ip}:8080") };
     let args = crate::tunnel::forward_args(
         &ssh_config.display().to_string(),
-        crate::vm::PROFILE,
+        &state.cfg.vm_profile,
         std::slice::from_ref(&forward),
     );
     let started = std::time::Instant::now();
@@ -237,6 +237,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState {
             cfg: Arc::new(crate::config::Config {
+                vm_profile: "vpnmgr-test".into(),
+                dev_mode: true,
                 ui_port: 0,
                 data_dir: dir.path().to_path_buf(),
                 static_dir: dir.path().to_path_buf(),
@@ -279,6 +281,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let cfg = crate::config::Config {
+            vm_profile: "vpnmgr-test".into(),
+            dev_mode: true,
             ui_port: 0,
             data_dir: dir.path().to_path_buf(),
             static_dir: dir.path().to_path_buf(),

@@ -259,14 +259,14 @@ fn forward_progress(
 
 /// 分发修复:DATA_DIR 未设时,core 的编译期默认(desktop/core/.data)在别人机器上是
 /// 不存在且不可写的绝对路径 → 首启「准备运行时」Permission denied (os error 13)。
-/// 开发机已有历史库则沿用旧路径(不迁移);否则落到 ~/Library/Application Support/<bundle-id>。
+/// DATA_DIR 显式覆盖优先;调试构建使用开发目录,发布构建固定使用 Application Support。
 /// 必须在第一次 Config::load()(含 boot 里的 events::init)之前调用。
 fn resolve_data_dir(handle: &tauri::AppHandle) {
     if std::env::var("DATA_DIR").ok().filter(|s| !s.is_empty()).is_some() {
         return; // 用户/环境显式指定,尊重
     }
-    if vpnmgr_core::config::dev_default_data_dir().join("vpnmgr.db").exists() {
-        return; // 开发机既有数据,保持编译期默认
+    if cfg!(debug_assertions) {
+        return; // 调试构建保留开发默认;发布构建固定使用 app_data_dir
     }
     match handle.path().app_data_dir() {
         Ok(dir) => std::env::set_var("DATA_DIR", &dir),
@@ -308,8 +308,9 @@ fn prepare_runtime(handle: &tauri::AppHandle) -> anyhow::Result<()> {
 
     seed_vm_image_cache(handle);
 
-    let data_dir = Config::load().data_dir;
-    infra::ensure_params(&data_dir)?;
+    let cfg = Config::load();
+    cfg.validate()?;
+    infra::ensure_params(&cfg.data_dir)?;
     Ok(())
 }
 
@@ -348,7 +349,9 @@ fn seed_vm_image_cache(handle: &tauri::AppHandle) {
 
 /// 后台启动序列:起自带 VM → 连 docker → 建 bridge + mihomo#1 分流 → 起 axum → 导航真 UI。
 async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
-    vpnmgr_core::events::init(&Config::load().data_dir);
+    let initial_cfg = Config::load();
+    initial_cfg.validate().map_err(|e| BootFailure::new(BootStep::Runtime, e, &StepLog::default()))?;
+    vpnmgr_core::events::init(&initial_cfg.data_dir);
     let reporter = BootReporter::new(handle);
 
     let mut runtime_log = StepLog::default();
@@ -363,6 +366,9 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     reporter.update(BootStep::Runtime, BootStatus::Done, "运行组件已就绪");
     boot_step_done(BootStep::Runtime, runtime_started, "done");
 
+    let cfg = Config::load();
+    cfg.validate().map_err(|e| BootFailure::new(BootStep::Runtime, e, &runtime_log))?;
+    let vm_profile = cfg.vm_profile.clone();
     let mut vm_log = StepLog::default();
     let vm_started = boot_step_start(BootStep::Vm);
     reporter.update(BootStep::Vm, BootStatus::Active, "检查虚拟机状态…");
@@ -396,7 +402,7 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         }
     }
 
-    if vm::status(vm::PROFILE).await == vm::VmStatus::Running {
+    if vm::status(&vm_profile).await == vm::VmStatus::Running {
         vm_log.push("虚拟机已在运行");
     } else {
         reporter.update(
@@ -405,7 +411,7 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
             "首次初始化会下载 Linux 虚拟机镜像…",
         );
         let mut last_ui = None;
-        vm::start_with_progress(vm::PROFILE, rosetta_enabled, |detail| {
+        vm::start_with_progress(&vm_profile, rosetta_enabled, |detail| {
             forward_progress(&reporter, BootStep::Vm, &mut vm_log, &mut last_ui, detail);
         })
         .await
@@ -425,18 +431,18 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
     let mut docker_log = StepLog::default();
     let docker_started = boot_step_start(BootStep::Docker);
     reporter.update(BootStep::Docker, BootStatus::Active, "等待容器引擎响应…");
-    if let Err(first_error) = vm::wait_docker_ready(vm::PROFILE, 40).await {
+    if let Err(first_error) = vm::wait_docker_ready(&vm_profile, 40).await {
         docker_log.push(format!("首次等待失败: {first_error}"));
         reporter.update(
             BootStep::Docker,
             BootStatus::Active,
             "底座连接异常，正在自动重启虚拟机修复…",
         );
-        vm::stop(vm::PROFILE)
+        vm::stop(&vm_profile)
             .await
             .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
         let mut last_ui = None;
-        vm::start_with_progress(vm::PROFILE, rosetta_enabled, |detail| {
+        vm::start_with_progress(&vm_profile, rosetta_enabled, |detail| {
             forward_progress(
                 &reporter,
                 BootStep::Docker,
@@ -447,7 +453,7 @@ async fn boot(handle: &tauri::AppHandle) -> Result<(), BootFailure> {
         })
         .await
         .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
-        vm::wait_docker_ready(vm::PROFILE, 180)
+        vm::wait_docker_ready(&vm_profile, 180)
             .await
             .map_err(|e| BootFailure::new(BootStep::Docker, e, &docker_log))?;
     }

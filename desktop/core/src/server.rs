@@ -95,6 +95,8 @@ mod tests {
 
     fn state_with_db(db_dir: &std::path::Path) -> AppState {
         let cfg = Config {
+            vm_profile: "vpnmgr-test".into(),
+            dev_mode: true,
             ui_port: 8787,
             data_dir: db_dir.to_path_buf(),
             static_dir: std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/static")),

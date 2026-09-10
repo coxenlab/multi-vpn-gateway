@@ -348,7 +348,7 @@ pub async fn check(state: &AppState) -> (GatewayHealth, ProxyProbe) {
     if docker.is_none() {
         // 先试原生 sock 快速重连:覆盖「hostagent/VM 复活但旧句柄(或隧道 sock)已死」
         // 与「启动时没连上」两种自动收敛,不必等人重开 app。
-        if let Ok(Ok(d)) = tokio::time::timeout(Duration::from_secs(5), docker::connect()).await {
+        if let Ok(Ok(d)) = tokio::time::timeout(Duration::from_secs(5), docker::connect_at(&state.cfg.docker_socket().display().to_string())).await {
             state.set_docker(Some(d.clone()));
             docker = Some(d);
             crate::ev!(info, "watchdog", "docker_reconnect", "Docker 原生连接已恢复", { "via": "native" });
@@ -357,7 +357,7 @@ pub async fn check(state: &AppState) -> (GatewayHealth, ProxyProbe) {
     let Some(docker) = docker else {
         // 鉴别诊断(盲区 #3):docker.sock 与被检转发共享 mux 故障域,ping 挂 ≠ VM 死。
         // 独立 SSH 探针可达 = 仅传输层断(可自愈);再按分流口死活分「待救」vs「降级稳态」。
-        if !crate::vm::ssh_reachable(crate::vm::PROFILE).await {
+        if !crate::vm::ssh_reachable(&state.cfg.vm_profile).await {
             return (GatewayHealth::VmDown, ProxyProbe::Ok);
         }
         let probe = probe_proxy(&state.cfg.mihomo_host_port).await;
@@ -417,7 +417,7 @@ async fn vm_side_probe(state: &AppState) -> String {
     let Some(ip) = crate::docker::container_ip(&docker, infra::MIHOMO_CONTAINER).await else {
         return "skipped:no_ip".into();
     };
-    let cfg = crate::vm::ssh_config_path(crate::vm::PROFILE);
+    let cfg = crate::vm::ssh_config_path(&state.cfg.vm_profile);
     if !cfg.exists() {
         return "skipped:no_ssh_config".into();
     }
@@ -435,7 +435,7 @@ async fn vm_side_probe(state: &AppState) -> String {
                 "-o", "ControlPath=none",
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=5",
-                &format!("lima-colima-{}", crate::vm::PROFILE),
+                &format!("lima-colima-{}", &state.cfg.vm_profile),
                 "--", &remote,
             ])
             .output(),
@@ -467,7 +467,7 @@ pub async fn ensure_egress_guard(state: crate::AppState, force: bool) {
         crate::ev!(warn, "vm", "egress_guard_failed", "VM 私网出站守卫未下发:取不到 VPN 网段", { "net": state.cfg.vpn_net.clone() });
         return;
     };
-    if let Err(e) = crate::vm::ensure_egress_guard(crate::vm::PROFILE, &subnet, force).await {
+    if let Err(e) = crate::vm::ensure_egress_guard(&state.cfg.vm_profile, &subnet, force).await {
         crate::ev!(warn, "vm", "egress_guard_failed",
             "VM 私网出站守卫未下发:容器漏出的私网连接会占满 VM 出站槽位", { "error": e.to_string() });
     }
@@ -481,8 +481,8 @@ pub async fn ensure_egress_guard(state: crate::AppState, force: bool) {
 ///
 /// 返回 None = 没探成(SSH 不可达/超时),不计入失败连击——SSH 走 vsock,与出站
 /// NAT 不同故障域,SSH 挂时应由 vm_down 路径定性,别把它误记成出站僵死。
-async fn vm_egress_probe() -> Option<bool> {
-    let cfg = crate::vm::ssh_config_path(crate::vm::PROFILE);
+async fn vm_egress_probe(state: &AppState) -> Option<bool> {
+    let cfg = crate::vm::ssh_config_path(&state.cfg.vm_profile);
     if !cfg.exists() {
         return None;
     }
@@ -498,7 +498,7 @@ async fn vm_egress_probe() -> Option<bool> {
                 "-o", "ControlPath=none",
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=5",
-                &format!("lima-colima-{}", crate::vm::PROFILE),
+                &format!("lima-colima-{}", &state.cfg.vm_profile),
                 "--", remote,
             ])
             .output(),
@@ -520,7 +520,7 @@ pub async fn heal_transport(state: &AppState) -> anyhow::Result<()> {
     // docker.sock 同船获救(实测 2026-07-02:lima 用户在 docker 组,免 sudo 直转)。
     // 失败不算致命——分流口已通,docker 留给下拍原生 sock 重连或重开 app。
     let sock = state.cfg.data_dir.join("docker-tun.sock");
-    match crate::vm::spawn_docker_sock_tunnel(crate::vm::PROFILE, &sock).await {
+    match crate::vm::spawn_docker_sock_tunnel(&state.cfg.vm_profile, &sock).await {
         Ok(()) => match crate::docker::connect_at(&sock.display().to_string()).await {
             Ok(d) => {
                 state.set_docker(Some(d));
@@ -636,7 +636,7 @@ pub fn spawn(state: AppState) {
             // VM 出站僵死检测:与分流口健康正交(僵死时 docker ping/分流口全绿),每 3 拍
             // (60s)一探;睡醒拍立探——换网/睡醒正是僵死的诱因。VM 已死时跳过(归 vm_down)。
             if health != GatewayHealth::VmDown && (woke || tick_count.is_multiple_of(3)) {
-                match vm_egress_probe().await {
+                match vm_egress_probe(&state).await {
                     Some(true) => {
                         egress_fail_streak = 0;
                         if egress_dead {

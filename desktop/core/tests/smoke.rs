@@ -7,6 +7,8 @@ async fn boots_and_serves_system_and_index() {
     store::init(&dir.path().join("vpnmgr.db")).unwrap();
 
     let cfg = Config {
+        vm_profile: "vpnmgr-test".into(),
+        dev_mode: true,
         ui_port: 0, // OS picks a free port
         data_dir: dir.path().to_path_buf(),
         static_dir: std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/static")),
@@ -49,4 +51,16 @@ async fn boots_and_serves_system_and_index() {
     assert_eq!(r.status(), 409);
     let r = c.delete(format!("{base}/api/containers/nginx")).send().await.unwrap();
     assert_eq!(r.status(), 404);
+
+    // 隔离实例的宿主入口被禁用；即使请求安装/启用,也不访问全局助手。
+    let tun: serde_json::Value = c.get(format!("{base}/api/entry/tun")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(tun["supported"], false);
+    let r = c.post(format!("{base}/api/entry/system-proxy"))
+        .json(&serde_json::json!({"enable": true})).send().await.unwrap();
+    assert_eq!(r.status(), 403);
+    for path in ["/api/entry/tun", "/api/entry/tun/install", "/api/entry/tun/uninstall"] {
+        let r = c.post(format!("{base}{path}"))
+            .json(&serde_json::json!({"enable": true})).send().await.unwrap();
+        assert_eq!(r.status(), 403, "{path}");
+    }
 }

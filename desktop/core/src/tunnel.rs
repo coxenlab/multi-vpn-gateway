@@ -168,7 +168,7 @@ async fn try_ensure(state: &AppState) -> Result<()> {
         return Ok(());
     }
     let fwds = fwds(state).await?;
-    let cfg = crate::vm::ssh_config_path(crate::vm::PROFILE);
+    let cfg = crate::vm::ssh_config_path(&state.cfg.vm_profile);
     if !cfg.exists() {
         return Err(anyhow!("ssh.config 不存在:{}(VM 未初始化?)", cfg.display()));
     }
@@ -178,7 +178,7 @@ async fn try_ensure(state: &AppState) -> Result<()> {
         .map(|f| format!("127.0.0.1:{}->{}", f.host_port, f.guest))
         .collect::<Vec<_>>().join(",");
     let started = std::time::Instant::now();
-    cmd.args(forward_args(&cfg.display().to_string(), crate::vm::PROFILE, &fwds))
+    cmd.args(forward_args(&cfg.display().to_string(), &state.cfg.vm_profile, &fwds))
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
