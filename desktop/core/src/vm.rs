@@ -164,9 +164,10 @@ fn start_args(profile: &str, enable_rosetta: bool) -> Vec<String> {
         args.push("--vz-rosetta".to_string());
     }
     args.extend([
-        // gRPC 转发器(vz vsock 通道),ssh 退出数据面:载重 ssh 转发每隔几分钟必死,
-        // 且 ssh -L 只转 TCP(vpn-router 的 udp:true 靠它才真生效)。
-        "--port-forwarder", "grpc", "--activate=false", "--cpu", "4", "--memory", "6", "--disk", "60",
+        // 分流/控制/noVNC 已由 app 自持 loopback SSH 转发。禁用 Colima 将来宾通配
+        // 监听复制到宿主通配地址的规则；Docker Unix socket、VM SSH、usernet 出站不受影响。
+        // 当前 Lima 在 none 下仍保留来宾回环 TCP 的默认回环转发，不等于关闭全部监听。
+        "--port-forwarder", "none", "--activate=false", "--cpu", "4", "--memory", "6", "--disk", "60",
     ].into_iter().map(String::from));
     if profile != "vpnmgr" {
         args.extend(["--mount", "none", "--ssh-config=false", "--template=false"].into_iter().map(String::from));
@@ -630,6 +631,9 @@ en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n"
         assert!(!without.contains(&"--vz-rosetta".to_string()));
         assert!(without.windows(2).any(|w| w == ["--vm-type", "vz"]));
         assert!(without.contains(&"--activate=false".to_string()));
+        for args in [with, without, start_args("vpnmgr-dev", false)] {
+            assert!(args.windows(2).any(|w| w == ["--port-forwarder", "none"]));
+        }
     }
 
     #[tokio::test]

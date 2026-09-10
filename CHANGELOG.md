@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Fixed / 修复
+- 桌面 VM 禁止 Colima 把来宾通配监听自动映射到宿主；回环 TCP、Docker Unix socket 及 app 自持的 loopback SSH 入口保留，下次 VM 启动生效。
 - hagb 通道探活失败后可对照域名/IP 通路恢复 Dante 负 DNS 缓存；按容器代次限制恢复频率，成功仍以原内网 SOCKS 探活为准。
 - 桌面版增加 VM 私网出站基础防护，覆盖本工具 VPN 网段的 IPv4 转发；启动提前下发、周期真实核对、原子更新失败保留旧规则。旧 usernet 的拨号槽耗尽是一类已定位故障，未把所有断链归为同因；VM OUTPUT、IPv6、公网黑洞及豁免路径仍需单独验证。
 - 桌面版通道创建、修改、启停、删除脱离 HTTP 请求取消，并按通道串行；探活 generation 防止旧结果覆盖停止态。容器两阶段切换与完整失败回滚仍在推进。

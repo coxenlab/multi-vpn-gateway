@@ -86,7 +86,7 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
    内核读回核对内部 `__vpnmgr_cfg_*` 版本节点、托管节点名/类型、规则顺序/目标/禁用态及 mode；内部节点不被规则引用，也不进入 ch-* 通道输出。GET API 不暴露全部 SOCKS 参数和 no-resolve，因此这不是任意外部改写后的完整配置审计，更不是 DNS / TUN / VPN 认证验收。启动文件提交后再核对一次运行态，避免提交期间的内核重启被误报成功。桌面通过 0600 暂存文件、原子 rename 和内容/权限读回投递；Web 沿用目录挂载内的原子文件替换。控制器响应不明先读回，保持待确认，显式重试时可补文件而不重复热加载。
 
-4. **所有 host 端口只绑 `127.0.0.1`**(compose + manager 均如此),永不 `0.0.0.0`。
+4. **所有 host 端口只绑 `127.0.0.1`**(compose + manager 均如此),永不 `0.0.0.0`。桌面专属 Colima 使用 `--port-forwarder none`，禁止来宾通配监听自动映射到宿主；固定 Lima 2.1.2 仍会把来宾回环 TCP 映射到宿主回环，不能把 `none` 理解成没有任何转发。Docker Unix socket 和 VM SSH 保留，分流/控制/noVNC 由 app 自持 SSH 转发。此参数在下次 VM 启动生效，不为改参数强制中断已运行实例；它不影响 usernet 出站 TCP/UDP，也不为宿主 SSH 入口新增 UDP 能力。
    - **oss**:1080 不映射 host(`_build_oss` 无 `ports` 项),仅 docker 内网 `vpn-{id}:1080` 可达;egress 由 dante `external: <tun>` pin 到隧道。
    - **byo**:1080 不映射 host(microsocks 仅 docker 内网可达)。Web 栈由 Docker 把 noVNC(8080)映射到 loopback；桌面栈不 publish 8080，由 app 为每条通道自持独立 SSH 转发到 127.0.0.1 随机高位。
 
