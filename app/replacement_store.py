@@ -52,12 +52,25 @@ def records():
     return [Record(r["channel_id"], r["operation_id"], r["phase"], json.loads(store.F.decrypt(r["payload_enc"].encode()))) for r in rows]
 
 
+def get(cid):
+    with store._c() as c:
+        r = c.execute("SELECT operation_id,phase,payload_enc FROM channel_replacements WHERE channel_id=?", (cid,)).fetchone()
+    return Record(cid, r["operation_id"], r["phase"], json.loads(store.F.decrypt(r["payload_enc"].encode()))) if r else None
+
+
+def public_status(cid):
+    with store._c() as c:
+        r = c.execute("SELECT phase FROM channel_replacements WHERE channel_id=?", (cid,)).fetchone()
+    return {"phase": r["phase"], "can_restore": r["phase"] not in ("committed", "rolled_back")} if r else None
+
+
 def advance(record, next_phase, payload):
     legal = next_phase == record.phase or (record.phase, next_phase) in {
         ("preparing", "prepared"), ("preparing", "rolling_back"),
         ("prepared", "switching"), ("prepared", "rolling_back"),
         ("switching", "validating"), ("switching", "rolling_back"),
         ("validating", "rolling_back"),
+        ("awaiting_login", "rolling_back"),
     }
     if not legal or next_phase in ("committed", "rolled_back"):
         raise ValueError("无效的容器替换阶段转换")
@@ -80,19 +93,29 @@ def _apply_runtime(c, cid, runtime):
               (cid, runtime.data_volume))
 
 
-def commit(record, fields, secret_keys, runtime):
+def commit(record, fields, secret_keys, runtime, awaiting_login=False):
     with store._c() as c:
         c.execute("BEGIN IMMEDIATE")
         _check(c, record.channel_id, record.operation_id, "validating")
         store._update_channel(c, record.channel_id, fields, secret_keys)
         _apply_runtime(c, record.channel_id, runtime)
+        c.execute("UPDATE channel_replacements SET phase=? WHERE channel_id=?",
+                  ("awaiting_login" if awaiting_login else "committed", record.channel_id))
+
+
+def confirm(record):
+    with store._c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        _check(c, record.channel_id, record.operation_id, "awaiting_login")
         c.execute("UPDATE channel_replacements SET phase='committed' WHERE channel_id=?", (record.channel_id,))
 
 
-def rolled_back(record, runtime):
+def rolled_back(record, runtime, fields=None, secret_keys=()):
     with store._c() as c:
         c.execute("BEGIN IMMEDIATE")
         _check(c, record.channel_id, record.operation_id, "rolling_back")
+        if fields is not None:
+            store._update_channel(c, record.channel_id, fields, secret_keys)
         _apply_runtime(c, record.channel_id, runtime)
         c.execute("UPDATE channel_replacements SET phase='rolled_back' WHERE channel_id=?", (record.channel_id,))
 

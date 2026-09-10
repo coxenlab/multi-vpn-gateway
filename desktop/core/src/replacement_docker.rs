@@ -23,7 +23,7 @@ impl Owner {
     fn labels(&self, role: &str) -> HashMap<String, String> {
         HashMap::from([(CHANNEL.into(), self.channel.clone()), (OPERATION.into(), self.operation.clone()), (ROLE.into(), role.into())])
     }
-    fn owns(&self, labels: Option<&HashMap<String, String>>, role: &str) -> bool {
+    pub(crate) fn owns(&self, labels: Option<&HashMap<String, String>>, role: &str) -> bool {
         labels.is_some_and(|labels| self.labels(role).iter().all(|(k, v)| labels.get(k) == Some(v)))
     }
 }

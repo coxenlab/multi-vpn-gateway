@@ -312,12 +312,28 @@ pub async fn create_channel(
     ch: &ChannelPublic,
     vnc_pwd: &str,
 ) -> Result<(String, Option<i64>)> {
+    let plan = channel_plan(state, docker, ch, vnc_pwd).await?;
+    crate::novnc::drop_for(state, &ch.id).await;
+    let id = crate::docker::create_from_plan(docker, &plan, None).await?;
+    initialize_gui(docker, ch).await;
+    // 显示入口失败不再把已启动的 VPN 容器判为创建失败；oss 凭据仍由调用方注入。
+    Ok((id, None))
+}
+
+/// 普通创建与候选替换共用参数；这里只准备镜像和配置，不动既有容器。
+pub async fn channel_plan(state: &crate::AppState, docker: &bollard::Docker, ch: &ChannelPublic, vnc_pwd: &str) -> Result<crate::adapters::ContainerPlan> {
+    channel_plan_with_image(state, docker, ch, vnc_pwd, None).await
+}
+
+pub async fn channel_plan_with_image(state: &crate::AppState, docker: &bollard::Docker, ch: &ChannelPublic, vnc_pwd: &str, image: Option<&str>) -> Result<crate::adapters::ContainerPlan> {
     let cfg = &state.cfg;
     let spec = crate::registry::get(&ch.vpn_type)?;
     let mac = ch.mac.clone().unwrap_or_default();
-    let plan = crate::adapters::build_run_kwargs(
+    let mut plan = crate::adapters::build_run_kwargs(
         &ch.id, &mac, ch.ec_ver.as_deref(), &spec, vnc_pwd, &cfg.vpn_net,
     )?;
+    crate::replacement_docker::use_volume(&mut plan, &crate::replacement_store::data_volume(&cfg.db_path(), &ch.id)?)?;
+    if let Some(image) = image { plan.config.image = Some(image.into()); }
 
     // 对照 docker-py `containers.run()` 的 ImageNotFound 自动拉:镜像不在 VM 时走镜像源拉取。
     // bollard 的 create_container 不会自动拉,缺镜像会硬失败(EC 某 tag / aTrust 未预载即出错)。
@@ -333,9 +349,12 @@ pub async fn create_channel(
         None
     };
 
-    crate::novnc::drop_for(state, &ch.id).await;
-    let id = crate::docker::create_from_plan(docker, &plan, dns).await?;
+    if let Some(dns) = dns { plan.config.host_config.as_mut().expect("adapter host config").dns = Some(dns); }
+    Ok(plan)
+}
 
+pub async fn initialize_gui(docker: &bollard::Docker, ch: &ChannelPublic) {
+    let Ok(spec) = crate::registry::get(&ch.vpn_type) else { return; };
     if spec.runtime == "hagb" {
         // aTrust 的 DNS 对内网域名优先回 IPv6 假地址(fdff:5341:4e47:464f::/64),而其
         // Linux 客户端的 IPv6 代理通路会 RST 一切连接(v4 假地址 198.18.x 通路正常),
@@ -352,8 +371,6 @@ pub async fn create_channel(
             crate::ev!(warn, "manager", "gai_conf_failed", "写入容器 gai.conf(IPv4 优先)失败", { "channel": ch.id.clone(), "error": e.to_string() });
         }
     }
-    // 显示入口失败不再把已启动的 VPN 容器判为创建失败；oss 凭据仍由调用方注入。
-    Ok((id, None))
 }
 
 /// 对照 docker-py `containers.run()` 的自动拉:镜像已在 VM → 直接返回;否则走镜像源

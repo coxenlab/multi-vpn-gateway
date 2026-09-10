@@ -21,6 +21,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import store
 import registry
 import adapters
+import replacement_store
+import replacement_docker
 from ruleutil import normalize_stored_rule
 
 VPN_NET = os.environ["VPN_NET"]
@@ -39,16 +41,7 @@ def create_channel(ch, vnc_pwd):
          novnc 返回 None。1080 绝不映射到 host(命门 #4)。
     """
     spec = registry.get(ch["vpn_type"])
-    kw = adapters.build_run_kwargs(ch, spec, vnc_pwd, VPN_NET)
-
-    # oss 家族:容器内 danted 直接解析目标域名,但宿主 Clash(TUN)会劫持容器明文 :53
-    # 查询返回 fake-ip,致内网域名不可路由。改用 mihomo 的 DNS(DoH 上游+listen :53,
-    # 绕开劫持),danted 即可拿到真实内网 IP。hagb/byo 自带客户端 DNS,不动。
-    if spec.get("runtime") == "oss":
-        try:
-            kw["dns"] = [socket.gethostbyname("mihomo")]
-        except OSError:
-            pass
+    kw = channel_plan(ch, vnc_pwd)
 
     try:
         dc.containers.get(kw["name"]).remove(force=True)
@@ -57,6 +50,27 @@ def create_channel(ch, vnc_pwd):
 
     c = dc.containers.run(**kw)
     c.reload()
+    initialize_gui(c, spec)
+    if spec.get("runtime") == "oss":
+        oss_connect(c, spec, store.get_config(ch["id"]))
+        return c.id, None
+    novnc = int(c.ports["8080/tcp"][0]["HostPort"])
+    return c.id, novnc
+
+
+def channel_plan(ch, vnc_pwd):
+    """普通创建与候选共用参数；不删除或启动任何容器。"""
+    spec = registry.get(ch["vpn_type"])
+    kw = adapters.build_run_kwargs(ch, spec, vnc_pwd, VPN_NET)
+    replacement_docker.use_volume(kw, replacement_store.data_volume(ch["id"]))
+    # oss 经 mihomo DNS 绕开宿主 fake-ip；hagb/byo 自带客户端 DNS，不动。
+    if spec.get("runtime") == "oss":
+        try: kw["dns"] = [socket.gethostbyname("mihomo")]
+        except OSError: pass
+    return kw
+
+
+def initialize_gui(c, spec):
     if spec.get("runtime") == "hagb":
         # aTrust 的 DNS 对内网域名优先回 IPv6 假地址(fdff:5341:4e47:464f::/64),而其
         # Linux 客户端的 IPv6 代理通路会 RST 一切连接(v4 假地址 198.18.x 通路正常),
@@ -67,11 +81,6 @@ def create_channel(ch, vnc_pwd):
                        user="root")
         except docker.errors.APIError:
             pass
-    if spec.get("runtime") == "oss":
-        oss_connect(c, spec, store.get_config(ch["id"]))
-        return c.id, None
-    novnc = int(c.ports["8080/tcp"][0]["HostPort"])
-    return c.id, novnc
 
 
 def oss_connect(c, spec, config):

@@ -68,10 +68,46 @@ pub fn list(db: &Path, key: &str) -> Result<Vec<Record>> {
     Ok(records)
 }
 
+pub fn get(db: &Path, key: &str, cid: &str) -> Result<Option<Record>> {
+    let conn = Connection::open(db)?;
+    let row: Option<(String, String, String)> = conn.query_row(
+        "SELECT operation_id,phase,payload_enc FROM channel_replacements WHERE channel_id=?1", [cid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    ).optional()?;
+    row.map(|(operation_id, phase, encrypted)| {
+        let bytes = cipher(key)?.decrypt(&encrypted).map_err(|_| anyhow!("容器替换记录无法解密"))?;
+        Ok(Record { channel_id: cid.into(), operation_id, phase, payload: serde_json::from_slice(&bytes)? })
+    }).transpose()
+}
+
+/// 管理页面只读取阶段，不解密或返回内部配置。
+pub fn public_status(db: &Path, cid: &str) -> Result<Option<Value>> {
+    let conn = Connection::open(db)?;
+    let phase: Option<String> = conn.query_row("SELECT phase FROM channel_replacements WHERE channel_id=?1", [cid], |r| r.get(0)).optional()?;
+    Ok(phase.map(|phase| serde_json::json!({"can_restore":!matches!(phase.as_str(), "committed" | "rolled_back"),"phase":phase})))
+}
+
+/// 替换过程的旧实例/候选不能被孤儿清理抢先删除；仅读身份列。
+pub fn protected_names(db: &Path) -> Result<std::collections::HashMap<String, String>> {
+    let conn = Connection::open(db)?;
+    let mut stmt = conn.prepare("SELECT channel_id,operation_id FROM channel_replacements")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut names = std::collections::HashMap::new();
+    for row in rows {
+        let (channel, operation) = row?;
+        let owner = crate::replacement_docker::Owner { channel: channel.clone(), operation: operation.clone() }; owner.validate()?;
+        for name in [format!("vpn-{channel}"), format!("vpn-{channel}-previous-{operation}"), owner.candidate_name(), owner.copy_name(), format!("vpn-{channel}-next-{operation}-restore")] {
+            names.insert(name, channel.clone());
+        }
+    }
+    Ok(names)
+}
+
 pub fn advance(db: &Path, key: &str, record: &Record, next: &str, payload: &Value) -> Result<()> {
     let legal = next == record.phase || matches!((record.phase.as_str(), next),
         ("preparing", "prepared" | "rolling_back") | ("prepared", "switching" | "rolling_back")
-        | ("switching", "validating" | "rolling_back") | ("validating", "rolling_back"));
+        | ("switching", "validating" | "rolling_back") | ("validating", "rolling_back")
+        | ("awaiting_login", "rolling_back"));
     ensure!(legal && !matches!(next, "committed" | "rolled_back"), "无效的容器替换阶段转换");
     let encrypted = cipher(key)?.encrypt(&serde_json::to_vec(payload)?);
     let mut conn = Connection::open(db)?;
@@ -95,12 +131,27 @@ fn apply_runtime(conn: &Connection, cid: &str, runtime: &AppliedRuntime) -> Resu
 
 /// 只有候选已验证时调用。进程中断后只需读 phase 即可区分整笔提交与未提交。
 pub fn commit(db: &Path, key: &str, record: &Record, fields: &Map<String, Value>, secrets: &[String], runtime: &AppliedRuntime) -> Result<()> {
+    apply(db, key, record, fields, secrets, runtime, false)
+}
+
+/// GUI 仅确认容器可运行时保留旧实例；真实 SOCKS 探活成功后才进入可清理终态。
+pub fn apply(db: &Path, key: &str, record: &Record, fields: &Map<String, Value>, secrets: &[String], runtime: &AppliedRuntime, awaiting_login: bool) -> Result<()> {
     let f = cipher(key)?;
     let mut conn = Connection::open(db)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     check_operation(&tx, &record.channel_id, &record.operation_id, "validating")?;
     crate::store::update_channel_on(&tx, &f, &record.channel_id, fields, secrets)?;
     apply_runtime(&tx, &record.channel_id, runtime)?;
+    tx.execute("UPDATE channel_replacements SET phase=?1 WHERE channel_id=?2",
+        params![if awaiting_login { "awaiting_login" } else { "committed" }, record.channel_id])?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn confirm(db: &Path, record: &Record) -> Result<()> {
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    check_operation(&tx, &record.channel_id, &record.operation_id, "awaiting_login")?;
     tx.execute("UPDATE channel_replacements SET phase='committed' WHERE channel_id=?1", [&record.channel_id])?;
     tx.commit()?;
     Ok(())
@@ -108,9 +159,18 @@ pub fn commit(db: &Path, key: &str, record: &Record, fields: &Map<String, Value>
 
 /// 原配置在准备期间从未改过；只记录已读回确认的恢复运行态，不覆盖期间保存的备注。
 pub fn rolled_back(db: &Path, record: &Record, runtime: &AppliedRuntime) -> Result<()> {
+    restore(db, None, record, None, &[], runtime)
+}
+
+/// 已应用但尚待人工登录的修改也可补偿；只还原本次字段，不覆盖期间新增备注。
+pub fn restore(db: &Path, key: Option<&str>, record: &Record, fields: Option<&Map<String, Value>>, secrets: &[String], runtime: &AppliedRuntime) -> Result<()> {
     let mut conn = Connection::open(db)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     check_operation(&tx, &record.channel_id, &record.operation_id, "rolling_back")?;
+    if let Some(fields) = fields {
+        let f = cipher(key.ok_or_else(|| anyhow!("恢复配置缺少密钥"))?)?;
+        crate::store::update_channel_on(&tx, &f, &record.channel_id, fields, secrets)?;
+    }
     apply_runtime(&tx, &record.channel_id, runtime)?;
     tx.execute("UPDATE channel_replacements SET phase='rolled_back' WHERE channel_id=?1", [&record.channel_id])?;
     tx.commit()?;
@@ -134,6 +194,36 @@ pub fn finish(db: &Path, cid: &str, operation: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn pending_login_restore_is_atomic_and_keeps_unrelated_notes() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap(); let key = crate::store::master_key(dir.path()).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,status) VALUES('c1','old','running')", []).unwrap();
+        begin(&db, &key, "c1", "op1", &json!({})).unwrap();
+        for phase in ["prepared", "switching", "validating"] {
+            let record = get(&db, &key, "c1").unwrap().unwrap();
+            advance(&db, &key, &record, phase, &record.payload).unwrap();
+        }
+        let runtime = AppliedRuntime { container_id: "candidate".into(), data_volume: "new-volume".into(), novnc_port: None, status: "running".into(), latency_ms: None };
+        apply(&db, &key, &get(&db, &key, "c1").unwrap().unwrap(), json!({"name":"new"}).as_object().unwrap(), &[], &runtime, true).unwrap();
+        assert_eq!(public_status(&db, "c1").unwrap().unwrap()["can_restore"], true);
+        assert!(protected_names(&db).unwrap().contains_key("vpn-c1-previous-op1"));
+        assert!(finish(&db, "c1", "op1").is_err());
+        crate::store::set_config_field(&db, &key, "c1", "login_note", "during login", true).unwrap();
+        let pending = get(&db, &key, "c1").unwrap().unwrap();
+        advance(&db, &key, &pending, "rolling_back", &pending.payload).unwrap();
+        let record = get(&db, &key, "c1").unwrap().unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_restore BEFORE UPDATE OF container_id ON channels BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        assert!(restore(&db, Some(&key), &record, Some(json!({"name":"old"}).as_object().unwrap()), &[], &runtime).is_err());
+        assert_eq!(crate::store::get_channel(&db, "c1").unwrap().unwrap().name, "new");
+        conn.execute_batch("DROP TRIGGER fail_restore").unwrap();
+        restore(&db, Some(&key), &record, Some(json!({"name":"old"}).as_object().unwrap()), &[], &runtime).unwrap();
+        assert_eq!(crate::store::get_channel(&db, "c1").unwrap().unwrap().name, "old");
+        assert_eq!(crate::store::get_config(&db, &key, "c1").unwrap()["login_note"], "during login");
+        assert!(confirm(&db, &pending).is_err());
+    }
 
     #[test]
     fn journal_commit_is_atomic_and_preserves_unrelated_notes() {

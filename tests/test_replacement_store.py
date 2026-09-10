@@ -59,3 +59,26 @@ def test_rollback_records_observed_runtime_without_applying_draft(make_channel):
     assert store.get_channel("c1")["container_id"] == "restored"
     assert journal.records()[0].phase == "rolled_back"
     journal.finish("c1", "op1")
+
+
+def test_waiting_for_login_preserves_backup_and_can_restore_fields_atomically(make_channel):
+    store.add_channel(make_channel("c1", password="old"))
+    journal.begin("c1", "op1", {})
+    for phase in ("prepared", "switching", "validating"):
+        record = journal.get("c1")
+        journal.advance(record, phase, record.payload)
+    journal.commit(journal.get("c1"), {"password": "new"}, ("password",),
+                   journal.AppliedRuntime("candidate", "new-volume", None, "running"), awaiting_login=True)
+    assert journal.get("c1").phase == "awaiting_login"
+    with pytest.raises(RuntimeError, match="尚未完成"):
+        journal.finish("c1", "op1")
+    store.set_config_field("c1", "login_note", "saved while logging in", secret=True)
+    record = journal.get("c1")
+    journal.advance(record, "rolling_back", record.payload)
+    journal.rolled_back(journal.get("c1"), journal.AppliedRuntime("restored", "vpndata-c1", None, "running"),
+                        {"password": "old"}, ("password",))
+    assert store.get_password("c1") == "old"
+    assert store.get_config("c1")["password"] == "old"
+    assert store.get_config("c1")["login_note"] == "saved while logging in"
+    with pytest.raises(RuntimeError, match="代次或阶段"):
+        journal.confirm(record)
