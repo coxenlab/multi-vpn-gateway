@@ -78,7 +78,7 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 2. **DNS 在 VPN 侧解析**:外层用户 Clash 的规则带 `no-resolve`(不解析、直接把域名交给 `vpn-router`);内层本工具 mihomo 靠 sniffer / respect-rules 还原域名。这是 `rebuild()` 里 `DOMAIN-SUFFIX` 规则不带 `no-resolve` 也能命中的原因。
 
-3. **配置热加载、绝不断连**:`manager.rebuild()` 重写 mihomo 配置后 `PUT {CTRL}/configs?force=true`,不重启 mihomo、不断现有连接。
+3. **配置使用热加载**:`manager.rebuild()` 投递配置后 `PUT {CTRL}/configs?force=true`，规则变更不主动重启 mihomo。保持既有连接是回归要求，不能仅凭一次 2xx 推断所有协议与并发故障下绝不断连。
 
 4. **所有 host 端口只绑 `127.0.0.1`**(compose + manager 均如此),永不 `0.0.0.0`。
    - **oss**:1080 不映射 host(`_build_oss` 无 `ports` 项),仅 docker 内网 `vpn-{id}:1080` 可达;egress 由 dante `external: <tun>` pin 到隧道。
@@ -92,7 +92,7 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 7. **代理命名**:外层用户 Clash 里那个节点叫 `vpn-router`(= 整个 mihomo 实例的分流端口);内层 mihomo 里每条通道是 `ch-{id}` 的 socks5 代理。别混淆。
 
-8. **VM 层私网出站守卫(桌面栈)**:`vm::ensure_egress_guard`(`desktop/core/src/vm.rs`)经 ssh 在 lima VM 的 `DOCKER-USER` 链(FORWARD 首跳)下发 `VPNMGR_EGRESS`:来自 VPN 网段、目标为 10/8、172.16/12、192.168/16、100.64/10 的转发 → REJECT(TCP 回 RST);豁免 docker 网段、VM 自身网段、宿主当前直连的局域网段。app 启动时强制下发,看门狗每分钟核对、睡醒 / 换网强制重下发(`health::ensure_egress_guard`)。**原因**:VM 出站走 lima usernet(gvisor-tap-vsock v0.8.9),其 TCP forwarder 硬编码在途上限 10、宿主侧拨号无超时,macOS 对不可达地址 connect 75s 才超时;容器里没被隧道 / 客户端代理接管的私网目标(aTrust 探测的内网备用线路、未登录通道的探活、绑定但未下发的网段)漏到 VM 出口每个占一个槽,10 个占满整 VM 新建 TCP 全丢 SYN、所有通道一起「时通时断」(2026-09-10 实测在途 9→3/3、10→0/3;上游 issue containers/gvisor-tap-vsock#676,修复 PR #698 已合并未发布)。**为什么在 VM 层而不是容器内**:一条规则覆盖全部容器、docker 自发的容器重启(unless-stopped 起来的容器网络命名空间是空的)、同 VPN 网段的探活容器,不依赖镜像有 iptables / NET_ADMIN。⚠️ 别改成容器内 `ip route add unreachable`:本机发包先查路由再过 nat OUTPUT,会把 EC 用 nat REDIRECT(→4440)接管的网段资源拒掉(客户A实测)。Web 栈跑在 Docker Desktop 上没有这个上限,不下发。
+8. **VM 层私网出站守卫(桌面栈)**：`vm::ensure_egress_guard` 经独立 SSH，以 iptables-restore 原子替换 `VPNMGR_EGRESS`；启动在镜像处理前下发，看门狗每分钟实际核对，睡醒/换网重下发。仅覆盖来自本工具 VPN 网段的 IPv4 转发，拒绝未被 VPN 接管的私网目标；保留 Docker、VM 和宿主直连网段豁免。不覆盖 VM OUTPUT、其他 Docker 网络、IPv6、不可达公网或豁免内黑洞，替换 runtime 后须重新验收。基础防护不受暂停自动修复开关影响。旧 gvisor-tap-vsock v0.8.9 的 10 个在途拨号槽可被不可达目标占满，影响其他新建 TCP；这解释了一类故障，不是所有断链的统一原因。`usernet.rs` 按当前 profile 定位关联进程和版本，SYN_SENT 仅作候选证据，共享网络下来源待定位。不要改成容器内 `ip route add unreachable`，它会先于 EC 的 nat REDIRECT 拒绝合法路径；Web 栈不下发此 VM 守卫。
 
 ## HTTP API
 
@@ -117,7 +117,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 ## 前端设计系统
 
-共享 Web 界面使用暖色浅色主题：象牙纸底、陶土橙 `--accent #ac4c22`，标题 Source Serif 4、正文 Inter、数据 JetBrains Mono。`--coral #d97757` 只作装饰，不作正文或按钮底色。所有 token 在 `app/static/css/app.css` 的 `:root`；沿用现有语义色和组件，不新增一套主题。
+共享 Web 界面使用暖色浅色主题：象牙纸底、陶土橙 `--accent #ac4c22`，标题与正文共用系统字体栈，不加载网络字体；数据等宽使用系统等宽字体及本机可用回退。`--coral #d97757` 只作装饰，不作正文或按钮底色。所有 token 在 `app/static/css/app.css` 的 `:root`；沿用现有语义色和组件，不新增一套主题。
 
 八个根页面只加载 `js/pages/<页面名>.js`，控制器通过显式 import 组合公共 API、反馈、预检、环境和 VNC 组件；公共模块暂保留 `window` 兼容出口，页面业务函数不再靠内联脚本共享全局变量。首页卡片使用事件委托，不生成内联 onclick。`page-data.js` 共用主体与系统状态的加载规则：主体失败进入可重试错误态，系统状态失败保留主体数据并以未知状态降级。`api.js` 负责 GET 请求合并和可见性轮询。修改页面逻辑时编辑对应模块，避免在 HTML 恢复内联控制器。
 

@@ -124,10 +124,11 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | GET | `/api/vpn-types/{type}/versions` | `{versions:[{tag, arch, usable_here}]}`,实时 Docker Hub;非 versioned 适配器返回空列表 |
 | GET | `/api/channels` | 通道列表(每条含 `domains[]` / `ips[]` / `socks_endpoint` / `uptime` 等) |
 | POST | `/api/channels` | 建通道并起容器(`name, vpn_type, server, ec_ver, login_method, username, password, probe_url, config{}`) |
-| PATCH | `/api/channels/{cid}` | 修改通道字段；桌面版额外支持 `routing_enabled`，不重启容器 |
+| PATCH | `/api/channels/{cid}` | 修改通道字段；实际变化的连接参数会重建目标容器，名称/验证地址等元信息不重建；桌面另支持 `routing_enabled` |
 | GET | `/api/channels/{cid}/login` | noVNC 登录地址 `{url}`;无头适配器返回 `{login_mode:"headless"}` |
 | POST | `/api/channels/{cid}/upload` | multipart 上传 → `{ok, package}`(BYO 安装器经 `put_archive` 落数据卷) |
 | GET | `/api/channels/{cid}/status` | **跑 SOCKS5 探活** → `{status, connected, latency_ms}` |
+| GET | `/api/channels/{cid}/health` | 自动刷新读取共享探活缓存，含 `checked_at` / `stale`；过期先返回旧结果并后台更新，手动检测继续用 `/status` |
 | POST | `/api/channels/{cid}/rules` | 加分流规则(`patterns[]` 或 `pattern`,可选 `kind: domain\|ip`;裸 IP 自动补 `/32`、`/128`)→ `{reload_status, domains, ips, added, rejected}` |
 | PATCH | `/api/channels/{cid}/rules/{rid}` | 修改单条规则(`enabled`，桌面版另支持 `note` / `locked`)→ `{ok, rule, reload_status?}` |
 | PATCH | `/api/rules` | 桌面版批量启停；锁定规则跳过 → `{updated, skipped_locked, reload_status}` |
@@ -135,6 +136,9 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | POST | `/api/channels/{cid}/start` \| `/stop` | 起 / 停容器 → `{ok}` |
 | DELETE | `/api/channels/{cid}` | 删通道 → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | 容器日志 → `{lines}` |
+| GET \| PUT | `/api/channels/{cid}/note` | 登录备注 `{note}`；加密存储，仅此端点读回，通道列表不暴露正文 |
+| GET | `/api/config/export` | 导出通道与规则；含自动登录所需凭据，文件须妥善保管 |
+| POST | `/api/config/import` | 导入后为停止状态，按需启动；返回已导入与跳过项 |
 | GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址；桌面额外含 `usernet` 低频诊断缓存及 `egress_guard_checked_at` / `egress_guard_applied` 最近守卫核对结果 |
 | POST | `/api/system/self-heal` | 桌面版内存态自愈动作开关(`enabled`)；重开 app 自动恢复 |
 | GET \| POST | `/api/routing` | 桌面版持久化全直连总开关(`{off}`)；不改规则原始启停状态 |
@@ -146,8 +150,9 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | GET | `/api/entry/setup-commands` | 各平台代理开 / 关一键命令 |
 | GET | `/api/events` | 桌面运行事件查询，支持 `since_seq` / `level` / `src` / `event` / `q` / `limit` |
 | GET | `/api/events/export?days=2` | 导出桌面最近 1–14 天的 JSONL 运行事件 |
+| GET \| POST | `/api/events/enabled` | 桌面运行事件记录开关 `{enabled}` |
 
-> 另有 `GET /` 与一个 catch-all 静态挂载,服务单页前端。
+> 另有 `GET /` 与一个 catch-all 静态挂载，提供共享 Web 页面。完整桌面专用入口（TUN、系统代理、容器诊断）以 `desktop/core/src/server.rs` 为准。
 
 ## 通道状态机
 

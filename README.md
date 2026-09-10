@@ -151,10 +151,11 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | GET | `/api/vpn-types/{type}/versions` | `{versions:[{tag, arch, usable_here}]}`, live from Docker Hub; empty list for non-versioned adapters |
 | GET | `/api/channels` | channel list (each with `domains[]`, `ips[]`, `socks_endpoint`, `uptime`, …) |
 | POST | `/api/channels` | create channel + start container (`name, vpn_type, server, ec_ver, login_method, username, password, probe_url, config{}`) |
-| PATCH | `/api/channels/{cid}` | update channel fields; desktop mode also accepts `routing_enabled` without restarting the container |
+| PATCH | `/api/channels/{cid}` | update channel fields; changed connection parameters recreate the target container, while metadata does not; desktop also accepts `routing_enabled` |
 | GET | `/api/channels/{cid}/login` | `{url}` (noVNC) — or `{login_mode:"headless"}` for headless adapters |
 | POST | `/api/channels/{cid}/upload` | multipart upload → `{ok, package}` (BYO installer streamed into the data volume via `put_archive`) |
 | GET | `/api/channels/{cid}/status` | **runs a SOCKS5 probe** → `{status, connected, latency_ms}` |
+| GET | `/api/channels/{cid}/health` | shared probe cache for automatic refresh, with `checked_at` / `stale`; stale results refresh in the background; manual checks still use `/status` |
 | POST | `/api/channels/{cid}/rules` | add routing rules (`patterns[]` or `pattern`, optional `kind: domain\|ip`; bare IPs auto-get `/32` or `/128`) → `{reload_status, domains, ips, added, rejected}` |
 | PATCH | `/api/channels/{cid}/rules/{rid}` | update one rule (`enabled`, or desktop-only `note` / `locked`) → `{ok, rule, reload_status?}` |
 | PATCH | `/api/rules` | desktop batch enable / disable; locked rules are skipped → `{updated, skipped_locked, reload_status}` |
@@ -162,7 +163,10 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | POST | `/api/channels/{cid}/start` \| `/stop` | start / stop container → `{ok}` |
 | DELETE | `/api/channels/{cid}` | delete channel → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | container logs → `{lines}` |
-| GET | `/api/system` | mihomo status / ports / controller |
+| GET \| PUT | `/api/channels/{cid}/note` | encrypted login notes `{note}`, read back only through this endpoint |
+| GET | `/api/config/export` | export channels and rules, including credentials needed for automatic login; keep the file private |
+| POST | `/api/config/import` | import stopped channels; returns imported and skipped items |
+| GET | `/api/system` | mihomo status / ports / controller; desktop also returns cached `usernet` diagnostics and the last egress-guard check |
 | POST | `/api/system/self-heal` | desktop-only in-memory watchdog action toggle (`enabled`); app restart restores it |
 | GET \| POST | `/api/routing` | desktop-only persistent global direct-routing switch (`{off}`); preserves raw rule states |
 | GET | `/api/connections` | mihomo live connections |
@@ -173,8 +177,9 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | GET | `/api/entry/setup-commands` | per-platform proxy on/off commands |
 | GET | `/api/events` | desktop runtime events; filters include `since_seq`, `level`, `src`, `event`, `q`, and `limit` |
 | GET | `/api/events/export?days=2` | export the desktop's last 1–14 days of runtime events as JSONL |
+| GET \| POST | `/api/events/enabled` | desktop runtime event recording toggle `{enabled}` |
 
-> Plus `GET /` and a catch-all static mount that serve the single-page frontend.
+> `GET /` and a catch-all static mount serve the shared Web pages. Desktop-only TUN, system-proxy, and container-diagnostic routes are registered in `desktop/core/src/server.rs`.
 
 ## Channel state machine
 
