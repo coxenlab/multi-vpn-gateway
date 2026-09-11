@@ -41,7 +41,9 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 ./desktop/app/build-dmg.sh --check
 ```
 
-输入包括带锁定 manifest 的 runtime、内置 `mihomo.tar.gz`/`oss-vpn.tar.gz`、与锁定 Colima 版本对应的 VM 缓存、宿主 mihomo。检查来源锁、构建身份、逐文件摘要、架构/签名、完整 gzip 校验和静态登录资源；这是本地完整性检查，不代替镜像来源认证与真实载入验收。旧暂存目录没有 manifest 时会停止，不能静默用 Homebrew 或已安装 App 的运行工具补齐。可用 `--runtime-dir`、`--images-dir`、`--vm-image-dir`、`--mihomo` 显式选已准备资源。候选 runtime 还必须同时指定 `--runtime-variant gvisor698`，默认 baseline。
+默认 `--package-mode both` 同时核对轻量版和带 VM 镜像版。两版都包含带锁定 manifest 的 runtime、宿主 mihomo 和内置 `mihomo.tar.gz`/`oss-vpn.tar.gz`；只有 `with-vm` 包含与锁定 Colima 版本对应的 VM 缓存。可用 `--package-mode lite` 单独核对轻量版，此模式不读取 VM 镜像目录；缺少或遗留的本地 VM 镜像都不会混入轻量版。`--package-mode with-vm` 单独核对带镜像版，缺镜像即失败，不自动降为轻量版。
+
+检查来源锁、构建身份、逐文件摘要、架构/签名、完整 gzip 校验和静态登录资源；这是本地完整性检查，不代替镜像来源认证与真实载入验收。旧暂存目录没有 manifest 时会停止，不能静默用 Homebrew 或已安装 App 的运行工具补齐。可用 `--runtime-dir`、`--images-dir`、`--vm-image-dir`、`--mihomo` 显式选已准备资源。候选 runtime 还必须同时指定 `--runtime-variant gvisor698`，默认 baseline。
 
 **当前不执行打包安装。** 完成相关验收并进入发布阶段后，构建须显式提供不存在的仓库外目录，例如：
 
@@ -49,7 +51,9 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 ./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr-native-1.3.0"
 ```
 
-脚本要求工作区干净，离线从当前源码编译 SwiftUI、Rust core 和助手；不复用暂存旧助手，不调用 Docker、Colima 或安装命令。构建期间使用独立临时目录；成功后原子发布 `.app`、DMG、SHA256 和构建记录，已有输出目录不会被覆盖。输出不能是应用安装目录。构建记录包含提交、版本、编译器、runtime 身份和输入摘要。当前只提供本地 ad-hoc 签名，不提供 Developer ID 签名/公证。
+脚本要求工作区干净，离线从当前源码编译一次 SwiftUI、Rust core 和助手；不复用暂存旧助手，不调用 Docker、Colima 或安装命令。每个模式从空目录组装，在 `lite/`、`with-vm/` 分开保存 `.app` 和构建记录；DMG 名为 `vpnmgr_<version>_arm64_lite.dmg` / `vpnmgr_<version>_arm64_with-vm.dmg`，各附 SHA256。全部选中模式通过后才一次原子发布输出目录，任一失败均不交付半套产物；已有输出不会被覆盖，输出不能是应用安装目录。构建记录包含模式、提交、版本、编译器、runtime 身份和各版输入摘要。当前只提供本地 ad-hoc 签名，不提供 Developer ID 签名/公证。
+
+原生启动读取随包 `bundle-mode.json`；轻量版不要求内置 VM 镜像，也不继承外部缓存路径覆盖，显式连接时由同一固定 Colima 运行时复用缓存或获取缺失镜像。带镜像版启动先核对精确缓存键，缺件或错版不会被当成轻量版。两版数据位置、应用身份与连接逻辑相同，打开界面均不初始化 VM。带 VM 镜像不代表包含所有 VPN 客户端或完全离线可用。远端仓库/下载索引尚未配置，不展示虚构的替代包下载链接。
 
 `desktop/native/tool-tests/test_build_release.py` 在隔离小夹具中验证输入检查、防覆盖、资源映射与命令编排；编译、签名和 DMG 命令全部使用替身，不生成可运行的应用或真实 DMG。这些测试不等于真实发行包验收。
 

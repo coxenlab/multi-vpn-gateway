@@ -6,6 +6,12 @@ struct NativeLaunchPlan {
     let environment: [String: String]
     let workingDirectory: URL
 
+    private struct BundleMode: Decodable {
+        let schema: Int
+        let mode: String
+        let vm_cache_key: String
+    }
+
     static let executableResources = [
         "vpnmgr-core", "runtime/bin/colima", "runtime/bin/limactl", "runtime/bin/lima", "runtime/bin/docker",
         "runtime/helper/vpnmgr-helper", "runtime/helper/mihomo",
@@ -35,11 +41,21 @@ struct NativeLaunchPlan {
         for path in executableResources { try check(path, executable: true) }
         for path in readableResources { try check(path) }
         try check("runtime/share/lima/templates", directory: true)
-        try check("vm-image", directory: true)
-        let images = try manager.contentsOfDirectory(at: root.appendingPathComponent("vm-image"), includingPropertiesForKeys: nil)
-            .filter { isCacheKey($0.lastPathComponent) }
-        guard !images.isEmpty else { throw APIError(message: "应用缺少内置运行环境镜像，请使用完整版本后重试。") }
-        for image in images { try check("vm-image/" + image.lastPathComponent) }
+        try check("bundle-mode.json")
+        guard let package = try? JSONDecoder().decode(BundleMode.self, from: Data(contentsOf: root.appendingPathComponent("bundle-mode.json"))),
+              package.schema == 1, ["lite", "with-vm"].contains(package.mode), isCacheKey(package.vm_cache_key) else {
+            throw APIError(message: "应用版本信息无效，请重新获取完整安装包。")
+        }
+        if package.mode == "with-vm" {
+            try check("vm-image", directory: true)
+            let images = try manager.contentsOfDirectory(atPath: root.appendingPathComponent("vm-image").path)
+            guard images == [package.vm_cache_key] else {
+                throw APIError(message: "内置运行环境镜像与当前版本不一致，请重新获取带镜像的安装包。")
+            }
+            try check("vm-image/" + package.vm_cache_key)
+        } else if (try? root.appendingPathComponent("vm-image").resourceValues(forKeys: [.isSymbolicLinkKey])) != nil {
+            throw APIError(message: "轻量版含有多余的运行环境镜像，请重新获取完整安装包。")
+        }
 
         // Persisted infra.json supplies ports and secrets. Shell/development overrides must
         // never redirect the installed app to another profile, Docker context, or data store.
@@ -53,7 +69,9 @@ struct NativeLaunchPlan {
         environment["STATIC_DIR"] = root.appendingPathComponent("static").path
         environment["HELPER_RES_DIR"] = root.appendingPathComponent("runtime/helper").path
         environment["VPNMGR_BUNDLED_IMAGES_DIR"] = root.appendingPathComponent("images").path
-        environment["VPNMGR_BUNDLED_VM_IMAGE_DIR"] = root.appendingPathComponent("vm-image").path
+        if package.mode == "with-vm" {
+            environment["VPNMGR_BUNDLED_VM_IMAGE_DIR"] = root.appendingPathComponent("vm-image").path
+        }
         environment["VPNMGR_VM_PROFILE"] = "vpnmgr"
         environment["VPN_NET"] = "vpnmgr_vpnnet"
         environment["VPNMGR_MANAGED_VM"] = "1"

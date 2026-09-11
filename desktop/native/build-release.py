@@ -21,6 +21,7 @@ TOOLS = ('limactl', 'lima', 'colima', 'docker')
 MACHO_TOOLS = ('limactl', 'colima', 'docker')
 STATIC_REQUIRED = ('index.html', 'native-login.html', 'css/app.css', 'js/pages/native-login.js',
                    'js/api.js', 'js/app.js', 'js/vncText.js', 'js/vnc-lifecycle.js', 'vendor/novnc/core/rfb.js')
+PACKAGE_MODES = ('lite', 'with-vm')
 
 
 def require(condition, message):
@@ -79,7 +80,9 @@ def product_info(repo):
             'CFBundleLocalizations': ['zh-Hans', 'en']}
 
 
-def inspect_inputs(runtime, images, vm_images, engine, variant, repo=REPO):
+def inspect_inputs(runtime, images, vm_images, engine, variant, repo=REPO, package_mode='both'):
+    require(package_mode in (*PACKAGE_MODES, 'both'), '安装包模式无效')
+    modes = PACKAGE_MODES if package_mode == 'both' else (package_mode,)
     info = product_info(repo)
     lock_file = repo / 'desktop/app/runtime-sources.lock.json'
     lock = json.loads(lock_file.read_text())
@@ -117,13 +120,23 @@ def inspect_inputs(runtime, images, vm_images, engine, variant, repo=REPO):
     vm_source = json.loads((repo / 'desktop/app/vm-image-source.json').read_text())
     require(vm_source.get('schema') == 1 and vm_source['colima_version'] == lock['colima']['version'], 'VM 镜像与 Colima 来源版本不一致')
     key = hashlib.sha256(vm_source['url'].encode()).hexdigest()
-    for destination, path in [('images/mihomo.tar.gz', images / 'mihomo.tar.gz'), ('images/oss-vpn.tar.gz', images / 'oss-vpn.tar.gz'), ('vm-image/' + key, vm_images / key)]:
+    archives = [('images/mihomo.tar.gz', images / 'mihomo.tar.gz'), ('images/oss-vpn.tar.gz', images / 'oss-vpn.tar.gz')]
+    if 'with-vm' in modes:
+        archives.append(('vm-image/' + key, vm_images / key))
+    for destination, path in archives:
         regular(path, path.parent)
         verify_gzip(path)
         sources[destination] = path
     hashes = {name: digest(path) for name, path in sources.items()}
     return {'info': info, 'sources': sources, 'hashes': hashes, 'runtime_build_id': manifest['build_id'],
-            'runtime_variant': variant, 'bytes': sum(path.stat().st_size for path in sources.values())}
+            'runtime_variant': variant, 'bytes': sum(path.stat().st_size for path in sources.values()),
+            'package_modes': modes, 'vm_cache_key': key}
+
+
+def package_sources(inputs, mode):
+    require(mode in inputs['package_modes'], '安装包模式未经过输入校验')
+    return {name: path for name, path in inputs['sources'].items()
+            if mode == 'with-vm' or not name.startswith('vm-image/')}
 
 
 def verify_binary(path):
@@ -184,39 +197,48 @@ def build_release(inputs, output, repo=REPO):
                             '--target-dir', str(work / name)], cwd=repo, env=environment, check=True)
         subprocess.run(['swift', 'build', '--configuration', 'release', '--arch', 'arm64', '--package-path', str(repo / 'desktop/native'),
                         '--scratch-path', str(work / 'swift'), '-Xswiftc', '-warnings-as-errors'], cwd=repo, env=environment, check=True)
-        app = products / 'vpnmgr.app'
-        resources = app / 'Contents/Resources'; resources.mkdir(parents=True)
-        executable = app / 'Contents/MacOS/VPNManager'; executable.parent.mkdir()
-        shutil.copy2(work / 'swift/arm64-apple-macosx/release/VPNManager', executable)
-        for name, source in inputs['sources'].items():
-            target = resources / name; target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-            require(digest(target) == inputs['hashes'][name], '构建期间资源变化: ' + name)
         compiled = {'vpnmgr-core': work / 'core/release/vpnmgr-core', 'runtime/helper/vpnmgr-helper': work / 'helper/release/vpnmgr-helper'}
-        for name, source in compiled.items():
-            target = resources / name; target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target)
-        with (app / 'Contents/Info.plist').open('wb') as stream:
-            plistlib.dump(inputs['info'], stream)
-        for binary in [executable, *(resources / name for name in compiled)]:
-            subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(binary)], check=True)
-            verify_binary(binary)
-        verify_runtime_files({name: resources / name for name in inputs['sources']})
+        reports = {}
+        for mode in inputs['package_modes']:
+            # Each mode starts empty; neither app nor disk staging is reused across modes.
+            sources = package_sources(inputs, mode)
+            app = products / mode / 'vpnmgr.app'
+            resources = app / 'Contents/Resources'; resources.mkdir(parents=True)
+            executable = app / 'Contents/MacOS/VPNManager'; executable.parent.mkdir()
+            shutil.copy2(work / 'swift/arm64-apple-macosx/release/VPNManager', executable)
+            for name, source in sources.items():
+                target = resources / name; target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                require(digest(target) == inputs['hashes'][name], '构建期间资源变化: ' + name)
+            for name, source in compiled.items():
+                target = resources / name; target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(source, target)
+            with (app / 'Contents/Info.plist').open('wb') as stream:
+                plistlib.dump(inputs['info'], stream)
+            bundle_mode = {'schema': 1, 'mode': mode, 'vm_cache_key': inputs['vm_cache_key']}
+            (resources / 'bundle-mode.json').write_text(json.dumps(bundle_mode, indent=2) + '\n')
+            for binary in [executable, *(resources / name for name in compiled)]:
+                subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(binary)], check=True)
+                verify_binary(binary)
+            verify_runtime_files({name: resources / name for name in sources})
+            report = {'schema': 1, 'ui': 'SwiftUI', 'source_commit': revision, 'version': inputs['info']['CFBundleShortVersionString'],
+                      'identifier': inputs['info']['CFBundleIdentifier'], 'minimum_macos': MINIMUM_MACOS, 'architecture': 'arm64',
+                      'package_mode': mode, 'runtime_variant': inputs['runtime_variant'], 'runtime_build_id': inputs['runtime_build_id'],
+                      'signing': 'ad-hoc', 'notarized': False, 'compiler_versions': compiler_info,
+                      'input_sha256': {name: inputs['hashes'][name] for name in sources}}
+            (resources / 'build-info.json').write_text(json.dumps(report, indent=2) + '\n')
+            subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(app)], check=True)
+            subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+            disk_source = stage / ('disk-' + mode); disk_source.mkdir()
+            shutil.copytree(app, disk_source / app.name, copy_function=os.link)
+            (disk_source / 'Applications').symlink_to('/Applications')
+            dmg = products / ('vpnmgr_' + report['version'] + '_arm64_' + mode + '.dmg')
+            subprocess.run(['/usr/bin/hdiutil', 'create', '-volname', 'vpnmgr ' + mode, '-srcfolder', str(disk_source), '-format', 'UDZO', str(dmg)], check=True)
+            subprocess.run(['/usr/bin/hdiutil', 'verify', str(dmg)], check=True)
+            (products / (dmg.name + '.sha256')).write_text(digest(dmg) + '  ' + dmg.name + '\n')
+            (products / mode / 'build-info.json').write_text(json.dumps(report, indent=2) + '\n')
+            reports[mode] = report
         require(git_revision(repo) == revision, '构建期间源码改变，取消发布')
-        report = {'schema': 1, 'ui': 'SwiftUI', 'source_commit': revision, 'version': inputs['info']['CFBundleShortVersionString'],
-                  'identifier': inputs['info']['CFBundleIdentifier'], 'minimum_macos': MINIMUM_MACOS, 'architecture': 'arm64',
-                  'runtime_variant': inputs['runtime_variant'], 'runtime_build_id': inputs['runtime_build_id'],
-                  'signing': 'ad-hoc', 'notarized': False, 'compiler_versions': compiler_info, 'input_sha256': inputs['hashes']}
-        (resources / 'build-info.json').write_text(json.dumps(report, indent=2) + '\n')
-        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(app)], check=True)
-        subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True)
-        disk_source = stage / 'disk'; disk_source.mkdir()
-        shutil.copytree(app, disk_source / app.name, copy_function=os.link)
-        (disk_source / 'Applications').symlink_to('/Applications')
-        dmg = products / ('vpnmgr_' + report['version'] + '_aarch64.dmg')
-        subprocess.run(['/usr/bin/hdiutil', 'create', '-volname', 'vpnmgr', '-srcfolder', str(disk_source), '-format', 'UDZO', str(dmg)], check=True)
-        subprocess.run(['/usr/bin/hdiutil', 'verify', str(dmg)], check=True)
-        (products / (dmg.name + '.sha256')).write_text(digest(dmg) + '  ' + dmg.name + '\n')
-        (products / 'build-info.json').write_text(json.dumps(report, indent=2) + '\n')
+        (products / 'build-info.json').write_text(json.dumps({'schema': 1, 'packages': reports}, indent=2) + '\n')
         publish_directory(products, output)
     print('原生产物已保存: ' + str(output))
 
@@ -230,18 +252,23 @@ def main():
     parser.add_argument('--vm-image-dir', type=Path, default=REPO / 'desktop/app/vm-image')
     parser.add_argument('--mihomo', type=Path, default=REPO / 'desktop/app/runtime/helper/mihomo')
     parser.add_argument('--runtime-variant', choices=['baseline', 'gvisor698'], default='baseline')
+    parser.add_argument('--package-mode', choices=['both', *PACKAGE_MODES], default='both',
+                        help='默认同时输出轻量版和带 VM 镜像版；lite 不读取或携带 VM 镜像')
     args = parser.parse_args()
     if not args.check and args.output is None:
         parser.error('请使用 --check 核对资源，或用 --output 显式指定新的输出目录')
     require(platform.system() == 'Darwin' and platform.machine() == 'arm64', '当前原生发布仅支持 macOS arm64')
     if args.output is not None:
         validate_destination(args.output)
-    inputs = inspect_inputs(args.runtime_dir, args.images_dir, args.vm_image_dir, args.mihomo, args.runtime_variant)
+    inputs = inspect_inputs(args.runtime_dir, args.images_dir, args.vm_image_dir, args.mihomo, args.runtime_variant, package_mode=args.package_mode)
     verify_runtime_files(inputs['sources'])
     if args.check:
         print(json.dumps({'resources_ready': True, 'version': inputs['info']['CFBundleShortVersionString'],
                           'runtime_variant': inputs['runtime_variant'], 'runtime_build_id': inputs['runtime_build_id'],
                           'resource_files': len(inputs['sources']), 'resource_bytes': inputs['bytes'],
+                          'packages': {mode: {'resource_files': len(package_sources(inputs, mode)),
+                                              'resource_bytes': sum(path.stat().st_size for path in package_sources(inputs, mode).values())}
+                                       for mode in inputs['package_modes']},
                           'built': False, 'installed': False}, ensure_ascii=False, indent=2))
         return
     build_release(inputs, args.output)

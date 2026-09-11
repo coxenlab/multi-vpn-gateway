@@ -69,8 +69,8 @@ class ReleaseTests(unittest.TestCase):
     def save_manifest(self):
         self.write(self.runtime / 'manifest.json', json.dumps(self.manifest))
 
-    def inspect(self, variant='baseline'):
-        return release.inspect_inputs(self.runtime, self.images, self.vm, self.engine, variant, self.repo)
+    def inspect(self, variant='baseline', package_mode='both'):
+        return release.inspect_inputs(self.runtime, self.images, self.vm, self.engine, variant, self.repo, package_mode)
 
     def test_inspection_is_read_only_and_selects_only_product_resources(self):
         self.write(self.images / 'personal.tar.gz', gzip.compress(b'must not ship'))
@@ -85,6 +85,27 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('static/js/extra-dependency.js', result['sources'])
         self.assertNotIn('images/personal.tar.gz', result['sources'])
         self.assertNotIn('runtime/helper/vpnmgr-helper', result['sources'])
+
+    def test_lite_does_not_read_or_include_stale_or_missing_vm_image(self):
+        image = self.vm / self.vm_key
+        image.write_bytes(b'invalid stale VM image')
+        result = self.inspect(package_mode='lite')
+        self.assertEqual(result['package_modes'], ('lite',))
+        self.assertFalse(any(name.startswith('vm-image/') for name in result['sources']))
+        image.unlink()
+        self.assertEqual(self.inspect(package_mode='lite')['hashes'], result['hashes'])
+        for mode in ['both', 'with-vm']:
+            with self.assertRaisesRegex(RuntimeError, '资源缺失'): self.inspect(package_mode=mode)
+        with self.assertRaisesRegex(RuntimeError, '未经过输入校验'): release.package_sources(result, 'with-vm')
+
+    def test_dual_mode_selects_only_the_matching_vm_cache_and_shares_other_resources(self):
+        self.write(self.vm / ('b' * 64), gzip.compress(b'stale other version'))
+        inputs = self.inspect()
+        self.assertEqual(inputs['package_modes'], ('lite', 'with-vm'))
+        lite = release.package_sources(inputs, 'lite'); full = release.package_sources(inputs, 'with-vm')
+        self.assertEqual(set(full) - set(lite), {'vm-image/' + self.vm_key})
+        self.assertEqual(lite, {name: path for name, path in full.items() if not name.startswith('vm-image/')})
+        self.assertEqual(self.inspect(package_mode='with-vm')['sources'], full)
 
     def test_tampered_runtime_and_variant_mismatch_are_rejected(self):
         with self.assertRaisesRegex(RuntimeError, '候选不匹配'): self.inspect('gvisor698')
@@ -146,7 +167,9 @@ class ReleaseTests(unittest.TestCase):
              patch.object(release, 'verify_binary') as verify, patch.object(release, 'build_release', side_effect=AssertionError('check cannot build')), \
              contextlib.redirect_stdout(io.StringIO()) as output:
             release.main()
-        self.assertFalse(json.loads(output.getvalue())['built']); self.assertEqual(verify.call_count, 4)
+        report = json.loads(output.getvalue())
+        self.assertFalse(report['built']); self.assertEqual(verify.call_count, 4)
+        self.assertEqual(set(report['packages']), {'lite', 'with-vm'})
 
     @unittest.skipUnless(platform.system() == 'Darwin', 'macOS publishing command orchestration')
     def test_build_uses_fresh_core_and_helper_and_publishes_only_after_validation(self):
@@ -160,6 +183,11 @@ class ReleaseTests(unittest.TestCase):
                 target = Path(command[command.index('--scratch-path')+1])
                 self.write(target/'arm64-apple-macosx/release/VPNManager', 'FRESH SwiftUI', executable=True)
             elif command[:2] == ['/usr/bin/hdiutil','create']:
+                disk = Path(command[command.index('-srcfolder')+1])
+                resources = disk / 'vpnmgr.app/Contents/Resources'
+                mode = json.loads((resources/'bundle-mode.json').read_text())['mode']
+                self.assertEqual(disk.name, 'disk-' + mode)
+                self.assertEqual((resources/'vm-image').exists(), mode == 'with-vm')
                 self.write(Path(command[-1]), 'SYNTHETIC TEST DATA, NOT A DISK IMAGE')
             elif command[0] not in ('/usr/bin/lipo','/usr/bin/codesign','/usr/bin/hdiutil','/bin/sh'):
                 self.fail('unexpected command: '+str(command))
@@ -167,14 +195,26 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(release, 'git_revision', return_value='fixture-commit'), patch.object(subprocess, 'check_output', return_value='fixture compiler'), \
              patch.object(subprocess, 'run', side_effect=run), contextlib.redirect_stdout(io.StringIO()):
             release.build_release(inputs, output, self.repo)
-        resources = output/'vpnmgr.app/Contents/Resources'
-        self.assertEqual((resources/'vpnmgr-core').read_text(), 'FRESH core')
-        self.assertEqual((resources/'runtime/helper/vpnmgr-helper').read_text(), 'FRESH helper')
-        with (output/'vpnmgr.app/Contents/Info.plist').open('rb') as stream: info = plistlib.load(stream)
-        self.assertEqual(info['CFBundleExecutable'], 'VPNManager')
         report = json.loads((output/'build-info.json').read_text())
-        self.assertFalse(report['notarized']); self.assertEqual(report['ui'], 'SwiftUI')
-        self.assertTrue((output/'vpnmgr_2.7.3_aarch64.dmg.sha256').is_file())
+        self.assertEqual(set(report['packages']), {'lite', 'with-vm'})
+        for mode in inputs['package_modes']:
+            resources = output/mode/'vpnmgr.app/Contents/Resources'
+            self.assertEqual((resources/'vpnmgr-core').read_text(), 'FRESH core')
+            self.assertEqual((resources/'runtime/helper/vpnmgr-helper').read_text(), 'FRESH helper')
+            with (output/mode/'vpnmgr.app/Contents/Info.plist').open('rb') as stream: info = plistlib.load(stream)
+            self.assertEqual(info['CFBundleExecutable'], 'VPNManager')
+            package = report['packages'][mode]
+            self.assertFalse(package['notarized']); self.assertEqual(package['ui'], 'SwiftUI')
+            self.assertEqual(package['package_mode'], mode)
+            self.assertEqual(package, json.loads((resources/'build-info.json').read_text()))
+            self.assertEqual(json.loads((resources/'bundle-mode.json').read_text()),
+                             {'schema': 1, 'mode': mode, 'vm_cache_key': self.vm_key})
+            self.assertEqual((resources/'vm-image').exists(), mode == 'with-vm')
+            self.assertEqual('vm-image/' + self.vm_key in package['input_sha256'], mode == 'with-vm')
+            dmg = output / ('vpnmgr_2.7.3_arm64_' + mode + '.dmg')
+            self.assertEqual(Path(str(dmg)+'.sha256').read_text(), release.digest(dmg) + '  ' + dmg.name + '\n')
+        self.assertEqual(sum(command[:2] == ['swift','build'] for command in calls), 1)
+        self.assertEqual(sum(command[:2] == ['cargo','build'] for command in calls), 2)
         self.assertFalse(list(self.root.glob('.vpnmgr-release-*')))
         self.assertEqual(calls[-1][:2], ['/usr/bin/hdiutil','verify'])
         self.assertTrue(any(command[:2] == ['/bin/sh','-n'] for command in calls))
@@ -184,6 +224,22 @@ class ReleaseTests(unittest.TestCase):
              patch.object(subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['synthetic compiler'])):
             with self.assertRaises(subprocess.CalledProcessError): release.build_release(inputs, failed_output, self.repo)
         self.assertFalse(failed_output.exists()); self.assertFalse(list(self.root.glob('.vpnmgr-release-*')))
+        def fail_second_image(command, **kwargs):
+            if command[:2] == ['/usr/bin/hdiutil','verify'] and command[-1].endswith('_with-vm.dmg'):
+                raise subprocess.CalledProcessError(1, command)
+            return run(command, **kwargs)
+        with patch.object(release, 'git_revision', return_value='fixture-commit'), patch.object(subprocess, 'check_output', return_value='fixture compiler'), \
+             patch.object(subprocess, 'run', side_effect=fail_second_image):
+            with self.assertRaises(subprocess.CalledProcessError): release.build_release(inputs, failed_output, self.repo)
+        self.assertFalse(failed_output.exists()); self.assertFalse(list(self.root.glob('.vpnmgr-release-*')))
+        # A later lite-only build uses no prior staging, even with no VM input available.
+        (self.vm/self.vm_key).unlink()
+        with patch.object(release, 'git_revision', return_value='fixture-commit'), patch.object(subprocess, 'check_output', return_value='fixture compiler'), \
+             patch.object(subprocess, 'run', side_effect=run), contextlib.redirect_stdout(io.StringIO()):
+            release.build_release(self.inspect(package_mode='lite'), failed_output, self.repo)
+        self.assertTrue((failed_output/'lite/vpnmgr.app').is_dir())
+        self.assertFalse((failed_output/'with-vm').exists())
+        self.assertFalse((failed_output/'lite/vpnmgr.app/Contents/Resources/vm-image').exists())
 
 
 if __name__ == '__main__':

@@ -16,8 +16,14 @@ final class NativeLaunchTests: XCTestCase {
             }
         }
         try FileManager.default.createDirectory(at: resources.appendingPathComponent("runtime/share/lima/templates"), withIntermediateDirectories: true)
+        try writeMode("with-vm", resources: resources)
         try operation(resources, home)
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.path), "Resolving launch must not initialize data or VM caches")
+    }
+
+    private func writeMode(_ mode: String, resources: URL, key: String = String(repeating: "a", count: 64)) throws {
+        try JSONSerialization.data(withJSONObject: ["schema": 1, "mode": mode, "vm_cache_key": key])
+            .write(to: resources.appendingPathComponent("bundle-mode.json"))
     }
 
     func testProductionUsesOnlyBundleAndPersistedParameters() throws {
@@ -88,6 +94,34 @@ final class NativeLaunchTests: XCTestCase {
             XCTAssertThrowsError(try NativeLaunchPlan.production(resources: resources, home: home, inheritedEnvironment: [:], otherInstanceRunning: false)) {
                 XCTAssertTrue($0.localizedDescription.contains("内置运行环境镜像"))
             }
+        }
+    }
+
+    func testLiteLaunchNeedsNoVMImageOrInheritedCacheOverride() throws {
+        try fixture { resources, home in
+            let full = try NativeLaunchPlan.production(resources: resources, home: home, inheritedEnvironment: [:], otherInstanceRunning: false)
+            try FileManager.default.removeItem(at: resources.appendingPathComponent("vm-image"))
+            try writeMode("lite", resources: resources)
+            let lite = try NativeLaunchPlan.production(resources: resources, home: home,
+                inheritedEnvironment: ["VPNMGR_BUNDLED_VM_IMAGE_DIR": "/stale-cache"], otherInstanceRunning: false)
+            XCTAssertNil(lite.environment["VPNMGR_BUNDLED_VM_IMAGE_DIR"])
+            XCTAssertEqual(lite.environment, full.environment.filter { $0.key != "VPNMGR_BUNDLED_VM_IMAGE_DIR" })
+            XCTAssertEqual(lite.executable, full.executable)
+            XCTAssertEqual(lite.workingDirectory, full.workingDirectory)
+        }
+    }
+
+    func testModeMismatchAndMissingManifestNeverBecomeLiteImplicitly() throws {
+        try fixture { resources, home in
+            for mode in ["lite", "unknown"] {
+                try writeMode(mode, resources: resources)
+                XCTAssertThrowsError(try NativeLaunchPlan.production(resources: resources, home: home, inheritedEnvironment: [:], otherInstanceRunning: false))
+            }
+            try writeMode("with-vm", resources: resources, key: String(repeating: "b", count: 64))
+            XCTAssertThrowsError(try NativeLaunchPlan.production(resources: resources, home: home, inheritedEnvironment: [:], otherInstanceRunning: false))
+            try FileManager.default.removeItem(at: resources.appendingPathComponent("bundle-mode.json"))
+            try FileManager.default.removeItem(at: resources.appendingPathComponent("vm-image"))
+            XCTAssertThrowsError(try NativeLaunchPlan.production(resources: resources, home: home, inheritedEnvironment: [:], otherInstanceRunning: false))
         }
     }
 }
