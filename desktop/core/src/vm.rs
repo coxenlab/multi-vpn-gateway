@@ -533,6 +533,10 @@ pub async fn ensure_running(profile: &str) -> Result<()> {
 pub async fn stop(profile: &str) -> Result<()> {
     let st = Command::new("colima")
         .args(["stop", profile])
+        // Native launchers can close their log pipes before cleanup. Go treats writes
+        // to a closed inherited stderr/stdout as SIGPIPE and exits before stopping VM.
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .kill_on_drop(true)
         .status()
         .await
         .map_err(|e| anyhow!("colima stop {profile}: {e}"))?;

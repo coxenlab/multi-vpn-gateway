@@ -10,7 +10,7 @@ async fn native_child_drains_shutdown_events_before_exiting() {
     let bin = root.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let colima = bin.join("colima");
-    std::fs::write(&colima, "#!/bin/sh\n[ \"$*\" = 'stop vpnmgr-native-exit-test' ] || exit 73\nprintf '%s\\n' \"$*\" >> \"$VPNMGR_EXIT_TEST_COMMANDS\"\n").unwrap();
+    std::fs::write(&colima, "#!/bin/sh\n[ \"$*\" = 'stop vpnmgr-native-exit-test' ] || exit 73\nprintf 'stopping\\n' >&2 || exit 74\nprintf '%s\\n' \"$*\" >> \"$VPNMGR_EXIT_TEST_COMMANDS\"\n").unwrap();
     std::fs::set_permissions(&colima, std::fs::Permissions::from_mode(0o700)).unwrap();
     let commands = root.path().join("commands");
     for attempt in 0..6 {
@@ -32,6 +32,8 @@ async fn native_child_drains_shutdown_events_before_exiting() {
         let mut line = String::new();
         tokio::time::timeout(Duration::from_secs(10), output.read_line(&mut line)).await.unwrap().unwrap();
         assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap()["event"], "ready");
+        // A background app launcher may close its log pipe while the app is still alive.
+        if attempt % 2 == 1 { drop(child.stderr.take()); }
         // Closing the owner pipe is the native app's normal clean-exit protocol.
         drop(child.stdin.take());
         let result = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output()).await.unwrap().unwrap();
@@ -51,6 +53,7 @@ async fn native_child_drains_shutdown_events_before_exiting() {
         }
         assert_eq!(events.iter().filter(|event| *event == "shutdown_begin").count(), 1, "attempt {attempt}: {events:?}");
         assert_eq!(events.iter().filter(|event| *event == "shutdown_done").count(), 1, "attempt {attempt}: {events:?}");
+        assert_eq!(events.iter().filter(|event| *event == "vm_stopped").count(), 1, "attempt {attempt}: {events:?}");
     }
     assert_eq!(std::fs::read_to_string(commands).unwrap().lines().collect::<Vec<_>>(), vec!["stop vpnmgr-native-exit-test"; 6]);
 }

@@ -97,7 +97,11 @@ import SwiftUI
             process.currentDirectoryURL = plan.workingDirectory
             #endif
             let input = Pipe(), pipe = Pipe(); process.standardInput = input; process.standardOutput = pipe
-            // stderr stays with the local launcher; credentials are never copied into UI logs.
+            // A desktop launcher may close its stderr pipe. Persistent, redacted events
+            // are handled by core; diagnostics must not depend on the launcher's lifetime.
+            #if !DEBUG
+            process.standardError = FileHandle.nullDevice
+            #endif
             process.terminationHandler = { [weak self] process in
                 Task { @MainActor in
                     guard let self, self.generation == currentGeneration else { return }

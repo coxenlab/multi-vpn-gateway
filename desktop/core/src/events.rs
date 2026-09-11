@@ -136,13 +136,13 @@ impl EventStore {
         match tokio::time::timeout(budget, &mut task).await {
             Ok(Ok(())) => true,
             Ok(Err(error)) => {
-                eprintln!("[events] 日志收尾未完成: {error}");
+                write_stderr(format_args!("[events] 日志收尾未完成: {error}"));
                 false
             }
             Err(_) => {
                 task.abort();
                 let _ = task.await;
-                eprintln!("[events] 日志收尾超时，未写入的事件可能丢失");
+                write_stderr(format_args!("[events] 日志收尾超时，未写入的事件可能丢失"));
                 false
             }
         }
@@ -261,11 +261,11 @@ pub fn init(data_dir: &Path) {
         if inner.closed { return; }
         match inner.data_dir.as_deref() {
             Some(existing) if existing != data_dir => {
-                eprintln!(
+                write_stderr(format_args!(
                     "[events] 已初始化到 {},忽略不同目录 {}",
                     existing.display(),
                     data_dir.display()
-                );
+                ));
                 return;
             }
             Some(_) if inner.sender.is_some() => return,
@@ -279,10 +279,10 @@ pub fn init(data_dir: &Path) {
 
     let logs_dir = data_dir.join("logs");
     if let Err(e) = std::fs::create_dir_all(&logs_dir) {
-        eprintln!("[events] 创建日志目录失败: {e}");
+        write_stderr(format_args!("[events] 创建日志目录失败: {e}"));
     }
     if let Err(e) = cleanup_old_logs(&logs_dir, Local::now().date_naive()) {
-        eprintln!("[events] 清理过期日志失败: {e}");
+        write_stderr(format_args!("[events] 清理过期日志失败: {e}"));
     }
     {
         // 记录开关随 data_dir 持久化:标记文件存在 = 上次被关掉,重启后保持关闭。
@@ -294,12 +294,12 @@ pub fn init(data_dir: &Path) {
     if first_init {
         match load_persisted(&logs_dir, Local::now().date_naive()) {
             Ok(events) => store.load(events),
-            Err(e) => eprintln!("[events] 回读历史日志失败: {e}"),
+            Err(e) => write_stderr(format_args!("[events] 回读历史日志失败: {e}")),
         }
     }
 
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        eprintln!("[events] 当前没有 Tokio runtime,日志仅保留在内存");
+        write_stderr(format_args!("[events] 当前没有 Tokio runtime,日志仅保留在内存"));
         return;
     };
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
@@ -333,7 +333,7 @@ fn emit_memory_only(level: Level, src: &str, event: &str, msg: &str, detail: Val
 /// vnc_password、备注正文一律不进(备注只记长度)。
 pub fn audit(action: &str, msg: impl Into<String>, detail: Value) -> Event {
     let message = msg.into();
-    eprintln!("[audit:{action}] {message}");
+    write_stderr(format_args!("[audit:{action}] {message}"));
     emit(Level::Info, "audit", action, message, detail)
 }
 
@@ -341,13 +341,13 @@ pub fn audit(action: &str, msg: impl Into<String>, detail: Value) -> Event {
 /// 调用方仍需在 detail 里带 `"result": "failed"` 与 `error` 文本。
 pub fn audit_failed(action: &str, msg: impl Into<String>, detail: Value) -> Event {
     let message = msg.into();
-    eprintln!("[audit:{action}] {message}");
+    write_stderr(format_args!("[audit:{action}] {message}"));
     emit(Level::Error, "audit", action, message, detail)
 }
 
 /// 绕过记录总开关写一条审计——只给开关切换本身用。
 fn audit_forced(action: &str, msg: &str, detail: Value) {
-    eprintln!("[audit:{action}] {msg}");
+    write_stderr(format_args!("[audit:{action}] {msg}"));
     global().record_inner(Local::now(), Level::Info, "audit", action, msg, detail, true, true);
 }
 
@@ -384,7 +384,7 @@ pub fn set_enabled(on: bool) {
             std::fs::write(&marker, b"")
         };
         if let Err(e) = written {
-            eprintln!("[events] 记录开关标记落盘失败: {e}");
+            write_stderr(format_args!("[events] 记录开关标记落盘失败: {e}"));
         }
     }
     if on {
@@ -495,7 +495,7 @@ async fn writer(mut rx: mpsc::Receiver<Event>, logs_dir: PathBuf) {
 }
 
 fn note_write_drop(message: &str) {
-    eprintln!("[events] {message}");
+    write_stderr(format_args!("[events] {message}"));
     let mut inner = global().inner.lock().unwrap_or_else(|e| e.into_inner());
     inner.dropped = inner.dropped.saturating_add(1);
 }
@@ -808,11 +808,17 @@ pub async fn export(Query(query): Query<ExportQuery>) -> Response {
 #[doc(hidden)]
 pub use serde_json;
 
+#[doc(hidden)]
+pub fn write_stderr(message: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
+}
+
 #[macro_export]
 macro_rules! ev {
     ($level:ident, $src:expr, $event:expr, $msg:expr, $detail:tt) => {{
         let message = ($msg).to_string();
-        eprintln!("[{}:{}] {}", $src, $event, message);
+        $crate::events::write_stderr(format_args!("[{}:{}] {}", $src, $event, message));
         $crate::events::emit(
             $crate::ev!(@level $level),
             $src,
