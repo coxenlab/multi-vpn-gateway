@@ -14,6 +14,10 @@ import SwiftUI
     @Published var imageProgress: [String: String] = [:]
     @Published var importTicket: ImageImportTicket?
     @Published var importError: String?
+    @Published var upgradePreparing = false
+    @Published var upgradeReport: UpgradeReport?
+    @Published var upgradeDestination: URL?
+    @Published var upgradeError: String?
     @Published var visible = true
     private(set) var api: LocalAPI?
     private var child: Process?
@@ -175,6 +179,20 @@ import SwiftUI
             _ = try await api.write("/api/images/imports/\(ticket.id)", method: "DELETE")
             importTicket = nil; importError = nil
         } catch { importError = error.localizedDescription }
+    }
+    func prepareUpgrade(from source: URL, to destination: URL) async {
+        guard let executable = child?.executableURL, !upgradePreparing else { return }
+        upgradePreparing = true; upgradeError = nil; upgradeReport = nil; upgradeDestination = destination
+        let sourceScoped = source.startAccessingSecurityScopedResource(), destinationScoped = destination.deletingLastPathComponent().startAccessingSecurityScopedResource()
+        defer {
+            upgradePreparing = false
+            if sourceScoped { source.stopAccessingSecurityScopedResource() }
+            if destinationScoped { destination.deletingLastPathComponent().stopAccessingSecurityScopedResource() }
+        }
+        let environment = child?.environment
+        do {
+            upgradeReport = try await Task.detached(priority: .utility) { try runUpgradePreparation(executable: executable, environment: environment, source: source, destination: destination) }.value
+        } catch { upgradeError = error.localizedDescription }
     }
     func quit() -> NSApplication.TerminateReply {
         guard let child, child.isRunning else { return .terminateNow }

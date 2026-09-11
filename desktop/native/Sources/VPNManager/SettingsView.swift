@@ -52,6 +52,7 @@ struct SettingsView: View {
             Section("配置与备份") {
                 Button("导出配置备份…") { Task { await exportBackup() } }
                 Button("导入配置备份…") { importing = true }
+                Button("准备旧版本升级副本…") { inspecting = Inspection(path: "upgrade", title: "升级副本") }
                 Text("备份可能包含自动登录凭据，请妥善保存。交互登录密码与登录备注不导出。").font(.caption).foregroundStyle(.secondary)
             }
             Section("维护") {
@@ -68,6 +69,7 @@ struct SettingsView: View {
                 else if item.path == "/api/mirrors" { MirrorsView() }
                 else if item.path == "/api/events" { EventsView() }
                 else if item.path == "/api/containers" { ContainersView() }
+                else if item.path == "upgrade" { UpgradeView() }
                 else { TextEndpointView(path: item.path, title: item.title) }
                 Button("关闭") { inspecting = nil }.keyboardShortcut(.cancelAction).padding() }.frame(width: 780, height: 620) }
             .confirmationDialog("替换当前自动代理？", isPresented: $confirmProxy, titleVisibility: .visible) {

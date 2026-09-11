@@ -3,6 +3,24 @@ import SwiftUI
 @testable import VPNManager
 
 final class ContractTests: XCTestCase {
+    func testUpgradePreparationUsesRealCoreAndKeepsSourceUnchanged() throws {
+        guard let executable = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_CORE_PATH"], let sourcePath = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_UPGRADE_SOURCE"] else { throw XCTSkip("升级合同验证需要隔离 core 与合成源目录") }
+        let source = URL(fileURLWithPath: sourcePath)
+        let materialNames = ["vpnmgr.db", "master.key", "infra.json", "config.yaml"]
+        let before = try materialNames.map { try Data(contentsOf: source.appendingPathComponent($0)) }
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("vpnmgr-upgrade-native-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let destination = parent.appendingPathComponent("candidate")
+        let report = try runUpgradePreparation(executable: URL(fileURLWithPath: executable), environment: ["VPNMGR_DEV_MODE":"1", "VPNMGR_VM_PROFILE":"vpnmgr-native-upgrade-qa"], source: source, destination: destination)
+        XCTAssertEqual(report.counts["channels"], 1)
+        XCTAssertFalse(report.runtime_verified); XCTAssertFalse(report.ready_to_activate)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("upgrade-pending").path))
+        XCTAssertEqual(try materialNames.map { try Data(contentsOf: source.appendingPathComponent($0)) }, before)
+        let mode = try FileManager.default.attributesOfItem(atPath: destination.appendingPathComponent("master.key").path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o600)
+        XCTAssertThrowsError(try runUpgradePreparation(executable: URL(fileURLWithPath: executable), environment: [:], source: source, destination: destination))
+    }
     func testMaintenanceContractsAndDiagnosticJSON() throws {
         let events = try JSONDecoder().decode(EventFeed.self, from: fixture("native-events.json"))
         XCTAssertTrue(events.enabled)
