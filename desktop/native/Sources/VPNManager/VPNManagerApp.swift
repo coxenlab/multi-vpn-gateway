@@ -59,9 +59,6 @@ struct WorkspaceView: View {
     @State private var selection: String?
     @State private var creating = false
     @State private var channelSearch = ""
-    private var filteredChannels: [Channel] {
-        model.channels.filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }
-    }
     init(initialSelection: String? = nil, initialPage: Page = .channels) { _selection = State(initialValue: initialSelection); _page = State(initialValue: initialPage) }
     var body: some View {
         NavigationSplitView {
@@ -89,40 +86,26 @@ struct WorkspaceView: View {
                 } else {
                     switch page ?? .channels {
                     case .channels:
-                        HSplitView {
+                        if let channel = model.channels.first(where: { $0.id == selection }) {
                             VStack(spacing: 0) {
                                 HStack {
-                                    Text("全部通道").font(.headline)
-                                    Text("\(model.channels.count)").foregroundStyle(.secondary).monospacedDigit()
+                                    Button { selection = nil } label: { Label("全部通道", systemImage: "chevron.left") }
+                                        .help("返回通道卡片")
                                     Spacer()
-                                    Button { creating = true } label: { Image(systemName: "plus") }
-                                        .help("新建通道（⌘N）").accessibilityLabel("新建通道")
-                                }.padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 10)
-                                TextField("搜索通道", text: $channelSearch).textFieldStyle(.roundedBorder)
-                                    .padding(.horizontal, 12).padding(.bottom, 12)
+                                }.padding(.horizontal, 20).padding(.vertical, 12)
                                 Divider()
-                                List(selection: $selection) {
-                                    ForEach(filteredChannels) { ch in
-                                        VStack(alignment: .leading, spacing: 5) {
-                                            Text(ch.name).font(.headline).lineLimit(2).help(ch.name)
-                                            Text(ch.statusLabel(runtime: model.system?.runtime)).font(.caption).foregroundStyle(.secondary)
-                                        }.padding(.vertical, 6).tag(ch.id)
-                                    }
-                                }.overlay {
-                                    if filteredChannels.isEmpty {
-                                        Text(model.channels.isEmpty ? "还没有通道" : "没有匹配的通道").foregroundStyle(.secondary)
-                                    }
-                                }
-                            }.frame(minWidth: 210, idealWidth: 230, maxWidth: 260)
-                            if let ch = model.channels.first(where: { $0.id == selection }) { ChannelView(channel: ch).id(ch.id) }
-                            else { ContentUnavailableView(model.channels.isEmpty ? "添加第一条通道" : "选择一条通道", systemImage: "network", description: Text("在这里管理连接、登录和分流规则。")) }
+                                ChannelView(channel: channel).id(channel.id)
+                            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        } else {
+                            ChannelGridView(search: $channelSearch, openChannel: { selection = $0 }, createChannel: { creating = true })
                         }
                     case .rules: RulesView()
                     case .monitor: MonitorView()
                     case .settings: SettingsView()
                     }
                 }
-            }.navigationTitle(page?.rawValue ?? "通道")
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .navigationTitle(page?.rawValue ?? "通道")
                 .toolbar {
                     Button {
                         if let pageRefresh { pageRefresh.perform() }
