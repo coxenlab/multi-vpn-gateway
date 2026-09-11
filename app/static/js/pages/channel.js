@@ -133,25 +133,48 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
 
     /* ── 登录备注(加密落库;旧后端无 /note → 卡片保持隐藏) ── */
     const noteCard = document.querySelector('[data-od-id="ch-note"]');
-    let noteLoaded = false;
-    async function loadNote() {
-      if (noteLoaded) return;
+    let noteLoaded = false, noteBusy = false, noteBase = "", noteLatest = null;
+    const noteDirty = () => noteLoaded && $("#note-text").value !== noteBase;
+    function renderNoteState(message) {
+      $("#note-save").disabled = !noteLoaded || noteBusy || noteLatest !== null || !noteDirty();
+      $("#note-reload").disabled = noteBusy;
+      $("#note-keep-draft").disabled = noteBusy;
+      $("#note-use-latest").disabled = noteBusy;
+      $("#note-conflict").hidden = noteLatest === null;
+      $("#note-latest").textContent = noteLatest || "（空备注）";
+      $("#note-state").textContent = message || (noteBusy ? "处理中…" : noteDirty() ? "有未保存的修改" : "已保存");
+    }
+    async function loadNote(force = false, discard = false) {
+      if (noteBusy || (noteLoaded && !force)) return;
+      const draft = $("#note-text").value;
+      noteBusy = true; renderNoteState();
       try {
         const { note } = await api.noteGet(ch.id);
-        noteLoaded = true;
         const ta = $("#note-text");
-        if (!ta.value) ta.value = note || "";
+        if (!noteLoaded || !noteDirty() || (discard && ta.value === draft)) { ta.value = note || ""; noteBase = note || ""; noteLatest = null; }
+        else if (note !== noteBase) noteLatest = note || "";
+        noteLoaded = true;
         noteCard.hidden = false;
-      } catch (_e) { /* 旧后端无此端点 */ }
+      } catch (e) {
+        if (e.status !== 404) toast("备注读取失败，草稿已保留。", { variant: "danger" });
+      } finally { noteBusy = false; renderNoteState(); }
     }
     async function saveNote(silent = false) {
+      if (noteBusy || !noteLoaded || noteLatest !== null) return false;
+      const submitted = $("#note-text").value;
+      noteBusy = true; renderNoteState();
       try {
-        await api.noteSet(ch.id, $("#note-text").value);
-        $("#note-state").textContent = "已保存 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
-        if (!silent) toast("已保存");
+        await api.noteSet(ch.id, submitted, noteBase);
+        noteBase = submitted;
+        if (!silent) toast(noteDirty() ? "备注已保存，后续输入仍在草稿中" : "已保存");
+        return true;
       } catch (e) {
-        toast("保存失败：" + fb.friendlyError(e).title, { variant: "danger" });
-      }
+        if (e.status === 409) {
+          try { noteLatest = (await api.noteGet(ch.id)).note || ""; } catch (_) { /* 原基线保留，重试不能覆盖新内容 */ }
+          toast("备注已有新修改，草稿已保留。请核对最新内容。", { variant: "danger" });
+        } else toast("保存结果尚未确认，草稿已保留。请重新读取核对。", { variant: "danger" });
+        return false;
+      } finally { noteBusy = false; renderNoteState(); }
     }
     async function recordTyped(text) {
       if (!noteLoaded) await loadNote();
@@ -161,10 +184,16 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       if (!t || ta.value.includes(t)) return;
       const ts = new Date().toLocaleString("zh-CN", { hour12: false });
       ta.value = (ta.value ? ta.value.replace(/\n*$/, "\n") : "") + `[${ts}] 键入：${t}`;
-      await saveNote(true);
-      toast("已记入登录备注");
+      renderNoteState();
+      if (await saveNote(true)) toast("已记入登录备注");
+      else toast("键入内容已留在备注草稿中，请核对后保存。", { variant: "info" });
     }
     $("#note-save").addEventListener("click", () => saveNote());
+    $("#note-reload").addEventListener("click", () => loadNote(true));
+    $("#note-text").addEventListener("input", () => renderNoteState());
+    $("#note-keep-draft").addEventListener("click", () => { noteBase = noteLatest; noteLatest = null; renderNoteState(); });
+    $("#note-use-latest").addEventListener("click", () => loadNote(true, true));
+    window.addEventListener("beforeunload", e => { if (noteDirty()) { e.preventDefault(); e.returnValue = ""; } });
     $("#note-copy").addEventListener("click", () => {
       const head = [`通道：${ch.name}（${kindLabel}）`, `网关：${hostName}`, `账号：${ch.username || "—"}`].join("\n");
       const body = $("#note-text").value;

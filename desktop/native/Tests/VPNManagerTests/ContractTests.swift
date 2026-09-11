@@ -3,6 +3,64 @@ import SwiftUI
 @testable import VPNManager
 
 final class ContractTests: XCTestCase {
+    @MainActor func testVersionChoicesIgnoreOutOfOrderResponsesAndUnusableArchitectures() async throws {
+        let choices = VersionChoices(), firstStarted = expectation(description: "first request pending")
+        var resumeFirst: CheckedContinuation<VersionFeed, Never>?
+        let first = Task {
+            await choices.load(versioned: true) {
+                await withCheckedContinuation { resumeFirst = $0; firstStarted.fulfill() }
+            }
+        }
+        await fulfillment(of: [firstStarted], timeout: 2)
+        await choices.load(versioned: true) { VersionFeed(versions: [VPNVersion(tag: "wrong-arch", usable_here: false), VPNVersion(tag: "current", usable_here: true)]) }
+        resumeFirst?.resume(returning: VersionFeed(versions: [VPNVersion(tag: "stale", usable_here: true)]))
+        await first.value
+        XCTAssertEqual(choices.items.map(\.tag), ["wrong-arch", "current"])
+        XCTAssertEqual(choices.selection(current: "stale", existing: nil), "current")
+        XCTAssertFalse(choices.permits("wrong-arch", existing: nil))
+        XCTAssertTrue(choices.permits("legacy", existing: "legacy"))
+        await choices.load(versioned: false) { XCTFail("Non-versioned adapter must not fetch"); return VersionFeed(versions: []) }
+        XCTAssertTrue(choices.items.isEmpty); XCTAssertFalse(choices.loading)
+    }
+    func testConfigurationFileReadIsBoundedAndRejectsNonText() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vpnmgr-config-read-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("test.conf")
+        try Data("配置内容\n".utf8).write(to: file)
+        XCTAssertEqual(try readTextConfiguration(file), "配置内容\n")
+        try Data(repeating: 65, count: 1024 * 1024 + 1).write(to: file)
+        XCTAssertThrowsError(try readTextConfiguration(file))
+        try Data([0xff, 0xfe]).write(to: file)
+        XCTAssertThrowsError(try readTextConfiguration(file))
+        XCTAssertThrowsError(try readTextConfiguration(directory))
+    }
+
+    @MainActor func testNoteDraftPreservesNewInputAndRequiresConflictReview() async throws {
+        let model = AppModel(), draft = model.noteDraft(for: "one")
+        await draft.load { "original" }
+        draft.text = "submitted"
+        let saved = await draft.save(write: { note, expected in
+            XCTAssertEqual(note, "submitted"); XCTAssertEqual(expected, "original")
+            draft.text = "typed during save"
+        }, fetch: { "unused" })
+        XCTAssertTrue(saved); XCTAssertEqual(draft.baseline, "submitted")
+        XCTAssertEqual(draft.text, "typed during save"); XCTAssertTrue(draft.dirty)
+        XCTAssertTrue(model.noteDraft(for: "one") === draft)
+        XCTAssertFalse(model.noteDraft(for: "two") === draft)
+        let rejected = await draft.save(write: { _, _ in throw APIError(message: "conflict", statusCode: 409) }, fetch: { "other window" })
+        XCTAssertFalse(rejected); XCTAssertEqual(draft.text, "typed during save")
+        XCTAssertEqual(draft.latestConflict, "other window")
+        let blocked = await draft.save(write: { _, _ in XCTFail("Conflict must be reviewed first") }, fetch: { "unused" })
+        XCTAssertFalse(blocked)
+        draft.keepDraftAfterReview()
+        let reviewed = await draft.save(write: { _, expected in XCTAssertEqual(expected, "other window") }, fetch: { "unused" })
+        XCTAssertTrue(reviewed); XCTAssertFalse(draft.dirty)
+        draft.text = "draft to discard"
+        await draft.load(discardDraft: true) { draft.text = "new input during reload"; return "latest server" }
+        XCTAssertEqual(draft.text, "new input during reload"); XCTAssertEqual(draft.latestConflict, "latest server")
+    }
+
     func testUpgradePreparationUsesRealCoreAndKeepsSourceUnchanged() throws {
         guard let executable = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_CORE_PATH"], let sourcePath = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_UPGRADE_SOURCE"] else { throw XCTSkip("升级合同验证需要隔离 core 与合成源目录") }
         let source = URL(fileURLWithPath: sourcePath)

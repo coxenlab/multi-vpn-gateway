@@ -304,7 +304,14 @@ def note_put(cid, body: dict = Body(...)):
         return JSONResponse({"error": "note 须为字符串"}, status_code=400)
     if len(note) > NOTE_MAX:
         return JSONResponse({"error": f"备注过长(上限 {NOTE_MAX} 字符)"}, status_code=400)
-    store.set_config_field(cid, "login_note", note, secret=True)
+    expected = body.get("expected_note")
+    if "expected_note" in body and (not isinstance(expected, str) or len(expected) > NOTE_MAX):
+        return JSONResponse({"error": "expected_note 须为不超过 20000 字符的字符串"}, status_code=400)
+    result = store.set_login_note(cid, note, expected)
+    if result == "not_found":
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if result == "conflict":
+        return JSONResponse({"error": "备注已有新修改，草稿已保留。请核对最新备注后再保存。"}, status_code=409)
     return {"ok": True}
 
 

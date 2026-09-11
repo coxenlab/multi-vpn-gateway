@@ -7,10 +7,6 @@ struct ChannelView: View {
     @State private var editing = false
     @State private var deleting = false
     @State private var tab = "概览"
-    @State private var note = ""
-    @State private var noteLoaded = false
-    @State private var noteBase = ""
-    @State private var noteConflict = false
     @State private var loginURL: URL?
     private var busy: Bool { model.busy.contains(channel.id) }
     var body: some View {
@@ -66,22 +62,13 @@ struct ChannelView: View {
                         Text("是否连通以内网检测结果为准。").font(.caption).foregroundStyle(.secondary)
                         Button("检测连通") { action("status", method: "GET", message: "检测完成") }.disabled(channel.needsStart || busy)
                     }
-                    Section("登录备注") {
-                        TextEditor(text: $note).frame(minHeight: 100).disabled(!noteLoaded)
-                        Text("加密保存在本机，可记录登录步骤和验证码接收方式。").font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            Button("保存备注") { Task { await saveNote() } }.disabled(!noteLoaded || busy)
-                            if !noteLoaded { Button("重新读取备注") { Task { await loadNote() } } }
-                            if noteConflict { Button("放弃草稿并载入最新备注") { Task { await loadNote(discardDraft: true) } } }
-                        }
-                    }
+                    ChannelNoteView(channelID: channel.id, draft: model.noteDraft(for: channel.id))
                 }.formStyle(.grouped)
             }
         }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .task(id: channel.id) {
                 if let api = model.api {
                     loginURL = await api.url("/native-login.html?id=\(channel.id)")
-                    await loadNote()
                 }
             }
             .task(id: channel.id) {
@@ -93,32 +80,12 @@ struct ChannelView: View {
                     do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 }
             }
-            .onChange(of: tab) { _, next in if next == "概览" { Task { await loadNote() } } }
             .sheet(isPresented: $editing) { ChannelEditor(channel: channel) }
             .confirmationDialog("删除“\(channel.name)”？", isPresented: $deleting, titleVisibility: .visible) {
                 Button(needsRuntimeForDelete ? "启动环境并删除" : "删除通道", role: .destructive) {
                     Task { await model.perform("/api/channels/\(channel.id)\(needsRuntimeForDelete ? "?prepare_runtime=true" : "")", key: channel.id, method: "DELETE", success: "通道已删除") }
                 }
             } message: { Text(needsRuntimeForDelete ? "需要启动运行环境来清理这条通道的实例与关联数据。此操作无法撤销。" : "将删除这条通道及其关联数据，此操作无法撤销。") }
-    }
-    private func currentNote() async throws -> String {
-        guard let api = model.api else { throw APIError(message: "本地服务尚未就绪") }
-        let bytes = try await api.data("/api/channels/\(channel.id)/note")
-        let value = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
-        return value?["note"] as? String ?? ""
-    }
-    private func loadNote(discardDraft: Bool = false) async {
-        do {
-            let latest = try await currentNote()
-            if !noteLoaded || note == noteBase || discardDraft { note = latest; noteBase = latest; noteLoaded = true; noteConflict = false }
-            else if latest != noteBase { noteConflict = true; model.error = "备注已有新修改。你的草稿已保留，请核对后再保存。" }
-        } catch { model.error = "登录备注读取失败，可在备注区重新读取。" }
-    }
-    private func saveNote() async {
-        do {
-            guard try await currentNote() == noteBase else { noteConflict = true; model.error = "备注已有新修改，已保留你的草稿。请先核对最新备注。"; return }
-            if await model.perform("/api/channels/\(channel.id)/note", key: channel.id, method: "PUT", body: ["note": note], success: "备注已保存") { noteBase = note; noteConflict = false }
-        } catch { model.error = "无法核对最新备注，草稿已保留。" }
     }
     private func uploadInstaller() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false

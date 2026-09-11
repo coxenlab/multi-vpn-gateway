@@ -124,7 +124,7 @@
     },
     // 登录信息备注(加密落库;旧后端 404/405 → 调用方 feature-detect 隐藏卡片)
     noteGet: (id) => req("GET", `/api/channels/${id}/note`),
-    noteSet: (id, note) => req("PUT", `/api/channels/${id}/note`, { note }),
+    noteSet: (id, note, expected_note) => req("PUT", `/api/channels/${id}/note`, { note, ...(expected_note === undefined ? {} : { expected_note }) }),
     // 通道诊断(桌面版 host-only;web 版 404 → 前端 feature-detect 降级)
     diag: () => req("GET", "/api/diag"),
     // 运行事件日志(桌面版 host-only;web/旧桌面版 404 → 调用方隐藏入口)

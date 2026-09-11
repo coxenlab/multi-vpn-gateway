@@ -246,6 +246,25 @@ def set_config_field(cid, key, value, secret=False):
         _set_config_field(c, cid, key, value, secret)
 
 
+def set_login_note(cid, note, expected=None):
+    """Atomic compare/save; None preserves the legacy unconditional PUT contract."""
+    with _c() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT config_json FROM channels WHERE id=?", (cid,)).fetchone()
+        if row is None:
+            return "not_found"
+        obj = json.loads(row["config_json"]) if row["config_json"] else {}
+        previous = obj.get("_fields", {}).get("login_note", "")
+        if "login_note" in obj.get("_secret", []) and isinstance(previous, str) and previous:
+            previous = F.decrypt(previous.encode()).decode()
+        if not isinstance(previous, str):
+            previous = ""
+        if expected is not None and expected != previous:
+            return "conflict"
+        _set_config_field(c, cid, "login_note", note, True)
+        return "saved"
+
+
 def _set_config_field(c, cid, key, value, secret):
     row = c.execute("SELECT config_json FROM channels WHERE id=?", (cid,)).fetchone()
     raw = row["config_json"] if row and row["config_json"] else ""

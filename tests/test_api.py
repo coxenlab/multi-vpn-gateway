@@ -255,6 +255,11 @@ def test_login_note_roundtrip_encrypted_not_in_channel_row(client):
     assert client.put(f"/api/channels/{cid}/note", json={"note": "x" * 20001}).status_code == 400
     assert client.put(f"/api/channels/{cid}/note", json={"note": 42}).status_code == 400
     assert client.get("/api/channels/nope/note").status_code == 404
+    assert client.put(f"/api/channels/{cid}/note", json={"note": "stale", "expected_note": ""}).status_code == 409
+    assert client.get(f"/api/channels/{cid}/note").json() == {"note": text}
+    assert client.put(f"/api/channels/{cid}/note", json={"note": "reviewed", "expected_note": text}).status_code == 200
+    assert client.get(f"/api/channels/{cid}/note").json() == {"note": "reviewed"}
+    assert client.put(f"/api/channels/{cid}/note", json={"note": "x", "expected_note": None}).status_code == 400
 
 
 def test_login_note_never_exported_but_old_imports_reencrypt(client):

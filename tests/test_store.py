@@ -1,6 +1,24 @@
 import store
 
 
+def test_note_compare_save_serializes_writers_and_preserves_other_fields(make_channel):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    store.add_channel(make_channel("note-cas"), config={"server": "https://original"})
+    gate = Barrier(2)
+    def save(text):
+        gate.wait()
+        return store.set_login_note("note-cas", text, "")
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(save, ["draft-one", "draft-two"]))
+    assert sorted(results) == ["conflict", "saved"]
+    saved = store.get_config("note-cas")
+    assert saved["login_note"] in ("draft-one", "draft-two")
+    assert saved["server"] == "https://original"
+    assert saved["login_note"] not in store.get_config_raw("note-cas")
+    assert store.set_login_note("missing", "text", "") == "not_found"
+
+
 def test_channel_update_rolls_back_columns_when_config_write_fails(make_channel):
     import sqlite3
     import pytest

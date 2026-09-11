@@ -561,6 +561,28 @@ pub fn set_config_field(
     Ok(())
 }
 
+pub enum NoteUpdate { Saved { previous_length: usize }, Conflict, NotFound }
+
+/// Compare and save on the same SQLite write transaction. Unconditional callers remain compatible.
+pub fn set_login_note(db: &Path, key: &str, cid: &str, note: &str, expected: Option<&str>) -> anyhow::Result<NoteUpdate> {
+    let f = fernet_for(key)?;
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let Some(raw) = tx.query_row("SELECT config_json FROM channels WHERE id=?1", [cid], |r| r.get::<_, Option<String>>(0)).optional()? else {
+        return Ok(NoteUpdate::NotFound);
+    };
+    let obj: Value = serde_json::from_str(raw.as_deref().filter(|s| !s.is_empty()).unwrap_or("{}"))?;
+    let stored = obj.get("_fields").and_then(|v| v.get("login_note")).and_then(Value::as_str).unwrap_or_default();
+    let encrypted = obj.get("_secret").and_then(Value::as_array).is_some_and(|keys| keys.iter().any(|key| key == "login_note"));
+    let previous = if encrypted && !stored.is_empty() {
+        String::from_utf8(f.decrypt(stored).map_err(|_| anyhow::anyhow!("cannot decrypt login note"))?)?
+    } else { stored.to_string() };
+    if expected.is_some_and(|value| value != previous) { return Ok(NoteUpdate::Conflict); }
+    set_config_field_on(&tx, &f, cid, "login_note", note, true)?;
+    tx.commit()?;
+    Ok(NoteUpdate::Saved { previous_length: previous.chars().count() })
+}
+
 fn set_config_field_on(tx: &Connection, f: &fernet::Fernet, cid: &str, field: &str, value: &str, secret: bool) -> anyhow::Result<()> {
     let raw: Option<String> = tx
         .query_row("SELECT config_json FROM channels WHERE id=?1", [cid], |r| {
@@ -875,6 +897,31 @@ pub fn list_mirrors(db: &Path) -> anyhow::Result<Vec<Mirror>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn note_compare_save_serializes_writers_and_preserves_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        Connection::open(&db).unwrap().execute("INSERT INTO channels(id,name) VALUES('c1','n')", []).unwrap();
+        set_config_field(&db, &key, "c1", "server", "vpn.example.com", false).unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        let results = std::thread::scope(|scope| {
+            let workers: Vec<_> = ["draft-one", "draft-two"].into_iter().map(|note| {
+                let (db, key, barrier) = (&db, &key, &barrier);
+                scope.spawn(move || { barrier.wait(); set_login_note(db, key, "c1", note, Some("")).unwrap() })
+            }).collect();
+            workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|r| matches!(r, NoteUpdate::Saved { .. })).count(), 1);
+        assert_eq!(results.iter().filter(|r| matches!(r, NoteUpdate::Conflict)).count(), 1);
+        let config = get_config(&db, &key, "c1").unwrap();
+        assert_eq!(config["server"], "vpn.example.com");
+        assert!(matches!(config["login_note"].as_str(), Some("draft-one" | "draft-two")));
+        assert!(!get_config_raw(&db, "c1").unwrap().contains(config["login_note"].as_str().unwrap()));
+        assert!(matches!(set_login_note(&db, &key, "missing", "text", Some("")).unwrap(), NoteUpdate::NotFound));
+    }
 
     #[test]
     fn init_creates_tables_seeds_and_is_idempotent() {

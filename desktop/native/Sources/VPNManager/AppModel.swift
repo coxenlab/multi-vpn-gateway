@@ -28,6 +28,12 @@ import SwiftUI
     private var refreshing = false
     @Published private(set) var quitting = false
     private var generation = UUID()
+    private var noteDrafts: [String: NoteDraft] = [:]
+
+    func noteDraft(for channelID: String) -> NoteDraft {
+        if let draft = noteDrafts[channelID] { return draft }
+        let draft = NoteDraft(); noteDrafts[channelID] = draft; return draft
+    }
 
     func launch() {
         guard child == nil, !starting else { return }

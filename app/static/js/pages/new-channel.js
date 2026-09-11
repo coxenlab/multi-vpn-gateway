@@ -271,9 +271,9 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         const { note } = await api.noteGet(createdId);
         if ((note || "").includes(t)) return;
         const ts = new Date().toLocaleString("zh-CN", { hour12: false });
-        await api.noteSet(createdId, (note ? note.replace(/\n*$/, "\n") : "") + `[${ts}] 键入：${t}`);
+        await api.noteSet(createdId, (note ? note.replace(/\n*$/, "\n") : "") + `[${ts}] 键入：${t}`, note || "");
         toast("已记入登录备注");
-      } catch (_e) { /* 旧后端不支持 */ }
+      } catch (e) { if (e.status !== 404) toast("自动记录未完成，请在通道详情的登录备注中核对后保存。", { variant: "danger" }); }
     }
     const vncPlaceholder = $("#vnc-placeholder").cloneNode(true);
     const vncView = createVncLifecycle({

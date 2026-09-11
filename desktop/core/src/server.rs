@@ -516,6 +516,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(
             &axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
         assert_eq!(v["note"], "账号 zhang\n密码 s3cret!");
+        let conflict = app.clone().oneshot(Request::builder().method("PUT")
+            .uri("/api/channels/c1/note").header("content-type", "application/json")
+            .body(Body::from(r#"{"note":"stale draft","expected_note":""}"#)).unwrap()).await.unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let key = crate::store::master_key(dir.path()).unwrap();
+        assert_eq!(crate::store::get_config(&db, &key, "c1").unwrap()["login_note"], "账号 zhang\n密码 s3cret!");
+        let updated = app.clone().oneshot(Request::builder().method("PUT")
+            .uri("/api/channels/c1/note").header("content-type", "application/json")
+            .body(Body::from(r#"{"note":"账号 zhang\n密码 s3cret!","expected_note":"账号 zhang\n密码 s3cret!"}"#)).unwrap()).await.unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+        let invalid = app.clone().oneshot(Request::builder().method("PUT")
+            .uri("/api/channels/c1/note").header("content-type", "application/json")
+            .body(Body::from(r#"{"note":"x","expected_note":null}"#)).unwrap()).await.unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
         let raw = crate::store::get_config_raw(&db, "c1").unwrap();
         assert!(!raw.contains("s3cret!") && raw.contains("login_note"));
 

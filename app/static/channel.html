@@ -116,7 +116,13 @@
                     <p class="note" style="margin-top:var(--space-2);">加密保存在本机。登录窗口里「键入到容器」发送过的文本会自动记到这里。</p>
                     <div style="display:flex; align-items:center; gap:var(--space-2); margin-top:var(--space-3);">
                       <button class="btn btn-primary btn-sm" id="note-save" type="button">保存</button>
-                      <span class="note" id="note-state"></span>
+                      <button class="btn btn-ghost btn-sm" id="note-reload" type="button">重新读取</button>
+                      <span class="note" id="note-state" role="status"></span>
+                    </div>
+                    <div id="note-conflict" hidden style="margin-top:var(--space-3);">
+                      <details><summary>最新保存的备注（你的草稿仍在上方）</summary><pre id="note-latest" style="white-space:pre-wrap;overflow-wrap:anywhere;"></pre></details>
+                      <button class="btn btn-sm btn-ghost" id="note-keep-draft" type="button">已核对，继续编辑草稿</button>
+                      <button class="btn btn-sm btn-ghost" id="note-use-latest" type="button">放弃草稿并载入最新备注</button>
                     </div>
                   </div>
                 </div>

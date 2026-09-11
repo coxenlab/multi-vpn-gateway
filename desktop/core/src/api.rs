@@ -946,24 +946,27 @@ pub async fn note_put(
     if note.chars().count() > NOTE_MAX {
         return err_detail(StatusCode::BAD_REQUEST, &format!("备注过长(上限 {NOTE_MAX} 字符)"));
     }
-    // ⚠️ 备注正文里通常就是账号密码:审计只记长度变化,正文一个字都不进日志(命门 #5)。
-    let length_before = store::get_config(&db, &key, &cid)
-        .ok()
-        .and_then(|cfg| cfg.get("login_note").and_then(|v| v.as_str()).map(|s| s.chars().count()))
-        .unwrap_or(0);
+    let expected = match b.get("expected_note") {
+        None => None,
+        Some(Value::String(value)) if value.chars().count() <= NOTE_MAX => Some(value.as_str()),
+        Some(_) => return err_detail(StatusCode::BAD_REQUEST, "expected_note 须为不超过 20000 字符的字符串"),
+    };
+    // ⚠️ 备注正文和用于核对的原文都不进日志；冲突不写库，也不重试覆盖。
+    let length_before = match store::set_login_note(&db, &key, &cid, note, expected) {
+        Ok(store::NoteUpdate::Saved { previous_length }) => previous_length,
+        Ok(store::NoteUpdate::Conflict) => return err_detail(StatusCode::CONFLICT, "备注已有新修改，草稿已保留。请核对最新备注后再保存。"),
+        Ok(store::NoteUpdate::NotFound) => return err404("not found"),
+        Err(e) => {
+            crate::events::audit_failed("note_update", "登录信息备注保存失败", json!({"target_kind":"note", "target_id":cid, "result":"failed"}));
+            return err500(&format!("{e}"));
+        }
+    };
     let audit_base = || {
         json!({
             "target_kind": "note", "target_id": cid.as_str(),
             "before": { "length": length_before }, "after": { "length": note.chars().count() },
         })
     };
-    if let Err(e) = store::set_config_field(&db, &key, &cid, "login_note", note, true) {
-        let mut detail = audit_base();
-        detail["result"] = json!("failed");
-        detail["error"] = json!(e.to_string());
-        crate::events::audit_failed("note_update", "登录信息备注保存失败", detail);
-        return err500(&format!("{e}"));
-    }
     let mut detail = audit_base();
     detail["result"] = json!("ok");
     crate::events::audit("note_update", "登录信息备注已更新", detail);
