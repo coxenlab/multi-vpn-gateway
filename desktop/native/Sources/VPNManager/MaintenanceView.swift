@@ -15,13 +15,12 @@ struct PullStatus: Decodable { let status: String; let progress: String?; let er
 struct EnvironmentView: View {
     @EnvironmentObject var model: AppModel
     @State private var checks: [EnvironmentCheck] = []
-    @State private var loading = false
-    @State private var error: String?
+    @StateObject private var request = PageRequest()
     var body: some View {
         VStack(alignment: .leading) {
-            HStack { Text("环境检查").font(.title2.bold()); Spacer(); Button("重新检查") { Task { await load() } }.disabled(loading) }.padding()
-            if loading { ProgressView("正在检查…").frame(maxWidth: .infinity) }
-            if let error { Text(error).foregroundStyle(.red).padding() }
+            HStack { Text("环境检查").font(.title2.bold()); Spacer(); Button("重新检查") { Task { await load() } }.disabled(request.loading) }.padding()
+            if request.loading { ProgressView("正在检查…").frame(maxWidth: .infinity) }
+            if let error = request.error { Text(error).foregroundStyle(.red).padding() }
             List(checks) { check in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: check.status == "pass" ? "checkmark.circle.fill" : check.status == "skip" ? "minus.circle" : "exclamationmark.triangle.fill")
@@ -34,23 +33,22 @@ struct EnvironmentView: View {
                 }.padding(.vertical, 8)
             }
             if model.system?.runtime?.ready != true { Text("环境休眠时仅检查现有设置。需要修复时，请先明确连接运行环境。").font(.caption).foregroundStyle(.secondary).padding() }
-        }.task { await load() }
+        }.task { request.activate(); await load() }.onDisappear { request.suspend() }
+            .pageRefresh(enabled: !request.loading) { Task { await load() } }
     }
     private func load() async {
-        guard let api = model.api, !loading else { return }; loading = true; defer { loading = false }
-        do { checks = try await api.get("/api/preflight?scope=full", as: CheckReport.self).checks; error = nil }
-        catch { self.error = error.localizedDescription }
+        await request.run(model: model, operation: { try await $0.get("/api/preflight?scope=full", as: CheckReport.self) }) { checks = $0.checks }
     }
 }
 struct ImagesView: View {
     @EnvironmentObject var model: AppModel
     @State private var images: [ImageEntry] = []
-    @State private var error: String?
+    @StateObject private var request = PageRequest()
     var body: some View {
         VStack(alignment: .leading) {
-            HStack { Text("镜像与资源").font(.title2.bold()); Spacer(); Button("刷新") { Task { await load() } } }.padding()
+            HStack { Text("镜像与资源").font(.title2.bold()); Spacer(); if request.loading { ProgressView().controlSize(.small) }; Button("刷新") { Task { await load() } }.disabled(request.loading) }.padding()
             ScrollView { ImageImportView() }.frame(maxHeight: model.importTicket == nil ? 150 : 280).padding(.horizontal)
-            if let error { Text(error).foregroundStyle(.red).padding() }
+            if let error = request.error { Text(error).foregroundStyle(.red).padding() }
             List(images) { item in
                 HStack {
                     VStack(alignment: .leading, spacing: 5) {
@@ -63,11 +61,10 @@ struct ImagesView: View {
                     else if item.kind == "pull", item.present != true { Button("下载") { Task { await model.downloadImage(item); await load() } }.disabled(model.system?.runtime?.ready != true) }
                 }.padding(.vertical, 8)
             }
-        }.task { await load() }.onChange(of: model.importTicket?.status) { _, status in if status == "done" { Task { await load() } } }
+        }.task { request.activate(); await load() }.onChange(of: model.importTicket?.status) { _, status in if status == "done" { Task { await load() } } }.onDisappear { request.suspend() }
+            .pageRefresh(enabled: !request.loading) { Task { await load() } }
     }
     private func load() async {
-        guard let api = model.api else { return }
-        do { images = try await api.get("/api/images", as: ImageReport.self).images; error = nil }
-        catch { self.error = error.localizedDescription }
+        await request.run(model: model, operation: { try await $0.get("/api/images", as: ImageReport.self) }) { images = $0.images }
     }
 }

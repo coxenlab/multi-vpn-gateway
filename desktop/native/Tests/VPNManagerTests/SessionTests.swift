@@ -4,7 +4,7 @@ import Darwin
 @testable import VPNManager
 
 /// Deliberately finishes requests after cancellation to exercise late delivery, not just cancellation.
-private actor DelayedHTTP {
+actor DelayedHTTP {
     private struct Pending {
         let request: URLRequest
         let continuation: CheckedContinuation<(Data, URLResponse), Error>

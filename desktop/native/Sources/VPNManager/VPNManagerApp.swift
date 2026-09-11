@@ -11,7 +11,7 @@ import AppKit
                 .frame(minWidth: 920, minHeight: 620)
                 .onAppear { delegate.model = model; model.launch() }
         }.defaultSize(width: 1100, height: 760)
-            .commands { CommandGroup(after: .newItem) { Button("刷新") { Task { await model.refresh() } }.keyboardShortcut("r").disabled(!model.ready) } }
+            .commands { WorkspaceCommands(model: model) }
         MenuBarExtra("VPN 管理网关", systemImage: "network") {
             MenuContent().environmentObject(model)
         }
@@ -53,10 +53,11 @@ enum Page: String, CaseIterable, Identifiable {
 }
 struct WorkspaceView: View {
     @EnvironmentObject var model: AppModel
+    @FocusedValue(\.pageRefresh) private var pageRefresh
     @State private var page: Page? = .channels
     @State private var selection: String?
     @State private var creating = false
-    init(initialSelection: String? = nil) { _selection = State(initialValue: initialSelection) }
+    init(initialSelection: String? = nil, initialPage: Page = .channels) { _selection = State(initialValue: initialSelection); _page = State(initialValue: initialPage) }
     var body: some View {
         NavigationSplitView {
             List(Page.allCases, selection: $page) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
@@ -99,9 +100,19 @@ struct WorkspaceView: View {
             }.navigationTitle(page?.rawValue ?? "通道")
                 .toolbar {
                     if page == .channels { Button { creating = true } label: { Label("新建通道", systemImage: "plus") }.disabled(!model.ready) }
-                    Button { Task { await model.refresh() } } label: { Label("刷新", systemImage: "arrow.clockwise") }.disabled(!model.ready)
+                    Button {
+                        if let pageRefresh { pageRefresh.perform() }
+                        else { Task { await model.refresh() } }
+                    } label: { Label("刷新", systemImage: "arrow.clockwise") }.disabled(!model.ready || pageRefresh?.enabled == false)
                 }
         }.onChange(of: model.createdChannelID) { _, id in if let id { selection = id; page = .channels; model.createdChannelID = nil } }
         .sheet(isPresented: $creating) { ChannelEditor(channel: nil) }
+        .focusedSceneValue(\.workspaceActions, WorkspaceActions(create: {
+            guard model.ready, NSApp.modalWindow == nil, NSApp.keyWindow?.sheetParent == nil else { return }
+            creating = true
+        }, settings: {
+            guard model.ready, NSApp.modalWindow == nil, NSApp.keyWindow?.sheetParent == nil else { return }
+            page = .settings
+        }))
     }
 }
