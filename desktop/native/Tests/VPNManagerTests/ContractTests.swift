@@ -3,6 +3,38 @@ import SwiftUI
 @testable import VPNManager
 
 final class ContractTests: XCTestCase {
+    func testMaintenanceContractsAndDiagnosticJSON() throws {
+        let events = try JSONDecoder().decode(EventFeed.self, from: fixture("native-events.json"))
+        XCTAssertTrue(events.enabled)
+        XCTAssertTrue(events.events.contains { $0.src == "audit" })
+        let containers = try JSONDecoder().decode(ContainerFeed.self, from: fixture("native-containers.json"))
+        XCTAssertFalse(containers.docker_available)
+        XCTAssertTrue(containers.containers.contains { $0.role == "channel" && $0.stateLabel == "未确认" })
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data("{\"id\":9223372036854775807,\"state\":[true,null,\"正常\"]}".utf8))
+        XCTAssertTrue(value.formatted.contains("9223372036854775807"))
+        XCTAssertTrue(value.formatted.contains("正常"))
+        XCTAssertEqual(csvField("a,b\"c"), "\"a,b\"\"c\"")
+        XCTAssertEqual(csvField(" =1+1"), "\"' =1+1\"")
+    }
+    func testRuleOverlapRespectsChannelIntentAndIPFamilies() throws {
+        let raw = try JSONSerialization.jsonObject(with: fixture("native-channels.json")) as! [[String: Any]]
+        var object = raw[0]; object["id"] = "first"; object["status"] = "running"; object["configured_status"] = "running"
+        var first = try JSONDecoder().decode(Channel.self, from: JSONSerialization.data(withJSONObject: object))
+        object["id"] = "second"
+        var second = try JSONDecoder().decode(Channel.self, from: JSONSerialization.data(withJSONObject: object))
+        first.domains = [Rule(id: 1, kind: "domain", pattern: "internal.example", enabled: 1, note: nil, locked: nil)]
+        first.ips = [Rule(id: 2, kind: "ip", pattern: "10.0.0.0/8", enabled: 1, note: nil, locked: nil), Rule(id: 3, kind: "ip", pattern: "fd12:1::/48", enabled: 1, note: nil, locked: nil)]
+        second.domains = [Rule(id: 4, kind: "domain", pattern: "team.internal.example", enabled: 1, note: nil, locked: nil), Rule(id: 5, kind: "domain", pattern: "notinternal.example", enabled: 1, note: nil, locked: nil)]
+        second.ips = [Rule(id: 6, kind: "ip", pattern: "10.2.0.0/16", enabled: 1, note: nil, locked: nil), Rule(id: 7, kind: "ip", pattern: "fd12:1::1/128", enabled: 1, note: nil, locked: nil)]
+        XCTAssertEqual(findRuleConflicts(RuleAnalysisInput(channels: [first, second], off: false)).count, 3)
+        XCTAssertTrue(findRuleConflicts(RuleAnalysisInput(channels: [first, second], off: true)).isEmpty)
+        second.stop_pending = true
+        XCTAssertTrue(findRuleConflicts(RuleAnalysisInput(channels: [first, second], off: false)).isEmpty)
+        second.stop_pending = false; second.configured_status = "error"
+        XCTAssertTrue(findRuleConflicts(RuleAnalysisInput(channels: [first, second], off: false)).isEmpty)
+        XCTAssertFalse(try XCTUnwrap(IPRange("0.0.0.0/0")).overlaps(XCTUnwrap(IPRange("::/0"))))
+        XCTAssertNil(IPRange("10.0.0.1/33"))
+    }
     func testDecodesActualImagePreview() throws {
         let ticket = try JSONDecoder().decode(ImageImportTicket.self, from: fixture("native-image-import.json"))
         XCTAssertEqual(ticket.status, "preview")

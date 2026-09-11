@@ -13,6 +13,10 @@ struct SettingsView: View {
     @State private var entryLoaded = false
     @State private var foreignProxy = false
     @State private var confirmProxy = false
+    @State private var helperInstalled = false
+    @State private var helperResources = false
+    @State private var helperVersion: String?
+    @State private var helperAction: String?
     private var isolated: Bool { ProcessInfo.processInfo.environment["VPNMGR_DEV_MODE"] == "1" }
     var body: some View {
         Form {
@@ -31,7 +35,16 @@ struct SettingsView: View {
                 Toggle("启用分流", isOn: Binding(get: { model.system?.routing_off != true }, set: { enabled in Task { await model.perform("/api/routing", key: "__routing", body: ["off": !enabled], success: "分流设置已保存") } })).disabled(model.system?.routing_off == nil || model.busy.contains("__routing"))
                 Toggle("系统自动代理", isOn: Binding(get: { systemProxy }, set: { value in if value && foreignProxy { confirmProxy = true } else { setProxy(value) } })).disabled(!entryLoaded || isolated || model.busy.contains("__entry"))
                 if foreignProxy { Text("当前自动代理由其他应用设置。启用此入口会替换当前设置。").font(.caption).foregroundStyle(.secondary) }
-                Toggle("TUN 接管", isOn: Binding(get: { tun }, set: { value in Task { if await model.perform("/api/entry/tun", key: "__entry", body: ["enable": value]) { await loadEntry() } } })).disabled(!entryLoaded || isolated || model.busy.contains("__entry"))
+                Toggle("TUN 接管", isOn: Binding(get: { tun }, set: { value in Task { if await model.perform("/api/entry/tun", key: "__entry", body: ["enable": value]) { await loadEntry() } } })).disabled(!entryLoaded || !helperInstalled || isolated || model.busy.contains("__entry"))
+                if !isolated {
+                    LabeledContent("TUN 助手", value: !entryLoaded ? "待确认" : helperInstalled ? "已安装\(helperVersion.map { " · " + $0 } ?? "")" : "未安装")
+                    HStack {
+                        Button(helperInstalled ? "更新助手…" : "安装助手…") { helperAction = "install" }.disabled(!entryLoaded || !helperResources || model.busy.contains("__entry"))
+                        if helperInstalled { Button("卸载助手…", role: .destructive) { helperAction = "uninstall" }.disabled(model.busy.contains("__entry")) }
+                        Button("刷新接入状态") { Task { await loadEntry() } }.disabled(model.busy.contains("__entry"))
+                    }
+                    if entryLoaded && !helperResources { Text("当前应用缺少助手安装资源，请使用完整发行版本。").font(.caption).foregroundStyle(.secondary) }
+                }
                 if isolated { Text("隔离开发版的宿主代理与 TUN 操作已禁用。").font(.caption).foregroundStyle(.secondary) }
                 Button("Clash 配置片段") { inspecting = Inspection(path: "/api/clash-snippet", title: "Clash 配置片段") }
                 Button("重新同步已保存规则") { Task { await model.perform("/api/config/retry", key: "__sync", success: "规则同步完成") } }.disabled(model.busy.contains("__sync"))
@@ -53,11 +66,21 @@ struct SettingsView: View {
                 if item.path == "/api/preflight" { EnvironmentView() }
                 else if item.path == "/api/images" { ImagesView() }
                 else if item.path == "/api/mirrors" { MirrorsView() }
+                else if item.path == "/api/events" { EventsView() }
+                else if item.path == "/api/containers" { ContainersView() }
                 else { TextEndpointView(path: item.path, title: item.title) }
-                Button("关闭") { inspecting = nil }.keyboardShortcut(.cancelAction).padding() }.frame(width: 680, height: 500) }
+                Button("关闭") { inspecting = nil }.keyboardShortcut(.cancelAction).padding() }.frame(width: 780, height: 620) }
             .confirmationDialog("替换当前自动代理？", isPresented: $confirmProxy, titleVisibility: .visible) {
                 Button("使用本应用的自动代理") { setProxy(true) }
             } message: { Text("这会改变当前网络服务的自动代理入口。现有代理 URL 会被替换。") }
+            .confirmationDialog(helperAction == "uninstall" ? "卸载 TUN 助手？" : "安装或更新 TUN 助手？", isPresented: Binding(get: { helperAction != nil }, set: { if !$0 { helperAction = nil } }), titleVisibility: .visible) {
+                if let action = helperAction {
+                    Button(action == "uninstall" ? "卸载助手" : "安装或更新", role: action == "uninstall" ? .destructive : nil) {
+                        helperAction = nil
+                        Task { await model.perform("/api/entry/tun/\(action)", key: "__entry", success: action == "uninstall" ? "助手已卸载" : "助手已安装或更新"); await loadEntry() }
+                    }
+                }
+            } message: { Text("系统将请求管理员授权。安装更新可能短暂影响 TUN 连接；卸载将结束 TUN 接管。") }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
                 do {
                     let url = try result.get(); let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -75,6 +98,8 @@ struct SettingsView: View {
         do {
             let data = try await api.data("/api/entry/tun")
             let status = try JSONSerialization.jsonObject(with: data) as? [String: Any]; tun = status?["enabled"] as? Bool ?? false
+            helperInstalled = status?["installed"] as? Bool == true; helperResources = status?["resources"] as? Bool == true
+            helperVersion = (status?["helper"] as? [String: Any])?["version"] as? String
             let proxyData = try await api.data("/api/entry/system-proxy")
             let proxy = try JSONSerialization.jsonObject(with: proxyData) as? [String: Any]; systemProxy = proxy?["enabled"] as? Bool == true && proxy?["is_ours"] as? Bool == true
             foreignProxy = proxy?["enabled"] as? Bool == true && proxy?["is_ours"] as? Bool != true

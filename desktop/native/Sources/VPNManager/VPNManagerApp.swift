@@ -101,7 +101,7 @@ struct WorkspaceView: View {
                     if page == .channels { Button { creating = true } label: { Label("新建通道", systemImage: "plus") }.disabled(!model.ready) }
                     Button { Task { await model.refresh() } } label: { Label("刷新", systemImage: "arrow.clockwise") }.disabled(!model.ready)
                 }
-        }.onChange(of: model.createdChannelID) { _, id in if let id { selection = id; page = .channels } }
+        }.onChange(of: model.createdChannelID) { _, id in if let id { selection = id; page = .channels; model.createdChannelID = nil } }
         .sheet(isPresented: $creating) { ChannelEditor(channel: nil) }
     }
 }

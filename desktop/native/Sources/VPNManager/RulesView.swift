@@ -12,6 +12,7 @@ struct RulesView: View {
     @State private var editing: RuleItem?
     @State private var ruleNote = ""
     @State private var ruleLocked = false
+    @State private var conflicts: [RuleConflict] = []
     private var rows: [RuleItem] {
         model.channels.filter { channelID == nil || $0.id == channelID }.flatMap { ch in ch.rules.map { RuleItem(channel: ch, rule: $0) } }
             .filter { search.isEmpty || $0.rule.pattern.localizedCaseInsensitiveContains(search) || $0.channel.name.localizedCaseInsensitiveContains(search) }
@@ -28,6 +29,18 @@ struct RulesView: View {
                 }
                 Button("添加规则") { selectedChannel = channelID ?? model.channels.first?.id ?? ""; adding = true }.disabled(model.channels.isEmpty)
             }.padding([.horizontal, .top])
+            if !conflicts.isEmpty {
+                DisclosureGroup("\(conflicts.count) 组规则交叠\(conflicts.count == 100 ? "（最多显示 100 组）" : "")") {
+                    ScrollView {
+                        ForEach(conflicts) { pair in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(pair.reason).font(.headline)
+                                Text("\(pair.a.channel.name) · \(pair.a.rule.pattern)  ↔  \(pair.b.channel.name) · \(pair.b.rule.pattern)").textSelection(.enabled)
+                            }.font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                        }
+                    }.frame(maxHeight: 160)
+                }.foregroundStyle(.orange).padding(.horizontal)
+            }
             if rows.isEmpty { ContentUnavailableView("没有匹配的规则", systemImage: "line.3.horizontal.decrease") }
             else {
                 Table(rows, selection: $selected) {
@@ -46,6 +59,10 @@ struct RulesView: View {
                 }
             }
             Text("已保存的规则与实际生效状态分开确认。环境休眠时，连接后再同步。").font(.caption).foregroundStyle(.secondary).padding([.horizontal, .bottom])
+        }.task(id: RuleAnalysisInput(channels: model.channels, off: model.system?.routing_off == true)) {
+            let input = RuleAnalysisInput(channels: model.channels, off: model.system?.routing_off == true)
+            let result = await Task.detached(priority: .utility) { findRuleConflicts(input) }.value
+            if !Task.isCancelled { conflicts = result.filter { channelID == nil || $0.a.channel.id == channelID || $0.b.channel.id == channelID } }
         }.sheet(isPresented: $adding) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("添加分流规则").font(.title2.bold())
