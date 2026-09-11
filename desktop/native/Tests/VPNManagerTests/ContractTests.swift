@@ -150,6 +150,20 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(draft.text, "new input during reload"); XCTAssertEqual(draft.latestConflict, "latest server")
     }
 
+    func testUpgradeReportReadsCleanupCountsAndKeepsOldReportsCompatible() throws {
+        var object: [String: Any] = ["version": 2, "counts": ["rules": 3], "encrypted_values_checked": 0,
+            "files": [], "database_sha256": "fixture", "runtime_verified": false, "ready_to_activate": false]
+        func decode() throws -> UpgradeReport {
+            try JSONDecoder().decode(UpgradeReport.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        XCTAssertNil(try decode().rule_cleanup)
+        object["rule_cleanup"] = ["version": 1, "examined": 3, "normalized": 1, "quarantined": 1]
+        let report = try decode()
+        XCTAssertEqual(report.rule_cleanup?.normalized, 1)
+        XCTAssertEqual(report.rule_cleanup?.quarantined, 1)
+        XCTAssertFalse(report.ready_to_activate)
+    }
+
     func testUpgradePreparationUsesRealCoreAndKeepsSourceUnchanged() throws {
         guard let executable = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_CORE_PATH"], let sourcePath = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_UPGRADE_SOURCE"] else { throw XCTSkip("升级合同验证需要隔离 core 与合成源目录") }
         let source = URL(fileURLWithPath: sourcePath)

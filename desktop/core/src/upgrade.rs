@@ -23,6 +23,8 @@ pub struct Report {
     pub source_sha256: BTreeMap<String, String>,
     pub file_sha256: BTreeMap<String, String>,
     pub vm_profile: String,
+    #[serde(default)]
+    pub rule_cleanup: Option<crate::rule_migration::Report>,
 }
 
 fn read_file(root: &Path, name: &str, required: bool) -> Result<Option<Vec<u8>>> {
@@ -137,19 +139,35 @@ pub fn prepare_for_profile(source: &Path, destination: &Path, vm_profile: &str) 
     ensure!(before==after && original==materials(&source)?,"复制期间原数据发生变化，请在原版本退出后重新准备");
     // 只在副本执行当前 schema 升级；检查后保留原有账号、MAC、卷及恢复操作引用。
     crate::store::init(&db)?;
+    let rule_cleanup = crate::rule_migration::prepare_copy(&db)?;
     validate_db(&db,&original["master.key"])?;
+    ensure_quiet_candidate(&destination)?;
     fs::File::open(&db)?.sync_all()?;
     let files: Vec<_> = original.keys().cloned().chain(std::iter::once("vpnmgr.db".into())).collect();
     let file_sha256 = files.iter().map(|name| Ok((name.clone(), hash(&fs::read(destination.join(name))?)))).collect::<Result<_>>()?;
     let report=Report {version:2,counts,encrypted_values_checked:checked,
         files, database_sha256:hash(&fs::read(&db)?),runtime_verified:false,ready_to_activate:false,
-        source, source_sha256, file_sha256, vm_profile: vm_profile.into()};
+        source, source_sha256, file_sha256, vm_profile: vm_profile.into(), rule_cleanup: Some(rule_cleanup)};
     write_private(&destination.join("upgrade-review.json"),&serde_json::to_vec_pretty(&report)?)?;
     fs::File::open(&destination)?.sync_all()?;
     Ok(report)
 }
 
 fn hash(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
+
+/// A review copy is offline. Hashing its main file cannot account for journalled writes.
+/// Never checkpoint an unexpected writer's state into a previously reviewed candidate.
+fn ensure_quiet_candidate(candidate: &Path) -> Result<()> {
+    for name in ["vpnmgr.db-wal", "vpnmgr.db-journal"] {
+        match fs::symlink_metadata(candidate.join(name)) {
+            Ok(meta) => ensure!(meta.file_type().is_file() && meta.len() == 0,
+                "升级副本存在数据库写入记录，请关闭占用程序并重新准备副本"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
 
 /// Validate a sealed review copy and prove the original still matches its committed snapshot.
 pub fn validate_prepared(candidate: &Path) -> Result<Report> {
@@ -167,6 +185,7 @@ pub fn validate_prepared(candidate: &Path) -> Result<Report> {
 
 pub(crate) fn validate_copy(candidate: &Path) -> Result<Report> {
     ensure!(candidate.join(PENDING).try_exists()?, "该目录不是待启用的升级副本");
+    ensure_quiet_candidate(candidate)?;
     let report: Report = serde_json::from_slice(&read_file(candidate,"upgrade-review.json",true)?.unwrap())
         .context("升级副本版本较旧或检查记录无效，请重新准备副本")?;
     ensure!(report.version == 2 && !report.ready_to_activate && !report.runtime_verified, "升级副本协议不受支持");
@@ -176,6 +195,7 @@ pub(crate) fn validate_copy(candidate: &Path) -> Result<Report> {
     for name in &actual { hashes.insert(name.clone(), hash(&read_file(candidate,name,true)?.unwrap())); }
     ensure!(hashes == report.file_sha256 && hashes.get("vpnmgr.db") == Some(&report.database_sha256), "升级副本内容发生变化，请重新准备");
     validate_db(&candidate.join("vpnmgr.db"), &read_file(candidate,"master.key",true)?.unwrap())?;
+    ensure_quiet_candidate(candidate)?;
     Ok(report)
 }
 
@@ -200,6 +220,46 @@ pub(crate) mod tests {
         conn.execute("INSERT INTO channel_replacements VALUES('c1','queued-op','queued',?1,0)",[f.encrypt(b"{}")]).unwrap();
         conn.execute("INSERT INTO channel_stop_intents VALUES('c1','stop-op')",[]).unwrap();
         (dir,conn)
+    }
+
+    #[test]
+    fn sealed_copy_rejects_committed_wal_changes_while_writer_is_open() {
+        let root = tempfile::tempdir().unwrap(); let (source, _conn) = source(root.path());
+        let target = root.path().join("review"); prepare(&source, &target).unwrap();
+        let copy = Connection::open(target.join("vpnmgr.db")).unwrap();
+        copy.execute_batch("PRAGMA wal_autocheckpoint=0;").unwrap();
+        validate_copy(&target).unwrap();
+        let journal: String = copy.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        let before = fs::read(target.join("vpnmgr.db")).unwrap();
+        copy.execute("UPDATE channels SET name='changed after review'", []).unwrap();
+        let main_unchanged = fs::read(target.join("vpnmgr.db")).unwrap() == before;
+        assert!(validate_copy(&target).is_err(), "accepted changed candidate: journal={journal}, main_unchanged={main_unchanged}");
+    }
+
+    #[test]
+    fn cleans_only_review_copy_and_seals_archive_with_database() {
+        let root = tempfile::tempdir().unwrap(); let (source, conn) = source(root.path());
+        conn.execute_batch("INSERT INTO rules(channel_id,kind,pattern,enabled,note,locked) VALUES
+            ('c1','domain','*.Example.COM',0,'keep note',1),
+            ('c1','domain','bad,REJECT',1,'keep original',0);").unwrap();
+        let target = root.path().join("review");
+        let before = fs::read(source.join("vpnmgr.db")).unwrap();
+        let wal = fs::read(source.join("vpnmgr.db-wal")).unwrap();
+        let report = prepare(&source, &target).unwrap();
+        let cleanup = report.rule_cleanup.as_ref().unwrap();
+        assert_eq!((cleanup.examined, cleanup.normalized, cleanup.quarantined), (2, 1, 1));
+        assert_eq!(report.counts["rules"], 2);
+        assert_eq!(fs::read(source.join("vpnmgr.db")).unwrap(), before);
+        assert_eq!(fs::read(source.join("vpnmgr.db-wal")).unwrap(), wal);
+        assert_eq!(crate::store::all_rules(&source.join("vpnmgr.db")).unwrap().len(), 2);
+        assert_eq!(crate::store::all_rules(&target.join("vpnmgr.db")).unwrap()[0].pattern, "example.com");
+        validate_prepared(&target).unwrap();
+        let copy = Connection::open(target.join("vpnmgr.db")).unwrap();
+        assert_eq!(copy.query_row("SELECT pattern FROM rule_migration_archive WHERE action='quarantined'", [],
+            |r| r.get::<_, String>(0)).unwrap(), "bad,REJECT");
+        copy.execute("DELETE FROM rule_migration_archive", []).unwrap();
+        drop(copy);
+        assert!(validate_prepared(&target).is_err());
     }
 
     #[test]

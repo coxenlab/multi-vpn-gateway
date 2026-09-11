@@ -112,6 +112,22 @@ def test_migrate_domains_to_rules():
     assert migrated[0]["kind"] == "domain" and migrated[0]["enabled"] == 1
 
 
+def test_reviewed_copy_never_revives_quarantined_legacy_rules(monkeypatch, tmp_path):
+    monkeypatch.setattr(store, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(store, "DB", str(tmp_path / "vpnmgr.db"))
+    store.init()
+    with store._c() as c:
+        c.execute("INSERT INTO domains(channel_id,pattern) VALUES('c1','bad,REJECT')")
+        c.execute("INSERT INTO rule_migration_archive(id,channel_id,kind,pattern,enabled,action) VALUES(1,'c1','domain','bad,REJECT',1,'quarantined')")
+        c.execute("INSERT INTO rule_migration_state VALUES(1,1,1,0,1)")
+    store.init()
+    store.init()
+    assert store.all_rules() == []
+    with store._c() as c:
+        assert c.execute("SELECT pattern FROM rule_migration_archive").fetchone()[0] == "bad,REJECT"
+        assert c.execute("SELECT COUNT(*) FROM domains").fetchone()[0] == 1
+
+
 def test_config_json_encrypts_secret_fields_and_row_strips(make_channel):
     import store
     ch = make_channel("oss1")

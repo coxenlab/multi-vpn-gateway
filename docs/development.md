@@ -163,6 +163,10 @@ Python 直接依赖在 `app/requirements.in` 和 `tests/requirements-dev.in`；�
 
 升级核对可用 `vpnmgr-core --prepare-upgrade <原目录> <不存在的副本目录>`：SQLite backup 纳入已提交 WAL，复制主密钥、infra 参数、启动配置、分流/TUN 意图和日志开关；核对加密字段、恢复记录、配置密钥匹配，且副本升级 schema。源目录只读，输出目录 0700、文件 0600，已有目标拒绝覆盖。v2 的 `upgrade-review.json` 记录原目录、profile、数量及文件摘要，不含凭据；准备后的原数据或副本变化会阻止启用。副本保留 `upgrade-pending`，不会因准备成功自动启动。
 
+历史规则整理只在上述副本准备阶段执行，不随正常启动扫描或改写规则：沿用运行出口的 `normalize_stored_rule` 契约，规范化可接受的旧格式、将无法接受的规则移出运行表；受影响的原始行及启停/备注/锁定值留在副本的 `rule_migration_archive`。规则修改、归档与版本标记使用同一事务，失败整体回滚；摘要覆盖包含归档的数据库。两栈都识别完成标记，防止规则全部隔离后从旧 `domains` 再次导回。报告 `rule_cleanup` 只含首次整理的数量，不输出原规则正文；旧报告缺此字段时可读取，原生界面提示重新准备。整理不合并同名规则或改写优先级，原目录完整保留，业务连接与真实数据迁移仍需单独验收。
+
+升级副本封存与切换前后会检查 SQLite WAL / rollback journal：非空或异常文件拒绝切换，要求关闭占用程序并重新准备。只核对主数据库文件摘要不足以发现仍在 WAL 中的已提交写入；校验不会主动 checkpoint 他人的写入。源目录备份仍使用 SQLite 一致性快照。
+
 macOS 离线切换命令使用 `DATA_DIR` 指定新版本数据目录、`VPNMGR_VM_PROFILE` 指定同一个原 profile：`--activate-upgrade <副本目录>`、`--upgrade-status`、`--resume-upgrade`、`--rollback-upgrade`、`--finish-upgrade`。须先退出使用原目录或目标目录的应用；目标目录必须已由新版本初始化，profile 必须读回为 Stopped。这些命令不启动/停止 VM、不修改容器或宿主网络。原生确认入口先正常关闭自己的 core，再调用离线命令并重新启动管理服务；其他安装版仍运行时拒绝切换，不终止对方。服务无法启动时，主界面仍提供升级恢复入口。
 
 目录使用同文件系统的 `RENAME_SWAP` 原子交换，父目录的稳定锁与切换记录不随数据目录移动；原 native-owner.lock 仍被兼容检查，当前 core/Tauri 均在初始化前占用数据目录。每个切换边界同步记录，中断后根据目录标记和 pending 核对实际状态，再继续或回退；结果不明时不盲目重复动作。回退保留切换后的整份数据，`--finish-upgrade` 只归档记录，不删除保留目录。**这是配置切换/回退，不回滚容器、卷内文件或厂商设备身份**；原目录日志历史保留在原位置，副本迁移日志开关。返回的 `runtime_verified` 始终为 false，真实原 profile/客户端和业务升级验收仍须另做。

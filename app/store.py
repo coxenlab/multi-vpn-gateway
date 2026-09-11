@@ -68,8 +68,10 @@ def init():
             c.execute("ALTER TABLE rules ADD COLUMN note TEXT DEFAULT ''")
         if "locked" not in rule_cols:
             c.execute("ALTER TABLE rules ADD COLUMN locked INTEGER DEFAULT 0")
-        # 旧 domains 一次性迁入 rules(仅当 rules 为空)
-        if c.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0:
+        c.executescript(Path(__file__).with_name("rule_migration_schema.sql").read_text())
+        # 已离线整理的副本不再从旧 domains 复活被隔离或已删除的规则。
+        reviewed = c.execute("SELECT 1 FROM rule_migration_state WHERE id=1").fetchone()
+        if not reviewed and c.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == 0:
             for r in c.execute("SELECT channel_id, pattern FROM domains").fetchall():
                 c.execute(
                     "INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES(?,?,?,1)",

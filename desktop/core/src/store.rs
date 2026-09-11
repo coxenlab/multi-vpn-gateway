@@ -54,8 +54,11 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
         conn.execute("ALTER TABLE rules ADD COLUMN locked INTEGER DEFAULT 0", [])?;
     }
 
+    conn.execute_batch(include_str!("../../../app/rule_migration_schema.sql"))?;
+    let rules_reviewed: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM rule_migration_state WHERE id=1)", [], |r| r.get(0))?;
     let rules_n: i64 = conn.query_row("SELECT COUNT(*) FROM rules", [], |r| r.get(0))?;
-    if rules_n == 0 {
+    // 离线副本已整理过的规则即使全部被隔离，也不能从旧 domains 再次复活。
+    if rules_n == 0 && !rules_reviewed {
         conn.execute(
             "INSERT INTO rules(channel_id,kind,pattern,enabled) \
              SELECT channel_id,'domain',pattern,1 FROM domains",

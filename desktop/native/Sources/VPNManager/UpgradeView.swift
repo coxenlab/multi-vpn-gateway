@@ -1,9 +1,17 @@
 import SwiftUI
 
+struct RuleCleanupReport: Decodable {
+    let version: Int
+    let examined: Int
+    let normalized: Int
+    let quarantined: Int
+}
+
 struct UpgradeReport: Decodable {
     let version: Int; let counts: [String: Int]; let encrypted_values_checked: Int; let files: [String]; let database_sha256: String; let runtime_verified: Bool; let ready_to_activate: Bool
     let vm_profile: String?
     let source: String?
+    let rule_cleanup: RuleCleanupReport?
 }
 struct UpgradeView: View {
     @EnvironmentObject var model: AppModel
@@ -34,6 +42,15 @@ struct UpgradeView: View {
                     LabeledContent("原分流规则", value: String(report.counts["rules"] ?? 0))
                     if let legacy = report.counts["domains"], legacy > 0 { LabeledContent("旧版域名记录", value: String(legacy)) }
                     LabeledContent("已核对加密字段", value: String(report.encrypted_values_checked))
+                    if let cleanup = report.rule_cleanup {
+                        LabeledContent("历史规则格式整理", value: "\(cleanup.normalized) 条")
+                        LabeledContent("历史无效规则隔离", value: "\(cleanup.quarantined) 条")
+                        if cleanup.normalized + cleanup.quarantined > 0 {
+                            Text("处理过的原始记录已保留在副本中。隔离规则不参与分流；可在原目录核对内容后，重新添加有效规则。").font(.callout).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("这份旧副本没有历史规则整理记录，可重新准备副本以核对。").font(.callout).foregroundStyle(.secondary)
+                    }
                     LabeledContent("状态", value: "副本已核对，尚未启用")
                     if let original = report.source { LabeledContent("原数据", value: original).textSelection(.enabled) }
                     if let target = model.upgradeTargetPath { LabeledContent("启用位置", value: target).textSelection(.enabled) }

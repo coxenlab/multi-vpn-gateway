@@ -37,6 +37,7 @@ pub mod runtime;
 pub mod startup_feedback;
 pub mod stop_intents;
 pub mod upgrade;
+pub mod rule_migration;
 pub mod data_owner;
 pub mod upgrade_switch;
 pub mod image_archive;
