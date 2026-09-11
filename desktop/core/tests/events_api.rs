@@ -204,4 +204,6 @@ async fn events_api_is_incremental_capped_and_exportable() {
     assert_eq!(on["enabled"], true);
     assert!(!dir.path().join("logs").join("disabled").exists());
     task.abort();
+    let _ = task.await;
+    assert!(events::shutdown().await);
 }

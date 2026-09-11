@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use axum::extract::Query;
 use axum::http::{header, HeaderValue};
@@ -99,6 +100,8 @@ struct Inner {
     enabled: bool,
     data_dir: Option<PathBuf>,
     sender: Option<mpsc::Sender<Event>>,
+    writer: Option<tokio::task::JoinHandle<()>>,
+    closed: bool,
 }
 
 impl Default for Inner {
@@ -110,6 +113,8 @@ impl Default for Inner {
             enabled: true,
             data_dir: None,
             sender: None,
+            writer: None,
+            closed: false,
         }
     }
 }
@@ -120,6 +125,29 @@ struct EventStore {
 }
 
 impl EventStore {
+    async fn drain_writer(&self, budget: Duration) -> bool {
+        let task = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.closed = true;
+            inner.sender.take(); // Close input before waiting, so queued events can drain.
+            inner.writer.take()
+        };
+        let Some(mut task) = task else { return true; };
+        match tokio::time::timeout(budget, &mut task).await {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => {
+                eprintln!("[events] 日志收尾未完成: {error}");
+                false
+            }
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                eprintln!("[events] 日志收尾超时，未写入的事件可能丢失");
+                false
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     fn record_at(
         &self,
@@ -230,6 +258,7 @@ pub fn init(data_dir: &Path) {
     let store = global();
     let first_init = {
         let mut inner = store.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.closed { return; }
         match inner.data_dir.as_deref() {
             Some(existing) if existing != data_dir => {
                 eprintln!(
@@ -276,9 +305,15 @@ pub fn init(data_dir: &Path) {
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
     {
         let mut inner = store.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.closed { return; }
         inner.sender = Some(tx);
+        inner.writer = Some(runtime.spawn(writer(rx, logs_dir)));
     }
-    runtime.spawn(writer(rx, logs_dir));
+}
+
+/// Call after resource cleanup, before dropping the runtime or the data-directory owner.
+pub async fn shutdown() -> bool {
+    global().drain_writer(Duration::from_secs(2)).await
 }
 
 pub fn emit(level: Level, src: &str, event: &str, msg: impl Into<String>, detail: Value) -> Event {
@@ -445,10 +480,13 @@ async fn writer(mut rx: mpsc::Receiver<Event>, logs_dir: PathBuf) {
         if let Some(opened) = file.as_mut() {
             if let Err(e) = opened.write_all(&line).await {
                 note_write_drop(&format!("写入运行日志失败: {e}"));
+                // A failed background operation can leave this Tokio File unusable.
+                file = None; open_date = None;
                 continue;
             }
             if let Err(e) = opened.flush().await {
                 note_write_drop(&format!("刷新运行日志失败: {e}"));
+                file = None; open_date = None;
                 continue;
             }
             size = size.saturating_add(line.len() as u64);
@@ -1032,11 +1070,39 @@ mod tests {
         })
         .await
         .unwrap();
-        drop(tx);
-        task.await.unwrap();
+        let store = EventStore::default();
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.sender = Some(tx);
+            inner.writer = Some(task);
+        }
+        assert!(store.drain_writer(Duration::from_secs(2)).await);
+        assert!(store.drain_writer(Duration::ZERO).await); // Repeated exit is a no-op.
         let text = std::fs::read_to_string(dir.path().join("vpnmgr-2026-08-06.jsonl")).unwrap();
         let parsed: Event = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(parsed.event, "written");
+    }
+
+    #[tokio::test]
+    async fn writer_shutdown_is_bounded_and_cancels_a_stuck_writer() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        struct Finished(Arc<AtomicBool>);
+        impl Drop for Finished { fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); } }
+        let finished = Arc::new(AtomicBool::new(false));
+        let owned = finished.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _finished = Finished(owned);
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        ready.await.unwrap();
+        let store = EventStore::default();
+        store.inner.lock().unwrap().writer = Some(task);
+        assert!(!tokio::time::timeout(Duration::from_secs(1), store.drain_writer(Duration::from_millis(10))).await.unwrap());
+        assert!(finished.load(Ordering::SeqCst));
+        assert!(store.inner.lock().unwrap().closed);
+        assert!(store.inner.lock().unwrap().writer.is_none());
     }
 
     #[test]

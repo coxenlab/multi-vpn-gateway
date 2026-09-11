@@ -514,6 +514,7 @@ fn main() {
                         SHUTDOWN_STATE.get(), &cfg, stop_vm,
                         vpnmgr_core::shutdown::NORMAL_BUDGET,
                     ).await;
+                    vpnmgr_core::events::shutdown().await;
                     CLEANUP_DONE.store(true, Ordering::SeqCst);
                     handle.exit(0);
                 });
@@ -523,10 +524,13 @@ fn main() {
             tauri::RunEvent::Exit if !CLEANUP_DONE.swap(true, Ordering::SeqCst) => {
                 let stop_vm = !boot_in_progress(handle);
                 let cfg = Config::load();
-                tauri::async_runtime::block_on(vpnmgr_core::shutdown::shutdown_all(
-                    SHUTDOWN_STATE.get(), &cfg, stop_vm,
-                    vpnmgr_core::shutdown::FALLBACK_BUDGET,
-                ));
+                tauri::async_runtime::block_on(async {
+                    vpnmgr_core::shutdown::shutdown_all(
+                        SHUTDOWN_STATE.get(), &cfg, stop_vm,
+                        vpnmgr_core::shutdown::FALLBACK_BUDGET,
+                    ).await;
+                    vpnmgr_core::events::shutdown().await;
+                });
             }
             _ => {}
         });

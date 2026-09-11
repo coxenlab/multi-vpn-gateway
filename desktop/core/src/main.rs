@@ -8,6 +8,8 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", serde_json::json!({"event":"boot_error", "message":"本地服务未能启动或已退出。请检查数据目录是否可用、是否已打开另一实例，然后重试。"}));
         let _ = std::io::stdout().flush();
     }
+    // Also covers bootstrap failures after the logger has already been initialized.
+    vpnmgr_core::events::shutdown().await;
     result
 }
 
@@ -69,6 +71,7 @@ async fn run() -> anyhow::Result<()> {
         vpnmgr_core::shutdown::shutdown_all(Some(&cleanup), &cleanup.cfg, true, vpnmgr_core::shutdown::NORMAL_BUDGET).await;
         vpnmgr_core::tunnel::kill(&cleanup).await;
     }
+    vpnmgr_core::events::shutdown().await;
     result
 }
 
