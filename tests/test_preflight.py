@@ -1,5 +1,7 @@
 import docker
 import preflight
+import pytest
+import uuid
 
 
 def test_resolve_image_substitutes_ec_version():
@@ -36,7 +38,7 @@ class _FakeImages:
     def get(self, name):
         if name not in self._store:
             raise docker.errors.ImageNotFound(name)
-        return type("Img", (), {"attrs": {"Architecture": self._store[name]}})()
+        return type("Img", (), {"id": f"sha256:{name}-{self._store[name]}", "attrs": {"Architecture": self._store[name]}})()
 
 
 class _FakeNetworks:
@@ -52,17 +54,32 @@ class _FakeContainers:
     def __init__(self, tun_ok=True, raise_exc=None):
         self._tun_ok = tun_ok
         self._raise = raise_exc
-    def run(self, image, **kw):
+        self.created = []
+        self.removed = []
+    def create(self, image, **kw):
         if self._raise:
             raise self._raise
-        if not self._tun_ok:
-            raise docker.errors.ContainerError(image, 1, kw.get("entrypoint"), image, b"")
-        return b""        # detach=False 成功返回 logs(bytes)
+        self.created.append((image, kw))
+        parent = self
+        class Probe:
+            id = "probe-owned-id"
+            attrs = {"Config": {"Labels": kw["labels"]}}
+            def start(self):
+                pass
+            def wait(self, timeout):
+                assert timeout == 10
+                return {"StatusCode": 0 if parent._tun_ok else 1}
+            def remove(self, **kwargs):
+                parent.removed.append((self.id, kwargs))
+        return Probe()
+    def get(self, name):
+        raise docker.errors.NotFound(name)
 
 
 class _FakeDc:
     def __init__(self, ping=True, images=None, networks_ok=True, df=None, kw_tun=True, kw_raise=None):
         self._ping = ping
+        self._id = uuid.uuid4().hex
         self.images = _FakeImages(images or {})
         self.networks = _FakeNetworks(networks_ok)
         self._df = df or {"LayersSize": 0}
@@ -75,6 +92,8 @@ class _FakeDc:
         return self._df
     def version(self):
         return {"Version": "27.0.1"}
+    def info(self):
+        return {"ID": self._id}
 
 
 def test_daemon_pass():
@@ -158,6 +177,106 @@ def test_tun_warn_when_probe_nonzero():
 def test_tun_skip_when_image_absent():
     r = preflight.check_dev_net_tun(_FakeDc(), "hagb/docker-atrust:latest", image_ok=False)
     assert r["status"] == "skip"
+
+
+@pytest.mark.parametrize("mode", ["wait_error", "empty", "bad_status", "embedded_error", "start_error", "cleanup_error", "lost_create", "foreign"])
+def test_tun_errors_never_pass_and_cleanup_only_owned_probe(monkeypatch, mode):
+    dc = _FakeDc(images={"fixture:tag": "arm64"})
+    original = dc.containers.create
+    def create(image, **kwargs):
+        probe = original(image, **kwargs)
+        def fail(*args, **kwargs):
+            raise docker.errors.APIError("fixture failure")
+        if mode == "start_error":
+            probe.start = fail
+        elif mode == "cleanup_error":
+            probe.remove = fail
+        elif mode == "wait_error":
+            probe.wait = fail
+        elif mode in ("empty", "bad_status", "embedded_error"):
+            status = {"empty": {}, "bad_status": {"StatusCode": False},
+                      "embedded_error": {"StatusCode": 0, "Error": {"Message": "wait failed"}}}[mode]
+            probe.wait = lambda **kwargs: status
+        if mode in ("lost_create", "foreign"):
+            if mode == "foreign":
+                probe.attrs = {"Config": {"Labels": {"com.vpnmgr.role": "other"}}}
+            dc.containers.get = lambda name: probe
+            fail()
+        return probe
+    monkeypatch.setattr(dc.containers, "create", create)
+    check = preflight.check_dev_net_tun(dc, "fixture:tag", True)
+    assert check["status"] == "warn"
+    assert "无法判定" in check["detail"]
+    image, kwargs = dc.containers.created[0]
+    assert image == "sha256:fixture:tag-arm64"
+    assert kwargs["name"].startswith("vpncore-tun-probe-") and len(kwargs["name"]) > 40
+    assert kwargs["network_mode"] == "none"
+    assert len(dc.containers.removed) == (0 if mode in ("foreign", "cleanup_error") else 1)
+    assert all(item == ("probe-owned-id", {"force": True, "v": True}) for item in dc.containers.removed)
+
+
+def test_tun_reuses_result_but_rechecks_manual_image_or_daemon_change(monkeypatch):
+    now = [100.0]
+    cache = preflight._TunChecks(clock=lambda: now[0])
+    monkeypatch.setattr(preflight, "_tun_checks", cache)
+    dc = _FakeDc(images={"fixture:tag": "arm64"})
+    def check(fresh=False):
+        return preflight.check_dev_net_tun(dc, "fixture:tag", True, fresh)
+    assert check()["status"] == "pass"
+    now[0] += 1
+    assert "复用 1 秒前" in check()["detail"]
+    assert len(dc.containers.created) == 1
+    assert "复用" not in check(True)["detail"]
+    dc.images._store["fixture:tag"] = "amd64"
+    check()
+    dc._id = "different-daemon"
+    check()
+    assert len(dc.containers.created) == 4
+    now[0] += 60
+    dc.containers._tun_ok = False
+    assert check()["status"] == "warn"
+    now[0] += 4
+    assert "复用" in check()["detail"]
+    now[0] += 1
+    check()
+    assert len(dc.containers.created) == 6
+    assert len({kwargs["name"] for _, kwargs in dc.containers.created}) == 6
+    # 新键不会让历史检测记录无限增长。
+    for index in range(40):
+        dc._id = f"daemon-{index}"
+        check()
+    assert len(cache.samples) == 32
+
+
+def test_tun_overlapping_manual_checks_share_completed_probe():
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    entered, release, joined = threading.Event(), threading.Event(), threading.Event()
+    clock_calls = 0
+    def clock():
+        nonlocal clock_calls
+        clock_calls += 1
+        if clock_calls == 3:  # 第二个请求开始等第一轮，尚未完成。
+            joined.set()
+        return float(clock_calls)
+    cache = preflight._TunChecks(clock=clock)
+    calls = []
+    def probe():
+        calls.append(True)
+        entered.set()
+        assert release.wait(3)
+        return preflight._result("dev_net_tun", "运行条件", "TUN", "pass")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(cache.sample, ("daemon", "image"), True, probe)
+        assert entered.wait(3)
+        second = pool.submit(cache.sample, ("daemon", "image"), True, probe)
+        try:
+            assert joined.wait(3)
+        finally:
+            release.set()
+        assert first.result(timeout=3)["status"] == "pass"
+        assert "复用" in second.result(timeout=3)["detail"]
+    assert len(calls) == 1
 
 def test_disk_space_informational_pass():
     dc = _FakeDc(df={"LayersSize": 2 * 1024**3})

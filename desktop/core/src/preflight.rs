@@ -204,15 +204,60 @@ pub async fn check_vpn_network(docker: &Docker, vpn_net: &str) -> CheckResult {
     }
 }
 
-pub async fn check_dev_net_tun(docker: &Docker, image: &str, image_ok: bool) -> CheckResult {
+#[derive(Default)]
+struct TunChecks {
+    // 极小的一次性检测串行化，缓存只记录已完成且已尝试清理的结果。
+    samples: tokio::sync::Mutex<HashMap<(String, String), (Instant, CheckResult)>>,
+}
+
+impl TunChecks {
+    async fn sample(&self, key: (String, String), fresh: bool, probe: impl std::future::Future<Output = CheckResult>) -> CheckResult {
+        let requested = Instant::now();
+        let mut samples = self.samples.lock().await;
+        samples.retain(|_, (at, check)| at.elapsed() < Duration::from_secs(if check.status == "pass" { 60 } else { 5 }));
+        if let Some((at, check)) = samples.get(&key) {
+            // 手动完整检查重测；并发请求可共享请求之后完成的这一轮。
+            if !fresh || *at >= requested {
+                let mut cached = check.clone();
+                cached.detail = format!("{}{}复用 {} 秒前的检测结果", cached.detail,
+                    if cached.detail.is_empty() { "" } else { "；" }, at.elapsed().as_secs());
+                return cached;
+            }
+        }
+        let check = probe.await;
+        if samples.len() >= 32 {
+            if let Some(oldest) = samples.iter().min_by_key(|(_, (at, _))| *at).map(|(key, _)| key.clone()) {
+                samples.remove(&oldest);
+            }
+        }
+        samples.insert(key, (Instant::now(), check.clone()));
+        check
+    }
+}
+
+pub async fn check_dev_net_tun(docker: &Docker, image: &str, image_ok: bool, fresh: bool) -> CheckResult {
     if !image_ok {
         return result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "skip", "镜像就绪后检测", None);
     }
-    match crate::docker::run_tun_probe(docker, image).await {
-        Ok(true) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "pass", "", None),
-        Ok(false) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn", "容器内未见 /dev/net/tun,VPN 隧道可能起不来", None),
-        Err(e) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn", &format!("无法判定(尽力而为):{e}"), None),
-    }
+    // 以实际引擎和不可变镜像 ID 隔离结果；标签切换或 profile 切换不会借用旧结果。
+    let identity: anyhow::Result<_> = tokio::time::timeout(Duration::from_secs(5), async {
+        let (engine, image) = tokio::try_join!(docker.info(), docker.inspect_image(image))?;
+        let engine = engine.id.filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("引擎缺少 ID"))?;
+        let image = image.id.filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("镜像缺少 ID"))?;
+        Ok((engine, image))
+    }).await.unwrap_or_else(|_| Err(anyhow::anyhow!("读取检测环境超时")));
+    let key = match identity {
+        Ok(key) => key,
+        Err(error) => return result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn", &format!("无法判定: {error}"), None),
+    };
+    static CHECKS: OnceLock<TunChecks> = OnceLock::new();
+    CHECKS.get_or_init(TunChecks::default).sample(key.clone(), fresh, async {
+        match crate::docker::run_tun_probe(docker, &key.1).await {
+            Ok(true) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "pass", "", None),
+            Ok(false) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn", "探针未通过，VPN 隧道可能起不来", None),
+            Err(e) => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn", &format!("无法判定: {e}"), None),
+        }
+    }).await
 }
 
 pub async fn check_disk_space(docker: &Docker) -> CheckResult {
@@ -309,7 +354,7 @@ pub async fn run_checks(
 
     checks.push(check_vpn_network(d, vpn_net).await);
     checks.push(match &image {
-        Some(img) => check_dev_net_tun(d, img, image_ok).await,
+        Some(img) => check_dev_net_tun(d, img, image_ok, scope == "full").await,
         None => result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "skip", "未指定通道类型", None),
     });
     checks.push(check_disk_space(d).await);
@@ -522,6 +567,74 @@ pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tun_cache_shares_overlap_rechecks_fresh_and_expires_results() {
+        let cache = TunChecks::default();
+        let key = ("daemon".into(), "image".into());
+        let check = |status| result("dev_net_tun", "运行条件", "TUN", status, "", None);
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let first = cache.sample(key.clone(), true, async { wait.await.unwrap(); check("pass") });
+        let second = cache.sample(key.clone(), true, async { panic!("overlapping request created another probe") });
+        tokio::pin!(first, second);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(futures_util::poll!(&mut second).is_pending());
+        release.send(()).unwrap();
+        let (a, b) = tokio::join!(first, second);
+        assert_eq!(a.status, "pass");
+        assert!(b.detail.contains("复用"));
+        assert_eq!(cache.sample(key.clone(), false, async { panic!("cached result not reused") }).await.status, "pass");
+        assert_eq!(cache.sample(key.clone(), true, async { check("warn") }).await.status, "warn");
+        cache.samples.lock().await.get_mut(&key).unwrap().0 = Instant::now() - Duration::from_secs(5);
+        assert_eq!(cache.sample(key.clone(), false, async { check("pass") }).await.status, "pass");
+        cache.samples.lock().await.get_mut(&key).unwrap().0 = Instant::now() - Duration::from_secs(60);
+        assert_eq!(cache.sample(key.clone(), false, async { check("warn") }).await.status, "warn");
+        for index in 0..40 {
+            cache.sample((format!("daemon-{index}"), "image".into()), false, async { check("pass") }).await;
+        }
+        assert_eq!(cache.samples.lock().await.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn tun_check_pins_image_and_separates_daemon_and_image_changes() {
+        use axum::{body::Body, http::{Request, StatusCode}, response::IntoResponse, Router};
+        use std::sync::Arc;
+        let observed = Arc::new(Mutex::new((format!("daemon-{:032x}", rand::random::<u128>()), "sha256:image-a".to_string(), Vec::new())));
+        let fixture = observed.clone();
+        let app = Router::new().fallback(move |request: Request<Body>| {
+            let fixture = fixture.clone();
+            async move {
+                let path = request.uri().path().to_string();
+                if path.ends_with("/info") {
+                    return axum::Json(json!({"ID":fixture.lock().unwrap().0})).into_response();
+                }
+                if path.contains("/images/") {
+                    return axum::Json(json!({"Id":fixture.lock().unwrap().1})).into_response();
+                }
+                if path.ends_with("/containers/create") {
+                    let body = axum::body::to_bytes(request.into_body(), 1024 * 1024).await.unwrap();
+                    let body: Value = serde_json::from_slice(&body).unwrap();
+                    fixture.lock().unwrap().2.push(body["Image"].as_str().unwrap().to_string());
+                    return axum::Json(json!({"Id":"owned-probe","Warnings":[]})).into_response();
+                }
+                if path.ends_with("/wait") { return axum::Json(json!({"StatusCode":0})).into_response(); }
+                StatusCode::NO_CONTENT.into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let docker = Docker::connect_with_http(&format!("http://{address}"), 2, bollard::API_DEFAULT_VERSION).unwrap();
+        assert_eq!(check_dev_net_tun(&docker, "fixture:tag", true, false).await.status, "pass");
+        assert!(check_dev_net_tun(&docker, "fixture:tag", true, false).await.detail.contains("复用"));
+        assert!(!check_dev_net_tun(&docker, "fixture:tag", true, true).await.detail.contains("复用"));
+        observed.lock().unwrap().1 = "sha256:image-b".into();
+        assert!(!check_dev_net_tun(&docker, "fixture:tag", true, false).await.detail.contains("复用"));
+        observed.lock().unwrap().0.push_str("-different");
+        assert!(!check_dev_net_tun(&docker, "fixture:tag", true, false).await.detail.contains("复用"));
+        server.abort(); let _ = server.await;
+        assert_eq!(observed.lock().unwrap().2, ["sha256:image-a", "sha256:image-a", "sha256:image-b", "sha256:image-b"]);
+    }
 
     #[tokio::test]
     async fn inventory_dedups_oss_and_has_infra() {

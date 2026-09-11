@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_http_write_keeps_activity_until_handler_finishes_and_reads_do_not_renew_idle() {
+    async fn cancelled_write_or_preflight_keeps_activity_until_handler_finishes_and_reads_do_not_renew_idle() {
         use tower::ServiceExt;
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = crate::config::Config::from_getter(|_| None);
@@ -202,24 +202,29 @@ mod tests {
         let entered = Arc::new(tokio::sync::Semaphore::new(0));
         let finish = Arc::new(tokio::sync::Semaphore::new(0));
         let (entry, gate) = (entered.clone(), finish.clone());
-        let router = axum::Router::new().route("/write", axum::routing::post(move || {
+        let handler = move || {
             let (entry, gate) = (entry.clone(), gate.clone());
             async move { entry.add_permits(1); gate.acquire().await.unwrap().forget(); "ok" }
-        })).route("/read", axum::routing::get(|| async { "ok" }))
+        };
+        let router = axum::Router::new().route("/write", axum::routing::post(handler.clone()))
+            .route("/api/preflight", axum::routing::get(handler))
+            .route("/read", axum::routing::get(|| async { "ok" }))
             .route_layer(axum::middleware::from_fn_with_state(state, track_request));
-        let request = { let router = router.clone(); tokio::spawn(async move {
-            router.oneshot(axum::http::Request::builder().method("POST").uri("/write")
-                .body(axum::body::Body::empty()).unwrap()).await
-        }) };
-        entered.acquire().await.unwrap().forget(); request.abort(); let _ = request.await;
-        assert_eq!(coordinator.snapshot().active_tasks, 1);
-        assert!(!coordinator.release_if_idle(std::time::Duration::ZERO,
-            || async { panic!("write still owns runtime") }, || async { Ok(()) }).await.unwrap());
-        finish.add_permits(1);
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while coordinator.snapshot().active_tasks != 0 { tokio::task::yield_now().await; }
-        }).await.unwrap();
-        assert!(!coordinator.release_if_idle(IDLE_GRACE, || async { Ok(true) }, || async { Ok(()) }).await.unwrap());
+        for (method, path) in [("POST", "/write"), ("GET", "/api/preflight")] {
+            let request = { let router = router.clone(); tokio::spawn(async move {
+                router.oneshot(axum::http::Request::builder().method(method).uri(path)
+                    .body(axum::body::Body::empty()).unwrap()).await
+            }) };
+            entered.acquire().await.unwrap().forget(); request.abort(); let _ = request.await;
+            assert_eq!(coordinator.snapshot().active_tasks, 1);
+            assert!(!coordinator.release_if_idle(std::time::Duration::ZERO,
+                || async { panic!("accepted handler still owns runtime") }, || async { Ok(()) }).await.unwrap());
+            finish.add_permits(1);
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while coordinator.snapshot().active_tasks != 0 { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            assert!(!coordinator.release_if_idle(IDLE_GRACE, || async { Ok(true) }, || async { Ok(()) }).await.unwrap());
+        }
         let response = router.oneshot(axum::http::Request::builder().uri("/read")
             .body(axum::body::Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);

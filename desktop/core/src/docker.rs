@@ -529,15 +529,24 @@ pub async fn run_probe_capture(docker: &Docker, cfg: &crate::config::Config, ima
     result
 }
 
-/// 一次性容器测 /dev/net/tun(对照 check_dev_net_tun)。Ok(true)=exit0;Ok(false)=非0;Err=起不来。
+/// 仅清理本次探针。API 层保有维护许可，HTTP 取消后仍执行到清理结束。
 pub async fn run_tun_probe(docker: &Docker, image: &str) -> Result<bool> {
+    run_tun_probe_with_budget(docker, image, std::time::Duration::from_secs(10)).await
+}
+
+async fn run_tun_probe_with_budget(docker: &Docker, image: &str, budget: std::time::Duration) -> Result<bool> {
     use bollard::container::{Config, WaitContainerOptions};
     use bollard::models::{DeviceMapping, HostConfig};
-    let name = "vpncore-tun-probe";
-    let _ = rm_force(docker, name).await;
+    let docker = docker.clone().with_timeout(std::time::Duration::from_secs(5));
+    let token = format!("{:032x}", rand::random::<u128>());
+    let name = format!("vpncore-tun-probe-{token}");
     let config = Config {
         image: Some(image.to_string()),
         entrypoint: Some(vec!["/bin/sh".into(), "-c".into(), "test -c /dev/net/tun".into()]),
+        labels: Some(HashMap::from([
+            ("com.vpnmgr.role".into(), "tun-probe".into()),
+            ("com.vpnmgr.operation".into(), token.clone()),
+        ])),
         host_config: Some(HostConfig {
             network_mode: Some("none".into()),
             devices: Some(vec![DeviceMapping {
@@ -549,22 +558,127 @@ pub async fn run_tun_probe(docker: &Docker, image: &str) -> Result<bool> {
         }),
         ..Default::default()
     };
-    docker.create_container(Some(CreateContainerOptions { name, platform: None }), config).await?;
-    docker.start_container(name, None::<StartContainerOptions<String>>).await?;
-    let mut wait = docker.wait_container(name, None::<WaitContainerOptions<String>>);
-    let mut code = 0i64;
-    while let Some(item) = wait.next().await {
-        if let Ok(r) = item {
-            code = r.status_code;
+    let mut created_id = None;
+    let outcome = tokio::time::timeout(budget, async {
+        let id = docker.create_container(Some(CreateContainerOptions { name: &name, platform: None }), config).await?.id;
+        anyhow::ensure!(!id.is_empty(), "探针创建结果缺少 ID");
+        created_id = Some(id.clone());
+        docker.start_container(&id, None::<StartContainerOptions<String>>).await?;
+        let mut wait = docker.wait_container(&id, None::<WaitContainerOptions<String>>);
+        match wait.next().await {
+            Some(Ok(response)) => {
+                anyhow::ensure!(response.error.and_then(|e| e.message).is_none_or(|m| m.is_empty()), "探针等待接口返回错误");
+                Ok(response.status_code == 0)
+            }
+            Some(Err(bollard::errors::Error::DockerContainerWaitError { error, code })) if error.is_empty() && code > 0 => Ok(false),
+            Some(Err(error)) => Err(error.into()),
+            None => Err(anyhow!("探针未返回退出状态")),
         }
+    }).await.unwrap_or_else(|_| Err(anyhow!("探针检测超时")));
+
+    // 创建响应丢失时只读回归属，不重放 create，也不删未核对的同名容器。
+    let cleanup = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let id = match created_id {
+            Some(id) => id,
+            None => match docker.inspect_container(&name, None).await {
+                Ok(info) => {
+                    let labels = info.config.and_then(|c| c.labels).unwrap_or_default();
+                    anyhow::ensure!(labels.get("com.vpnmgr.role").map(String::as_str) == Some("tun-probe")
+                        && labels.get("com.vpnmgr.operation") == Some(&token), "探针归属未确认，未清理同名容器");
+                    info.id.filter(|id| !id.is_empty()).ok_or_else(|| anyhow!("探针清理缺少 ID"))?
+                }
+                Err(e) if is_not_found(&e) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            },
+        };
+        let removed = docker.remove_container(&id, Some(RemoveContainerOptions { force: true, v: true, ..Default::default() })).await;
+        container_action_result("remove probe", &id, removed, true)
+    }).await.unwrap_or_else(|_| Err(anyhow!("清理超时")));
+    if let Err(error) = cleanup {
+        return Err(anyhow!("{}；探针清理未确认: {error}", outcome.err().map(|e| e.to_string()).unwrap_or_else(|| "检测已结束".into())));
     }
-    let _ = rm_force(docker, name).await;
-    Ok(code == 0)
+    outcome
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tun_probe_errors_do_not_pass_or_delete_unowned_containers() {
+        use axum::{body::Body, http::{Method, Request, StatusCode}, response::IntoResponse, Router};
+        use std::sync::{Arc, Mutex};
+        use serde_json::{json, Value};
+        for mode in ["wait_error", "nonzero", "empty", "embedded_error", "timeout", "start_error", "cleanup_error", "ok", "lost_create", "foreign"] {
+            let calls = Arc::new(Mutex::new(Vec::<(Method, String, Value)>::new()));
+            let observed = calls.clone();
+            let app = Router::new().fallback(move |request: Request<Body>| {
+                let calls = observed.clone();
+                async move {
+                    let (parts, body) = request.into_parts();
+                    let bytes = axum::body::to_bytes(body, 1024 * 1024).await.unwrap();
+                    let value = serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null);
+                    let path = parts.uri.path().to_string();
+                    calls.lock().unwrap().push((parts.method.clone(), parts.uri.to_string(), value));
+                    if path.ends_with("/containers/create") {
+                        return if mode == "lost_create" || mode == "foreign" {
+                            (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"message":"create result unavailable"}))).into_response()
+                        } else { axum::Json(json!({"Id":"probe-owned-id","Warnings":[]})).into_response() };
+                    }
+                    if path.ends_with("/json") {
+                        let create = calls.lock().unwrap().iter().find(|(_, p, _)| p.contains("/containers/create")).unwrap().2.clone();
+                        let labels = if mode == "foreign" { json!({"com.vpnmgr.role":"other"}) } else { create["Labels"].clone() };
+                        return axum::Json(json!({"Id":"probe-owned-id","Config":{"Labels":labels}})).into_response();
+                    }
+                    if parts.method == Method::DELETE {
+                        return if mode == "cleanup_error" { StatusCode::INTERNAL_SERVER_ERROR } else { StatusCode::NO_CONTENT }.into_response();
+                    }
+                    if path.ends_with("/start") {
+                        return if mode == "start_error" { StatusCode::INTERNAL_SERVER_ERROR } else { StatusCode::NO_CONTENT }.into_response();
+                    }
+                    if path.ends_with("/wait") {
+                        if mode == "timeout" { tokio::time::sleep(std::time::Duration::from_secs(1)).await; }
+                        return match mode {
+                            "wait_error" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                            "empty" => "".into_response(),
+                            "nonzero" => axum::Json(json!({"StatusCode":1})).into_response(),
+                            "embedded_error" => axum::Json(json!({"StatusCode":0,"Error":{"Message":"wait failed"}})).into_response(),
+                            _ => axum::Json(json!({"StatusCode":0})).into_response(),
+                        };
+                    }
+                    StatusCode::NOT_FOUND.into_response()
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+            let docker = Docker::connect_with_http(&format!("http://{address}"), 2, bollard::API_DEFAULT_VERSION).unwrap();
+            let result = if mode == "timeout" {
+                tokio::time::timeout(std::time::Duration::from_secs(2),
+                    run_tun_probe_with_budget(&docker, "sha256:fixture-image", std::time::Duration::from_millis(100))).await.unwrap()
+            } else { run_tun_probe(&docker, "sha256:fixture-image").await };
+            server.abort(); let _ = server.await;
+            match mode {
+                "ok" => assert!(result.unwrap()),
+                "nonzero" => assert!(!result.unwrap()),
+                _ => assert!(result.is_err(), "{mode} must not pass"),
+            }
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls[0].0, Method::POST, "do not delete before creating an owned probe");
+            let create = &calls[0].2;
+            assert_eq!(create["Image"], "sha256:fixture-image");
+            assert_eq!(create["HostConfig"]["NetworkMode"], "none");
+            assert_eq!(create["Labels"]["com.vpnmgr.role"], "tun-probe");
+            let url = reqwest::Url::parse(&format!("http://fixture{}", calls[0].1)).unwrap();
+            let name = url.query_pairs().find(|(key, _)| key == "name").unwrap().1;
+            assert!(name.starts_with("vpncore-tun-probe-") && name.len() > 40);
+            let deletes: Vec<_> = calls.iter().filter(|(method, _, _)| *method == Method::DELETE).collect();
+            assert_eq!(deletes.len(), usize::from(mode != "foreign"));
+            assert!(deletes.iter().all(|(_, path, _)| path.contains("/containers/probe-owned-id?")));
+            assert!(deletes.iter().all(|(_, path, _)| path.contains("v=true")));
+        }
+    }
+
     #[test]
     fn not_found_classifies_404() {
         let e404 = bollard::errors::Error::DockerResponseServerError { status_code: 404, message: "no such image".into() };

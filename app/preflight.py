@@ -227,24 +227,109 @@ def check_vpn_network(dc, vpn_net):
                        f"检查出错:{type(e).__name__}: {e}")
 
 
-def check_dev_net_tun(dc, image, image_ok):
-    """用目标镜像跑一次极小探针测 /dev/net/tun(镜像未就绪则跳过)。warn 级、非阻断。"""
+class _TunChecks:
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.samples = {}
+
+    def sample(self, key, fresh, probe):
+        requested = self.clock()
+        with self.lock:
+            now = self.clock()
+            self.samples = {k: (at, check) for k, (at, check) in self.samples.items()
+                            if now - at < (60 if check["status"] == "pass" else 5)}
+            cached = self.samples.get(key)
+            if cached and (not fresh or cached[0] >= requested):
+                at, check = cached
+                detail = check["detail"]
+                return {**check, "detail": (detail + "；" if detail else "")
+                        + f"复用 {int(now - at)} 秒前的检测结果"}
+            check = probe()
+            if len(self.samples) >= 32:
+                oldest = min(self.samples, key=lambda k: self.samples[k][0])
+                del self.samples[oldest]
+            self.samples[key] = (self.clock(), dict(check))
+            return check
+
+
+_tun_checks = _TunChecks()
+
+
+def _run_tun_probe(dc, image_id):
+    token = uuid.uuid4().hex
+    name = f"vpncore-tun-probe-{token}"
+    container, failure, passed = None, None, False
+    try:
+        # create 不会像 run 那样在镜像消失后隐式拉取；固定到已检查的 ID。
+        container = dc.containers.create(
+            image_id, name=name,
+            labels={"com.vpnmgr.role": "tun-probe", "com.vpnmgr.operation": token},
+            entrypoint=["/bin/sh", "-c", "test -c /dev/net/tun"],
+            devices=["/dev/net/tun:/dev/net/tun:rwm"], network_mode="none",
+        )
+        if not container.id:
+            container = None
+            raise RuntimeError("探针创建结果缺少 ID")
+        container.start()
+        status = container.wait(timeout=10)
+        if not isinstance(status, dict) or type(status.get("StatusCode")) is not int:
+            raise RuntimeError("探针未返回有效退出状态")
+        error = status.get("Error")
+        if error and (not isinstance(error, dict) or error.get("Message")):
+            raise RuntimeError("探针等待接口返回错误")
+        passed = status["StatusCode"] == 0
+    except Exception as error:
+        failure = error
+    finally:
+        try:
+            # 响应丢失只读回本次唯一名称及 labels，不重放创建或删除外来容器。
+            if container is None:
+                try:
+                    candidate = dc.containers.get(name)
+                except docker.errors.NotFound:
+                    candidate = None
+                if candidate is not None:
+                    labels = (candidate.attrs.get("Config") or {}).get("Labels") or {}
+                    if (labels.get("com.vpnmgr.role") != "tun-probe"
+                            or labels.get("com.vpnmgr.operation") != token or not candidate.id):
+                        raise RuntimeError("探针归属未确认，未清理同名容器")
+                    container = candidate
+            if container is not None:
+                try:
+                    container.remove(force=True, v=True)
+                except docker.errors.NotFound:
+                    pass
+        except Exception as error:
+            raise RuntimeError(f"{failure or '检测已结束'}；探针清理未确认: {error}") from error
+    if failure is not None:
+        raise failure
+    return passed
+
+
+def check_dev_net_tun(dc, image, image_ok, fresh=False):
+    """按实际引擎/镜像共享短期检测；完整手动检查重测。warn 级、非阻断。"""
     if not image_ok:
         return _result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "skip",
                        "镜像就绪后检测")
     try:
-        dc.containers.run(
-            image, entrypoint=["/bin/sh", "-c", "test -c /dev/net/tun"],
-            devices=["/dev/net/tun:/dev/net/tun:rwm"],
-            remove=True, detach=False, network_mode="none",
-        )
-        return _result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "pass")
-    except docker.errors.ContainerError:
-        return _result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn",
-                       "容器内未见 /dev/net/tun,VPN 隧道可能起不来")
+        engine_id = dc.info().get("ID")
+        image_id = dc.images.get(image).id
+        if not engine_id or not image_id:
+            raise RuntimeError("检测环境缺少引擎或镜像 ID")
+        def probe():
+            try:
+                passed = _run_tun_probe(dc, image_id)
+                return _result("dev_net_tun", "运行条件", "/dev/net/tun 可用",
+                               "pass" if passed else "warn",
+                               "" if passed else "探针未通过，VPN 隧道可能起不来")
+            except Exception as e:
+                return _result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn",
+                               f"无法判定:{type(e).__name__}: {e}")
+        return _tun_checks.sample((engine_id, image_id), fresh, probe)
     except Exception as e:
         return _result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "warn",
-                       f"无法判定(尽力而为):{type(e).__name__}: {e}")
+                       f"无法判定:{type(e).__name__}: {e}")
 
 
 def check_disk_space(dc):
@@ -323,7 +408,7 @@ def run_checks(dc, vpn_type, version, host_arch=None, vpn_net=None,
         image_ok = False
 
     checks.append(check_vpn_network(dc, vpn_net))
-    checks.append(check_dev_net_tun(dc, image, image_ok) if image
+    checks.append(check_dev_net_tun(dc, image, image_ok, fresh=scope == "full") if image
                   else _result("dev_net_tun", "运行条件", "/dev/net/tun 可用", "skip", "未指定通道类型"))
     checks.append(check_disk_space(dc))
     if scope == "full":
