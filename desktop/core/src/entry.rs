@@ -790,22 +790,28 @@ pub async fn tun_park(cfg: &crate::config::Config) {
 
 /// 写脚本到 data_dir 并经 osascript 管理员密码执行(阻塞至用户输完密码/取消)。
 async fn run_privileged_script(data_dir: &std::path::Path, name: &str, content: &str) -> anyhow::Result<()> {
+    run_privileged_script_with(data_dir, name, content, std::ffi::OsStr::new("osascript"), Duration::from_secs(180)).await
+}
+
+async fn run_privileged_script_with(data_dir: &std::path::Path, name: &str, content: &str, executable: &std::ffi::OsStr, budget: Duration) -> anyhow::Result<()> {
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    let path = data_dir.join(name);
-    std::fs::write(&path, content)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    // Each attempt owns a private, unique script. Drop removes it on errors and cancellation too.
+    let mut temporary = tempfile::Builder::new().prefix(name).tempfile_in(data_dir)?;
+    temporary.write_all(content.as_bytes())?;
+    temporary.as_file().set_permissions(std::fs::Permissions::from_mode(0o700))?;
+    let path = temporary.path();
     // 双层转义:内层 bash 单引号(sh_squote)+ 外层 AppleScript 双引号字符串(\ 和 " 转义)。
     // data_dir 含引号也不会破坏脚本或注入 root shell。
     let bash_cmd = format!("/bin/bash {}", sh_squote(&path.display().to_string()));
     let as_escaped = bash_cmd.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(r#"do shell script "{as_escaped}" with administrator privileges"#);
     let out = tokio::time::timeout(
-        Duration::from_secs(180),
-        Command::new("osascript").args(["-e", &script]).output(),
+        budget,
+        Command::new(executable).args(["-e", &script]).kill_on_drop(true).output(),
     )
     .await
     .map_err(|_| anyhow::anyhow!("等待授权超时"))??;
-    let _ = std::fs::remove_file(&path);
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("User canceled") || err.contains("-128") {
@@ -859,6 +865,29 @@ pub async fn tun_uninstall(cfg: &crate::config::Config) -> anyhow::Result<serde_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn privileged_timeout_reaps_owned_process_and_removes_script() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("authorization-stub");
+        let pid_file = root.path().join("pid");
+        std::fs::write(&executable, format!("#!/bin/sh\nprintf '%s' $$ > {}\nexec /bin/sleep 60\n", sh_squote(&pid_file.display().to_string()))).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let result = run_privileged_script_with(root.path(), "helper-install.sh", "exit 0", executable.as_os_str(), Duration::from_millis(500)).await;
+        assert!(result.is_err());
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = Command::new("/bin/kill").args(["-0", &pid]).output().await.unwrap().status.success();
+            if !alive { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Clean a failing reproduction too; only the PID written by our stub is targeted.
+        if alive { let _ = Command::new("/bin/kill").args(["-KILL", &pid]).output().await; }
+        let script_left = std::fs::read_dir(root.path()).unwrap().any(|item| item.unwrap().file_name().to_string_lossy().starts_with("helper-install.sh"));
+        assert!(!alive && !script_left, "authorization process alive={alive}, script retained={script_left}");
+    }
 
     #[test]
     fn idle_requires_engine_exit_and_confirmed_route_removal() {
