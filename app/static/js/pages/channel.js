@@ -28,8 +28,11 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       let list;
       try {
         ({ data: list, system: sys } = await loadWithSystem());
-        ch = list.find(c => c.id === wantId) || list[0];
+        ch = list.find(c => c.id === wantId);
         if (!ch) {
+          vncView.pause();
+          closeOverlay("del-modal");
+          $$("#ch-replacement, [data-od-id='ch-head'], [data-od-id='ch-actions'], [data-od-id='ch-tabs']").forEach(el => { el.style.display = "none"; });
           $("#cfg-list").innerHTML = "";
           fb.errorBanner("#ch-feedback", {
             title: "通道不存在", message: "没找到对应的通道，可能已被删除。",
@@ -45,6 +48,8 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         }
         throw e;
       }
+      $$("#ch-replacement, [data-od-id='ch-head'], [data-od-id='ch-actions'], [data-od-id='ch-tabs']").forEach(el => { el.style.display = ""; });
+      $("#ch-feedback").innerHTML = "";
       $("#nav-count").textContent = list.length;
       k = kindMeta(ch.vpn_type);
       kindLabel = k.label + (ch.ec_ver ? " " + ch.ec_ver : "");
