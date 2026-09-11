@@ -25,7 +25,7 @@ import SwiftUI
     private var childOutput: Pipe?
     private var output = Data()
     private var refreshTask: Task<Void,Never>?
-    private var refreshing: LocalAPI?
+    private var refreshJob: (id: UUID, client: LocalAPI, task: Task<Void, Never>)?
     @Published private(set) var quitting = false
     private var generation = UUID()
     private var noteDrafts: [String: NoteDraft] = [:]
@@ -43,6 +43,7 @@ import SwiftUI
     }
     func disconnect() {
         if let api { Task { await api.invalidate() } }
+        refreshJob?.task.cancel(); refreshJob = nil
         api = nil; ready = false; refreshTask?.cancel(); refreshTask = nil
         channels = []; system = nil; adapters = []; createdChannelID = nil
         busy.removeAll(); message = nil; imageProgress = [:]
@@ -109,8 +110,23 @@ import SwiftUI
         if output.count > 65536 { output.removeAll() }
     }
     func refresh() async {
-        guard let api, isCurrent(api), refreshing !== api else { return }
-        refreshing = api; defer { if refreshing === api { refreshing = nil } }
+        guard let api, isCurrent(api) else { return }
+        // A write may finish while an older snapshot is loading. Wait for that snapshot,
+        // then fetch once more; concurrent waiters share the newer refresh.
+        if let previous = refreshJob, previous.client === api {
+            await previous.task.value
+            guard isCurrent(api), !Task.isCancelled else { return }
+            if let next = refreshJob, next.id != previous.id, next.client === api {
+                await next.task.value; return
+            }
+        }
+        guard !Task.isCancelled else { return }
+        let id = UUID(), task = Task { await self.loadSnapshot(from: api) }
+        refreshJob = (id, api, task)
+        await task.value
+        if refreshJob?.id == id { refreshJob = nil }
+    }
+    private func loadSnapshot(from api: LocalAPI) async {
         do {
             async let list = api.get("/api/channels", as: [Channel].self)
             async let status = try? api.get("/api/system", as: SystemStatus.self)

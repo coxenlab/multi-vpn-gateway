@@ -48,7 +48,7 @@ final class SessionTests: XCTestCase {
 
     @MainActor func testOwnedCoreExitReconnectPreservesDataWithoutStartingVM() async throws {
         guard let path = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_LIFECYCLE_DIR"] else { throw XCTSkip("真实 core 生命周期验证需要专用进程与 Colima 替身目录") }
-        XCTAssertTrue(path.hasPrefix("/tmp/vpnmgr-native-session-"))
+        guard path.hasPrefix("/tmp/vpnmgr-native-session-") else { throw APIError(message: "生命周期测试目录必须独立") }
         let root = URL(fileURLWithPath: path)
         let model = AppModel()
         let readPID = { () throws -> pid_t in
@@ -148,6 +148,24 @@ final class SessionTests: XCTestCase {
             XCTAssertTrue(currentSucceeded); XCTAssertEqual(model.createdChannelID, "new")
             XCTAssertEqual(model.message, "new success"); XCTAssertFalse(model.busy.contains("create"))
         }
+    }
+
+    @MainActor func testMutationWaitsForFreshSnapshotWhenBackgroundRefreshIsPending() async throws {
+        let server = DelayedHTTP(), model = AppModel()
+        defer { model.disconnect(); Task { await server.finish() } }
+        model.connect(to: api(server))
+        let background = Task { await model.refresh() }
+        await wait(server, "/api/channels"); await wait(server, "/api/system")
+        let save = Task { await model.perform("/api/channels/new/start", key: "new") }
+        await wait(server, "/api/channels/new/start")
+        try await server.respond("/api/channels/new/start", json: #"{"ok":true}"#)
+        try await completeRefresh(server, channel: "old-snapshot")
+        await background.value
+        try await completeRefresh(server, channel: "new-snapshot")
+        let success = await save.value
+        XCTAssertTrue(success)
+        XCTAssertEqual(model.channels.map(\.id), ["new-snapshot"])
+        XCTAssertFalse(model.busy.contains("new"))
     }
 
     @MainActor func testLateImageStatusDoesNotRemoveNewImportOrChangeDownloadProgress() async throws {
