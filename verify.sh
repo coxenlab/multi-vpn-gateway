@@ -56,7 +56,13 @@ for path in sorted(Path('app/static').glob('*.html')):
         result = subprocess.run(command, input=code, text=True, capture_output=True)
         if result.returncode:
             raise SystemExit(f'{path}: {result.stderr}')
-for path in [Path('verify.sh'), Path('start.sh'), *Path('desktop/app').glob('*.sh')]:
+for path in [Path('verify.sh'), Path('start.sh'), *Path('desktop/app').glob('*.sh'), *Path('desktop/native').glob('*.sh')]:
     subprocess.run(['bash', '-n', str(path)], check=True)
 print('JavaScript / inline scripts / shell syntax passed')
 PY
+
+# macOS 原生壳的编译检查不启动界面或 VM；没有远端 Swift Package 依赖。
+if [[ "$(uname -s)" == Darwin && -f desktop/native/Package.swift ]]; then
+  command -v swift >/dev/null || { echo '缺少 Swift 工具链' >&2; exit 1; }
+  swift build --package-path desktop/native -Xswiftc -warnings-as-errors
+fi

@@ -1,0 +1,98 @@
+import Foundation
+
+struct Channel: Decodable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var vpn_type: String
+    var server: String
+    var username: String
+    var status: String
+    var configured_status: String?
+    var login_method: String
+    var ec_ver: String?
+    var probe_url: String
+    var container_id: String?
+    var routing_enabled: Bool
+    var stop_pending: Bool?
+    var latency_ms: Int?
+    var domains: [Rule]
+    var ips: [Rule]
+    var replacement: Replacement?
+    var rules: [Rule] { domains + ips }
+    var needsStart: Bool { stop_pending == true || replacement?.phase == "queued" || ["stopped", "down", "error"].contains(status) }
+    func statusLabel(runtime: Runtime?) -> String {
+        if stop_pending == true { return "停用待确认" }
+        if runtime?.ready == false && configured_status != "stopped" { return "待连接" }
+        return ["logged_in": "已连接", "running": "待登录", "creating": "准备中", "stopped": "已停止", "down": "连接中断", "error": "需要处理"][status] ?? "待确认"
+    }
+}
+struct Replacement: Decodable, Hashable { let phase: String; let can_restore: Bool }
+struct Rule: Decodable, Identifiable, Hashable {
+    let id: Int; let kind: String; let pattern: String; let enabled: Int; let note: String?; let locked: Int?
+}
+struct Runtime: Decodable {
+    let phase: String; let detail: String?; let error: String?
+    var ready: Bool { ["ready", "waiting"].contains(phase) }
+    var label: String { ["dormant":"按需运行", "starting":"准备连接", "ready":"运行中", "waiting":"等待空闲释放", "releasing":"释放中", "failed":"需要重试"][phase] ?? "待确认" }
+}
+struct SystemStatus: Decodable { let runtime: Runtime?; let routing_off: Bool?; let self_heal_enabled: Bool? }
+struct Adapter: Decodable, Identifiable {
+    var id: String { key }
+    let key: String; let label: String; let desc: String; let runtime: String; let versioned: Bool
+    let login_modes: [String]; let inputs: [InputField]; let notice: String?
+}
+struct InputField: Decodable, Identifiable {
+    var id: String { key }
+    let key: String; let label: String; let type: String; let secret: Bool?; let required: Bool?
+}
+struct APIError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+actor LocalAPI {
+    private let base: URL
+    private let session: URLSession
+    init(port: Int) {
+        base = URL(string: "http://127.0.0.1:\(port)")!
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 25
+        configuration.timeoutIntervalForResource = 1200
+        configuration.connectionProxyDictionary = [:]
+        session = URLSession(configuration: configuration)
+    }
+    func url(_ path: String) -> URL { URL(string: path, relativeTo: base)!.absoluteURL }
+    func data(_ path: String, method: String = "GET", body: [String: Any]? = nil, long: Bool = false) async throws -> Data {
+        var request = URLRequest(url: url(path))
+        request.httpMethod = method; request.timeoutInterval = long ? 1200 : 25
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError(message: "本地服务响应无法识别") }
+        guard (200..<300).contains(http.statusCode) else {
+            let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            throw APIError(message: error?["error"] as? String ?? error?["detail"] as? String ?? "操作未完成（\(http.statusCode)）")
+        }
+        return data
+    }
+    func upload(_ path: String, file: URL) async throws {
+        let boundary = UUID().uuidString
+        let filename = file.lastPathComponent.replacingOccurrences(of: "\"", with: "_").replacingOccurrences(of: "\r", with: "_").replacingOccurrences(of: "\n", with: "_")
+        var bytes = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8)
+        bytes.append(try Data(contentsOf: file)); bytes.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        var request = URLRequest(url: url(path)); request.httpMethod = "POST"; request.timeoutInterval = 1200
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await session.upload(for: request, from: bytes)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            throw APIError(message: value?["error"] as? String ?? value?["detail"] as? String ?? "上传未完成，请刷新核对。")
+        }
+    }
+    func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T { try JSONDecoder().decode(type, from: await data(path)) }
+    func write(_ path: String, method: String = "POST", body: [String: Any]? = nil) async throws -> [String: Any] {
+        let bytes = try await data(path, method: method, body: body, long: true)
+        return (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] ?? [:]
+    }
+}
