@@ -21,7 +21,9 @@ MINIMUM_MACOS = '14.0'
 TOOLS = ('limactl', 'lima', 'colima', 'docker')
 MACHO_TOOLS = ('limactl', 'colima', 'docker')
 STATIC_REQUIRED = ('index.html', 'native-login.html', 'css/app.css', 'js/pages/native-login.js',
-                   'js/api.js', 'js/app.js', 'js/vncText.js', 'js/vnc-lifecycle.js', 'vendor/novnc/core/rfb.js')
+                   'js/api.js', 'js/app.js', 'js/vncText.js', 'js/vnc-lifecycle.js', 'vendor/novnc/core/rfb.js',
+                   *(name + '.html' for name in ('channel', 'new-channel', 'routing-table', 'monitor', 'clash-config', 'containers', 'env-check')),
+                   *('js/pages/' + name + '.js' for name in ('index', 'channel', 'new-channel', 'routing-table', 'monitor', 'clash-config', 'containers', 'env-check')))
 PACKAGE_MODES = ('lite', 'with-vm')
 
 
@@ -271,7 +273,7 @@ def build_release(inputs, output, repo=REPO):
                 subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(binary)], check=True)
                 verify_binary(binary)
             verify_runtime_files({name: resources / name for name in sources})
-            report = {'schema': 1, 'ui': 'SwiftUI', 'source_commit': revision, 'version': inputs['info']['CFBundleShortVersionString'],
+            report = {'schema': 1, 'ui': 'WebView', 'shell': 'SwiftUI', 'source_commit': revision, 'version': inputs['info']['CFBundleShortVersionString'],
                       'identifier': inputs['info']['CFBundleIdentifier'], 'minimum_macos': MINIMUM_MACOS, 'architecture': 'arm64',
                       'package_mode': mode, 'runtime_variant': inputs['runtime_variant'], 'runtime_build_id': inputs['runtime_build_id'],
                       'signing': 'ad-hoc', 'notarized': False, 'compiler_versions': compiler_info,

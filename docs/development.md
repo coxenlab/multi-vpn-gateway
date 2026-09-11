@@ -34,7 +34,7 @@
 │   ├── dockerhub.py            # 实时拉取 EC 版本 tag(过滤 + arch 标记 + 缓存 + 离线兜底)
 │   └── static/                 # 共享 Web 前端，每页一个 ES module 入口
 │       └── js/pages/           # 八个页面控制器；api / page-data / app / feedback 为共享模块
-├── desktop/                    # macOS 原生 SwiftUI/AppKit + Rust core；app/ 保留旧壳源码与共享构建资源
+├── desktop/                    # macOS Web 界面 + SwiftUI/AppKit 生命周期壳 + Rust core；app/ 保留 Tauri 源码与共享构建资源
 │   └── core/src/events.rs      # 运行事件内存环 + 脱敏 JSONL + 查询/导出 API
 └── tests/                      # pytest 单测(独立于运行镜像)+ smoke.sh 栈冒烟
 ```
@@ -175,7 +175,7 @@ macOS 离线切换命令使用 `DATA_DIR` 指定新版本数据目录、`VPNMGR_
 
 完整本地检查入口为 `./verify.sh`：Python 隔离单测、Rust core/helper 测试与 clippy、桌面壳检查，以及共享页面和脚本语法检查。入口强制使用临时 DATA_DIR、MIHOMO_CONFIG_PATH、不存在的 Docker socket 和独立 profile，结束后清理；测试自己构造 Config 时仍须显式使用临时目录与 dev_mode，不能绕过环境隔离去读日常默认目录。Cargo 使用锁文件和离线缓存；缺依赖时明确失败，不自动联网安装。该入口不启动 VM、不登录 VPN、不修改系统代理或助手；通过不等于真实运行与业务验收完成。需要真实 Docker 的旧 Rust 测试保持显式 ignored，按对应测试要求另行执行。
 
-通道自动刷新使用 `/api/channels/{id}/health`：结果含 `checked_at` 和 `stale`，稳定状态复用 30 秒、失败有界退避，过期结果标待确认并后台更新。手动检测继续使用 `/status`，不读取过期缓存。同通道并发共享一次探活；通道变更的代次校验阻止旧结果回写。共享 `api.poll` 在上一轮完成后计时，页面隐藏后暂停；监控明细与低频通道目录分别刷新。
+通道自动刷新使用 `/api/channels/{id}/health`：结果含 `checked_at` 和 `stale`，稳定状态复用 30 秒、失败有界退避，过期结果标待确认并后台更新。手动检测继续使用 `/status`，不读取过期缓存。同通道并发共享一次探活；通道变更的代次校验阻止旧结果回写。hagb DNS 恢复绑定本轮探活读取的容器 ID，ID 缺失或实例已停止时不回退到可被新容器复用的名称，避免旧探活重启替换实例的 Dante。共享 `api.poll` 在上一轮完成后计时，页面隐藏后暂停；监控明细与低频通道目录分别刷新。
 
 桌面出站诊断由 `usernet.rs` 随看门狗最多每 60 秒采样一次，整轮 10 秒上限、命令 3 秒上限、输出 64 KiB 上限；仅按当前 profile 的 Lima 网络配置和对应 PID 文件定位进程，并核验命令身份。`runtime_info.rs` 从映射文件一致的 Mach-O 构建信息读取依赖，按文件身份缓存；只读取 load commands 和 Go 构建信息段，不要求用户安装 Go。识别 gvisor-tap-vsock v0.8.9 默认 10 槽，以及明确版本 `v2.1.2-vpnmgr.698.8b4db4a` 的回移候选 128 槽；replacement、未知依赖或格式均不推断容量。版本识别是诊断参照，不是签名验证。来源：[Go 构建信息格式](https://go.dev/src/debug/buildinfo/buildinfo.go)、[v0.8.9 TCP forwarder](https://github.com/containers/gvisor-tap-vsock/blob/v0.8.9/pkg/services/forwarder/tcp.go)。
 
@@ -190,7 +190,7 @@ macOS 离线切换命令使用 `DATA_DIR` 指定新版本数据目录、`VPNMGR_
 
 ### macOS 原生镜像模板导入
 
-开发与发布构建入口见 `desktop/native/README.md`。构建脚本已接原生 UI，实际原生发行包与日常安装仍未切换/验收。桌面 core 提供：
+开发与发布构建入口见 `desktop/native/README.md`。主窗口使用共享 Web 页面，窗口与 core 生命周期由 SwiftUI/AppKit 承载；原生模板导入组件及桌面 core 合同继续保留。桌面 core 提供：
 
 - `POST /api/images/imports`：原始归档请求体，支持 Docker save `.tar`/`.tar.gz`，返回任务 ID、镜像/适配器/架构、原始归档字节数与 SHA256。校验不连接或启动 VM。
 - `GET /api/images/imports/:id`：读取预览/导入进度与结果；`DELETE` 取消预览或清理终态记录，导入中拒绝取消。

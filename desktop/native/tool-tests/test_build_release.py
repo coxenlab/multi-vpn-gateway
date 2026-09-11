@@ -239,7 +239,7 @@ class ReleaseTests(unittest.TestCase):
             with (output/mode/'vpnmgr.app/Contents/Info.plist').open('rb') as stream: info = plistlib.load(stream)
             self.assertEqual(info['CFBundleExecutable'], 'VPNManager')
             package = report['packages'][mode]
-            self.assertFalse(package['notarized']); self.assertEqual(package['ui'], 'SwiftUI')
+            self.assertFalse(package['notarized']); self.assertEqual(package['ui'], 'WebView'); self.assertEqual(package['shell'], 'SwiftUI')
             self.assertEqual(package['package_mode'], mode)
             self.assertEqual(package, json.loads((resources/'build-info.json').read_text()))
             self.assertEqual(json.loads((resources/'bundle-mode.json').read_text()),

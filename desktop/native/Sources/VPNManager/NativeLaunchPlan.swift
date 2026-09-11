@@ -19,6 +19,11 @@ struct NativeLaunchPlan {
     static let readableResources = [
         "runtime/share/lima/lima-guestagent.Linux-aarch64.gz",
         "static/index.html", "static/native-login.html", "static/css/app.css",
+        "static/channel.html", "static/new-channel.html", "static/routing-table.html", "static/monitor.html",
+        "static/clash-config.html", "static/containers.html", "static/env-check.html",
+        "static/js/pages/index.js", "static/js/pages/channel.js", "static/js/pages/new-channel.js",
+        "static/js/pages/routing-table.js", "static/js/pages/monitor.js", "static/js/pages/clash-config.js",
+        "static/js/pages/containers.js", "static/js/pages/env-check.js",
         "static/js/pages/native-login.js", "static/js/api.js", "static/js/app.js",
         "static/js/vncText.js", "static/js/vnc-lifecycle.js", "static/vendor/novnc/core/rfb.js",
         "images/mihomo.tar.gz", "images/oss-vpn.tar.gz",

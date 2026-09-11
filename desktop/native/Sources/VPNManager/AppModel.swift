@@ -38,14 +38,16 @@ import SwiftUI
     private let launchEnvironment: [String: String]?
     private let imagePollInterval: Duration
     private let imageWaitLimit: Duration
+    private let automaticRefresh: Bool
     private var launchContext: OfflineLaunchContext?
     private var upgradeRevision = UUID()
     var canManageUpgrade: Bool { launchContext != nil }
     var upgradeTargetPath: String? { launchContext?.environment["DATA_DIR"] }
 
-    init(launchEnvironment: [String: String]? = nil, imagePollInterval: Duration = .seconds(2), imageWaitLimit: Duration = .seconds(1200)) {
+    init(launchEnvironment: [String: String]? = nil, imagePollInterval: Duration = .seconds(2), imageWaitLimit: Duration = .seconds(1200), automaticRefresh: Bool = true) {
         self.launchEnvironment = launchEnvironment
         self.imagePollInterval = imagePollInterval; self.imageWaitLimit = imageWaitLimit
+        self.automaticRefresh = automaticRefresh
     }
 
     func noteDraft(for channelID: String) -> NoteDraft {
@@ -138,7 +140,7 @@ import SwiftUI
             guard item["event"] as? String == "ready", !ready, !quitting, child?.isRunning == true,
                   let port = item["ui_port"] as? Int, (1...65535).contains(port) else { continue }
             let client = LocalAPI(port: port); connect(to: client)
-            Task { await self.refresh(); if self.isCurrent(client) { self.beginRefresh() } }
+            Task { await self.refresh(); if self.automaticRefresh && self.isCurrent(client) { self.beginRefresh() } }
         }
         if output.count > 65536 { output.removeAll() }
     }

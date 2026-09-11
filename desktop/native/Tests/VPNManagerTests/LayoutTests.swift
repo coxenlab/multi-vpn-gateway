@@ -38,12 +38,6 @@ final class LayoutTests: XCTestCase {
             model.system = try JSONDecoder().decode(SystemStatus.self, from: Data(#"{"runtime":{"phase":"dormant"},"routing_off":false,"self_heal_enabled":true,"host_integrations_available":true,"config_application":{"available":true,"pending":false}}"#.utf8))
             defer { model.disconnect() }
             let cases: [(String, CGFloat, CGFloat, AnyView)] = [
-                ("channels-grid", 920, 620, AnyView(WorkspaceView())),
-                ("channels-grid-wide", 1345, 965, AnyView(WorkspaceView())),
-                ("channels", 920, 620, AnyView(WorkspaceView(initialSelection: channels[0].id))),
-                ("rules", 920, 620, AnyView(WorkspaceView(initialPage: .rules))),
-                ("monitor", 920, 620, AnyView(WorkspaceView(initialPage: .monitor))),
-                ("settings", 920, 620, AnyView(WorkspaceView(initialPage: .settings))),
                 ("settings-backup", 740, 620, AnyView(SettingsView(initialCategory: .backup))),
                 ("settings-maintenance", 740, 620, AnyView(SettingsView(initialCategory: .maintenance))),
                 ("channel-rules", 500, 500, AnyView(RulesView(channelID: channels[0].id))),

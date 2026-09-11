@@ -45,6 +45,8 @@ struct WorkspaceCommands: Commands {
         CommandGroup(replacing: .appSettings) {
             Button("设置…") { workspace?.settings() }.keyboardShortcut(",")
                 .disabled(!model.ready || workspace == nil || NSApp.modalWindow != nil || NSApp.keyWindow?.sheetParent != nil)
+            Button("升级配置与恢复…") { model.upgradePresented = true }
+                .disabled(!model.canManageUpgrade || model.upgradeSwitching)
         }
     }
 }

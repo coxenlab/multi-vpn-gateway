@@ -1,12 +1,12 @@
-# macOS 原生界面
+# macOS 桌面界面与生命周期
 
-SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子进程；管理界面初始化不启动 VM，业务沿用 core 的 HTTP 合同。Web 版保留，只有厂商登录界面使用局部 WKWebView。
+主窗口恢复使用 `app/static` 的完整 Web 界面，由 WKWebView 承载；SwiftUI/AppKit 保留窗口、菜单栏、文件面板与升级恢复入口，最低 macOS 14。Rust core 仍作为本应用持有的本地子进程；管理界面初始化不启动 VM，业务沿用 core 的 HTTP 合同。
 
-开发和发布构建入口均已接入原生界面。尚未实际生成、运行或安装原生发行包；已安装的日常 App 未修改。
+开发和发布构建入口均使用上述组合。网页刷新只重载页面；渲染进程失败时显示手动重载入口，不重启 core/VM。窗口隐藏会通知页面暂停轮询和 noVNC 观看租约，保留未保存输入。主窗口由 Web 页面负责刷新，不叠加原生每 5 秒轮询；菜单状态按需读取。菜单保留 ⌘N、⌘R、⌘, 与“升级配置与恢复…”。发行包的 `build-info.json` 分别记录 `ui=WebView`、`shell=SwiftUI`。
 
 正式模式的启动代码已接入 `Contents/Resources`：本地 core、runtime 工具/助手、静态登录页面、内置容器镜像与 VM 镜像均先做可读性/执行权限检查。缺件时显示具体组件，在检查通过前不创建数据、不启动 core；另一个相同 bundle ID 的应用正在运行时拒绝启动。该检查不能替代资源来源校验或完整签名验证。
 
-正式版沿用 `~/Library/Application Support/com.vpnmgr.desktop` 和 `vpnmgr` profile；子进程只使用随包运行工具与系统 PATH，清除开发环境留下的端口、密钥、Docker context 和 profile 覆盖，运行参数由既有 `infra.json` 提供。只有首次连接运行环境时才在后台预置 VM 缓存；复制失败不会留下截断目标，并发时保留已有缓存。这里的正式模式已编译验证，尚未实际组装或运行正式 App。
+正式版沿用 `~/Library/Application Support/com.vpnmgr.desktop` 和 `vpnmgr` profile；子进程只使用随包运行工具与系统 PATH，清除开发环境留下的端口、密钥、Docker context 和 profile 覆盖，运行参数由既有 `infra.json` 提供。只有首次连接运行环境时才在后台预置 VM 缓存；复制失败不会留下截断目标，并发时保留已有缓存。
 
 ## 隔离开发
 
@@ -47,7 +47,7 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 
 宿主和容器 mihomo 共用 `app/mihomo-source.json`：宿主必须匹配官方二进制 SHA256；Docker 归档必须包含对应版本标签、已锁 config ID 和一致的分层摘要。旧的 `latest` 归档或被本机重签/替换的宿主引擎会被拒绝，需显式准备已锁版本后再检查；检查不会替换旧暂存文件或现用组件。来源准备命令见 `docs/development.md`。
 
-**当前不执行打包安装。** 完成相关验收并进入发布阶段后，构建须显式提供不存在的仓库外目录，例如：
+构建须显式提供不存在的仓库外目录，例如：
 
 ```sh
 ./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr-native-1.3.0"
@@ -65,4 +65,4 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 
 `LayoutTests` 生成九种内容的深浅色截图；视图缓存在当前系统下会漏画部分原生导航/系统控件，因此仅用来检查已捕获内容和布局是否崩溃，不能作为完整视觉验收通过的依据。
 
-原生平台还需真实窗口、菜单/快捷键、深浅色、登录/上传、真实代理与 TUN 的交互验收。升级准备、启用、恢复与回退已接入，已使用私有数据和拒绝启动 VM 的替身验证；正式数据与原 profile 资源、厂商设备身份仍待运行验收。正式资源打包、签名/公证、企业 VPN/睡眠换网/长稳验收均未完成；发布仍被这些门槛阻挡。不要用此开发入口覆盖当前日常 App。
+`WebWorkspaceTests` 使用实际 WKWebView 检查管理服务来源固定、隐藏后草稿保留，以及渲染失败不自动重载。完整企业登录、真实代理/TUN、睡眠换网和长稳验收仍需实机完成；合成数据或布局截图不能替代。每次发行仍须实际挂载检查资源与签名、核对安装前后数据，并区分本地稳定性试用与正式分发；Developer ID 签名/公证不由本构建入口提供。
