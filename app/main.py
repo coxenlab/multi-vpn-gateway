@@ -749,7 +749,10 @@ def preflight_fix(action: str, body: dict = Body(default={})):
         if repo not in preflight.known_repos() or preflight.is_buildable(image):
             return JSONResponse({"error": "image not pullable"}, status_code=400)
         mirrors = [m["host"] for m in store.list_mirrors() if m["enabled"]] or None
-        tid = preflight.start_pull(manager.dc, image, registry.host_arch(), mirrors=mirrors)
+        try:
+            tid = preflight.start_pull(manager.dc, image, registry.host_arch(), mirrors=mirrors)
+        except preflight.PullBusyError as e:
+            return JSONResponse({"error": str(e)}, status_code=429)
         return {"task_id": tid}
     return JSONResponse({"error": "unknown action"}, status_code=400)
 

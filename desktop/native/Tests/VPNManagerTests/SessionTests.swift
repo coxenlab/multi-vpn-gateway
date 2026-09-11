@@ -296,6 +296,72 @@ final class SessionTests: XCTestCase {
         XCTAssertFalse(model.busy.contains("new"))
     }
 
+    @MainActor func testDownloadQueryFailureResumesOriginalTaskWithoutAnotherPost() async throws {
+        let server = DelayedHTTP(), model = AppModel(imagePollInterval: .milliseconds(1))
+        defer { model.disconnect(); Task { await server.finish() } }
+        model.connect(to: api(server))
+        let image = ImageEntry(image: "hagb/docker-atrust:latest", title: "fixture", kind: "pull", present: false)
+        let path = "/api/preflight/fix/pull-fixture"
+        let download = Task { await model.downloadImage(image) }
+        await wait(server, "/api/preflight/fix/pull_image")
+        try await server.respond("/api/preflight/fix/pull_image", json: #"{"task_id":"pull-fixture"}"#)
+        for _ in 0..<5 {
+            await wait(server, path)
+            try await server.respond(path, json: #"{"error":"fixture unavailable"}"#, status: 503)
+        }
+        await download.value
+        XCTAssertFalse(model.busy.contains("image-" + image.id))
+        XCTAssertEqual(model.imageTasks[image.id], "pull-fixture")
+        XCTAssertNotNil(model.error)
+        let resume = Task { await model.downloadImage(image) }
+        await wait(server, path)
+        try await server.respond(path, json: #"{"status":"done","progress":"complete"}"#)
+        await resume.value
+        let count = await server.count
+        XCTAssertEqual(count, 7) // One POST, five failed GETs, one resumed GET.
+        XCTAssertNil(model.imageTasks[image.id]); XCTAssertNil(model.error)
+        XCTAssertEqual(model.imageProgress[image.id], "已准备")
+    }
+
+    @MainActor func testDownloadTimeoutKeepsTicketAndExpiredRecordClearsIt() async throws {
+        let server = DelayedHTTP(), model = AppModel(imagePollInterval: .milliseconds(1), imageWaitLimit: .milliseconds(50))
+        defer { model.disconnect(); Task { await server.finish() } }
+        model.connect(to: api(server)); model.visible = false
+        let image = ImageEntry(image: "hagb/docker-atrust:latest", title: "fixture", kind: "pull", present: false)
+        let download = Task { await model.downloadImage(image) }
+        await wait(server, "/api/preflight/fix/pull_image")
+        try await server.respond("/api/preflight/fix/pull_image", json: #"{"task_id":"expired"}"#)
+        await download.value
+        XCTAssertEqual(model.imageTasks[image.id], "expired")
+        XCTAssertTrue(model.error?.contains("超时") == true)
+        XCTAssertFalse(model.busy.contains("image-" + image.id))
+        model.visible = true
+        let resume = Task { await model.downloadImage(image) }
+        await wait(server, "/api/preflight/fix/expired")
+        try await server.respond("/api/preflight/fix/expired", json: #"{"error":"unknown task"}"#, status: 404)
+        await resume.value
+        XCTAssertNil(model.imageTasks[image.id])
+        XCTAssertTrue(model.error?.contains("已失效") == true)
+        let count = await server.count
+        XCTAssertEqual(count, 2)
+    }
+
+    @MainActor func testDownloadTerminalFailureAllowsExplicitRetry() async throws {
+        let server = DelayedHTTP(), model = AppModel()
+        defer { model.disconnect(); Task { await server.finish() } }
+        model.connect(to: api(server))
+        let image = ImageEntry(image: "hagb/docker-atrust:latest", title: "fixture", kind: "pull", present: false)
+        let download = Task { await model.downloadImage(image) }
+        await wait(server, "/api/preflight/fix/pull_image")
+        try await server.respond("/api/preflight/fix/pull_image", json: #"{"task_id":"failed"}"#)
+        await wait(server, "/api/preflight/fix/failed")
+        try await server.respond("/api/preflight/fix/failed", json: #"{"status":"error","error":"fixture source failed"}"#)
+        await download.value
+        XCTAssertNil(model.imageTasks[image.id])
+        XCTAssertEqual(model.imageProgress[image.id], "fixture source failed")
+        XCTAssertFalse(model.busy.contains("image-" + image.id))
+    }
+
     @MainActor func testLateImageStatusDoesNotRemoveNewImportOrChangeDownloadProgress() async throws {
         let old = DelayedHTTP(), current = DelayedHTTP(), model = AppModel()
         defer { model.disconnect(); Task { await old.finish(); await current.finish() } }

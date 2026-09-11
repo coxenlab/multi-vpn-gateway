@@ -1560,7 +1560,10 @@ pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String
             let activity = match st.lifecycle.runtime().activity().await {
                 Ok(activity) => activity, Err(error) => return err503(&error),
             };
-            let tid = preflight::start_pull(docker, &image, &registry::host_arch(), mirrors.clone(), activity);
+            let tid = match preflight::start_pull(docker, &image, &registry::host_arch(), mirrors.clone(), activity) {
+                Ok(tid) => tid,
+                Err(error) => return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": error }))).into_response(),
+            };
             // 拉取是后台任务:审计只记「谁在什么时候要拉哪个镜像」,结果由任务状态端点看。
             crate::events::audit("preflight_fix", "已发起镜像拉取", json!({
                 "target_kind": "system", "target_name": image.as_str(), "action": "pull_image",

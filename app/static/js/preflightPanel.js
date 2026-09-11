@@ -25,22 +25,34 @@ import { toast } from "./app.js";
       <div class="chk-act">${fix}</div></div>`;
   }
 
-  // 共享:发起一次镜像拉取任务并轮询到结束。onProgress(st) 每 2s 调一次。
-  window.pullImageTask = function (image, onProgress) {
+  // A failed progress query must resume the existing task, not start another download.
+  const pullTasks = new Map();
+  window.pullImageTask = async function (image, onProgress) {
+    let id = pullTasks.get(image);
+    if (!id) {
+      const result = await api.preflightFix("pull_image", { image });
+      if (typeof result.task_id !== "string" || !result.task_id) throw new Error("未收到下载任务，请刷新镜像清单核对");
+      id = result.task_id; pullTasks.set(image, id);
+    }
     return new Promise(function (resolve, reject) {
-      api.preflightFix("pull_image", { image }).then(function (r) {
+        const pendingError = e => { e.pullTaskPending = true; reject(e); };
         let failures = 0;
         const deadline = Date.now() + 20 * 60 * 1000;
         const stop = api.poll(async function () {
-          if (Date.now() > deadline) { stop(); reject(new Error("等待镜像任务超时，请在镜像清单核对结果")); return; }
+          if (Date.now() > deadline) { stop(); pendingError(new Error("等待下载结果超时，任务可能仍在进行，可稍后查看进度")); return; }
           let st;
-          try { st = await api.preflightFixStatus(r.task_id); failures = 0; }
-          catch (e) { if (++failures >= 5) { stop(); reject(e); } return; }
+          try { st = await api.preflightFixStatus(id); failures = 0; }
+          catch (e) {
+            if (e.status === 404) {
+              pullTasks.delete(image); stop();
+              reject(new Error("此下载记录已失效，请刷新镜像清单核对结果后再操作"));
+            } else if (++failures >= 5) { stop(); pendingError(e); }
+            return;
+          }
           if (onProgress) onProgress(st);
-          if (st.status === "done") { stop(); resolve(st); }
-          else if (st.status === "error") { stop(); reject(new Error(st.error || "拉取失败")); }
+          if (st.status === "done") { pullTasks.delete(image); stop(); resolve(st); }
+          else if (st.status === "error") { pullTasks.delete(image); stop(); reject(new Error(st.error || "拉取失败")); }
         }, 2000);
-      }, reject);
     });
   };
 
@@ -80,11 +92,11 @@ import { toast } from "./app.js";
             toast("镜像就绪", { variant: "success" }); await run();
           } catch (e) {
             tip.remove();
-            // 失败带「重拉」:复用 fb.errorBanner(归地基管的共享组件)
+            // 查询失败保留任务；只有确定失败才重新下载。
             if (window.fb && fb.errorBanner) {
               const wrap = document.createElement("div"); host.prepend(wrap);
               fb.errorBanner(wrap, {
-                fromError: e, retryLabel: "重拉",
+                fromError: e, retryLabel: pullTasks.has(image) ? "查看进度" : "重试",
                 onRetry: function () { wrap.remove(); doFix("pull_image", image); },
               });
             } else {

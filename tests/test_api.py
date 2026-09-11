@@ -376,6 +376,16 @@ def test_fix_pull_image_starts_task(client, monkeypatch):
                     json={"image": "hagb/docker-atrust:latest"})
     assert r.status_code == 200 and r.json()["task_id"] == "task42"
 
+def test_fix_pull_image_capacity_is_retryable(client, monkeypatch):
+    import preflight
+    def busy(*args, **kwargs):
+        raise preflight.PullBusyError("已有 2 个镜像正在下载")
+    monkeypatch.setattr(preflight, "start_pull", busy)
+    response = client.post("/api/preflight/fix/pull_image", json={"image": "hagb/docker-atrust:latest"})
+    assert response.status_code == 429
+    assert "2" in response.json()["error"]
+
+
 def test_fix_status_returns_task(client, monkeypatch):
     import preflight
     monkeypatch.setattr(preflight, "get_task",

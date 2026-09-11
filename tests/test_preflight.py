@@ -219,11 +219,83 @@ def test_pull_worker_all_mirrors_fail_errors(monkeypatch):
     assert "国内源" in st["error"]
 
 def test_start_pull_returns_task_id_and_get_task(monkeypatch):
-    monkeypatch.setattr(preflight, "_pull_worker", lambda *a, **k: None)  # 不真跑线程体
+    monkeypatch.setattr(preflight, "_TASKS", preflight._PullTasks())
+    monkeypatch.setattr(preflight.threading.Thread, "start", lambda self: None)
     tid = preflight.start_pull(object(), "hagb/docker-atrust:latest", "arm64",
                                mirrors=["docker.1ms.run"])
     assert preflight.get_task(tid)["status"] == "running"
     assert preflight.get_task("nope") is None
+
+
+def test_pull_tasks_dedup_and_bound_real_workers(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from types import SimpleNamespace
+    import pytest
+    clock = [0.0]
+    tasks = preflight._PullTasks(clock=lambda: clock[0])
+    monkeypatch.setattr(preflight, "_TASKS", tasks)
+    release = threading.Event()
+    started, threads = [], []
+
+    def worker(dc, image, arch, mirrors, state, publish):
+        started.append(image)
+        assert release.wait(5)
+        state.update(status="done", progress="complete")
+
+    monkeypatch.setattr(preflight, "_pull_worker", worker)
+    def owned_thread(*args, **kw):
+        thread = threading.Thread(*args, **kw); threads.append(thread); return thread
+    monkeypatch.setattr(preflight, "threading", SimpleNamespace(Thread=owned_thread))
+    try:
+        with ThreadPoolExecutor(max_workers=8) as callers:
+            tids = list(callers.map(lambda i: preflight.start_pull(object(), "hagb/docker-atrust" + (":latest" if i % 2 else ""), "arm64"), range(16)))
+        assert len(set(tids)) == 1 and len(threads) == 1
+        other = preflight.start_pull(object(), "hagb/docker-easyconnect:7.6.7", "arm64")
+        clock[0] = 7200  # Even an old live worker still occupies its slot.
+        with pytest.raises(preflight.PullBusyError):
+            preflight.start_pull(object(), "hagb/docker-atrust", "amd64")
+        assert preflight.get_task(tids[0])["status"] == "running"
+        state = preflight.get_task(tids[0]); state["log_tail"].append("external mutation")
+        assert preflight.get_task(tids[0])["log_tail"] == []
+        assert preflight.start_pull(object(), "hagb/docker-atrust", "arm64") == tids[0]
+    finally:
+        release.set()
+        for thread in threads: thread.join(5)
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(started) == 2
+    assert tasks.get(other)["status"] == "done"
+    clock[0] += 3600
+    assert tasks.get(tids[0]) is None
+
+
+def test_pull_history_bound_and_unexpected_worker_exit(monkeypatch):
+    tasks = preflight._PullTasks()
+    monkeypatch.setattr(preflight, "_TASKS", tasks)
+    for index in range(40):
+        tid, _ = tasks.reserve(str(index), "arm64")
+        state = tasks.get(tid); state["status"] = "done"
+        tasks.publish(tid, state, finished=True)
+    assert len(tasks.entries) == 32
+    monkeypatch.setattr(preflight, "_pull_worker", lambda *a: (_ for _ in ()).throw(RuntimeError("fixture")))
+    class InlineThread:
+        def __init__(self, target, **kw): self.target = target
+        def start(self): self.target()
+    monkeypatch.setattr(preflight.threading, "Thread", InlineThread)
+    tid = preflight.start_pull(object(), "fixture", "arm64")
+    assert tasks.get(tid)["status"] == "error"
+    assert "fixture" not in tasks.get(tid)["error"]
+    assert preflight.start_pull(object(), "fixture", "arm64") != tid
+
+
+def test_pull_worker_cannot_start_releases_slot(monkeypatch):
+    tasks = preflight._PullTasks()
+    monkeypatch.setattr(preflight, "_TASKS", tasks)
+    def fail(thread): raise RuntimeError("fixture")
+    monkeypatch.setattr(preflight.threading.Thread, "start", fail)
+    for _ in range(3):
+        tid = preflight.start_pull(object(), "fixture", "arm64")
+        assert tasks.get(tid)["status"] == "error"
 
 
 def test_docker_version_pass():

@@ -5,6 +5,7 @@
 """
 import threading
 import uuid
+import time
 import requests
 import docker
 import registry
@@ -345,7 +346,57 @@ def _aggregate(checks, host_arch, image):
             "overall": overall, "checks": checks}
 
 
-_TASKS = {}   # task_id -> {status, progress, log_tail, error}
+class PullBusyError(Exception):
+    pass
+
+
+class _PullTasks:
+    """Active workers never expire; only completed history is evicted."""
+    def __init__(self, clock=time.monotonic):
+        self.entries = {}
+        self.lock = threading.Lock()
+        self.clock = clock
+
+    def _prune(self):
+        now = self.clock()
+        finished = sorted((e["finished"], tid) for tid, e in self.entries.items()
+                          if e["finished"] is not None)
+        for index, (when, tid) in enumerate(finished):
+            if now - when >= 3600 or index < len(finished) - 32:
+                del self.entries[tid]
+
+    def reserve(self, image, arch):
+        repo, _, tag = image.partition(":")
+        key = (repo + ":" + (tag or "latest"), arch)
+        with self.lock:
+            self._prune()
+            active = [(tid, e) for tid, e in self.entries.items() if e["finished"] is None]
+            for tid, entry in active:
+                if entry["key"] == key:
+                    return tid, False
+            if len(active) >= 2:
+                raise PullBusyError("已有 2 个镜像正在下载，请等待其中一个完成后重试")
+            tid = uuid.uuid4().hex
+            self.entries[tid] = {"key": key, "finished": None, "state": {
+                "status": "running", "progress": "准备拉取…", "log_tail": [], "error": None}}
+            return tid, True
+
+    def publish(self, tid, state, finished=False):
+        with self.lock:
+            entry = self.entries[tid]
+            entry["state"] = {**state, "log_tail": list(state["log_tail"])}
+            if finished:
+                entry["finished"] = self.clock()
+                self._prune()
+
+    def get(self, tid):
+        with self.lock:
+            self._prune()
+            entry = self.entries.get(tid)
+            return {**entry["state"], "log_tail": list(entry["state"]["log_tail"])} if entry else None
+
+
+_TASKS = _PullTasks()
 
 
 def _mirror_reachable(host, timeout=5):
@@ -359,7 +410,7 @@ def _log(st, line):
     st["log_tail"] = (st["log_tail"] + [line])[-20:]
 
 
-def _pull_worker(dc, image, host_arch, mirrors, st):
+def _pull_worker(dc, image, host_arch, mirrors, st, on_progress=lambda state: None):
     repo, _, tag = image.partition(":")
     tag = tag or "latest"
     platform = f"linux/{host_arch}"
@@ -372,11 +423,13 @@ def _pull_worker(dc, image, host_arch, mirrors, st):
     for m in mirrors:
         try:
             st["progress"] = f"探测镜像源 {m}…"
+            on_progress(st)
             if not _mirror_reachable(m):
                 _log(st, f"{m} 不可达,跳过")
                 continue
             src = f"{m}/{repo}"
             st["progress"] = f"从 {m} 拉取 {repo}:{tag}({platform})…"
+            on_progress(st)
             if pinned:
                 img = dc.images.pull(f"{src}@{pinned['manifest']}", platform=platform)
                 if getattr(img, "id", None) not in (pinned["config"], pinned["manifest"], MIHOMO_SOURCE["index"]):
@@ -404,11 +457,29 @@ def _pull_worker(dc, image, host_arch, mirrors, st):
 
 
 def start_pull(dc, image, host_arch, mirrors=None):
-    mirrors = mirrors or DEFAULT_MIRRORS
-    tid = uuid.uuid4().hex[:8]
-    _TASKS[tid] = {"status": "running", "progress": "准备拉取…", "log_tail": [], "error": None}
-    threading.Thread(target=_pull_worker,
-                     args=(dc, image, host_arch, mirrors, _TASKS[tid]), daemon=True).start()
+    tasks = _TASKS
+    tid, created = tasks.reserve(image, host_arch)
+    if not created:
+        return tid
+    state = tasks.get(tid)
+
+    def run():
+        try:
+            _pull_worker(dc, image, host_arch, mirrors or DEFAULT_MIRRORS, state,
+                         lambda st: tasks.publish(tid, st))
+        except Exception:
+            state.update(status="error", error="下载任务意外结束，请核对镜像清单后重试")
+        finally:
+            # Release capacity only after the actual worker exits, never on a UI timeout.
+            if state["status"] == "running":
+                state.update(status="error", error="下载任务意外结束，请核对镜像清单后重试")
+            tasks.publish(tid, state, finished=True)
+
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except RuntimeError:
+        state.update(status="error", error="暂时无法启动下载任务，请稍后重试")
+        tasks.publish(tid, state, finished=True)
     return tid
 
 

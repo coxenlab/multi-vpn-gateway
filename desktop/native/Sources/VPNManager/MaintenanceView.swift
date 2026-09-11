@@ -58,6 +58,7 @@ struct ImagesView: View {
                     }
                     Spacer()
                     if model.busy.contains("image-" + item.id) { ProgressView().controlSize(.small) }
+                    else if model.imageTasks[item.id] != nil { Button("查看进度") { Task { await model.downloadImage(item); await load() } } }
                     else if item.kind == "pull", item.present != true { Button("下载") { Task { await model.downloadImage(item); await load() } }.disabled(model.system?.runtime?.ready != true) }
                 }.padding(.vertical, 8)
             }

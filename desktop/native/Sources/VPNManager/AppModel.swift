@@ -12,6 +12,7 @@ import SwiftUI
     @Published var busy = Set<String>()
     @Published var ready = false
     @Published var imageProgress: [String: String] = [:]
+    @Published private(set) var imageTasks: [String: String] = [:]
     @Published var importTicket: ImageImportTicket?
     @Published var importError: String?
     @Published var upgradePreparing = false
@@ -34,12 +35,17 @@ import SwiftUI
     private var generation = UUID()
     private var noteDrafts: [String: NoteDraft] = [:]
     private let launchEnvironment: [String: String]?
+    private let imagePollInterval: Duration
+    private let imageWaitLimit: Duration
     private var launchContext: OfflineLaunchContext?
     private var upgradeRevision = UUID()
     var canManageUpgrade: Bool { launchContext != nil }
     var upgradeTargetPath: String? { launchContext?.environment["DATA_DIR"] }
 
-    init(launchEnvironment: [String: String]? = nil) { self.launchEnvironment = launchEnvironment }
+    init(launchEnvironment: [String: String]? = nil, imagePollInterval: Duration = .seconds(2), imageWaitLimit: Duration = .seconds(1200)) {
+        self.launchEnvironment = launchEnvironment
+        self.imagePollInterval = imagePollInterval; self.imageWaitLimit = imageWaitLimit
+    }
 
     func noteDraft(for channelID: String) -> NoteDraft {
         if let draft = noteDrafts[channelID] { return draft }
@@ -57,7 +63,7 @@ import SwiftUI
         refreshJob?.task.cancel(); refreshJob = nil
         api = nil; ready = false; refreshTask?.cancel(); refreshTask = nil
         channels = []; system = nil; adapters = []; createdChannelID = nil
-        busy.removeAll(); message = nil; imageProgress = [:]
+        busy.removeAll(); message = nil; imageProgress = [:]; imageTasks = [:]
         if importTicket != nil { importError = "本地服务连接已结束，上次导入结果待确认。请刷新镜像清单核对。" }
         importTicket = nil
     }
@@ -203,19 +209,49 @@ import SwiftUI
         guard let api, isCurrent(api), !busy.contains(key) else { return }
         busy.insert(key); defer { if isCurrent(api) { busy.remove(key) } }
         do {
-            let result = try await api.write("/api/preflight/fix/pull_image", body: ["image": image.image])
-            guard isCurrent(api) else { return }
-            guard let id = result["task_id"] as? String else { throw APIError(message: "未收到下载任务，请刷新核对。") }
+            error = nil
+            if imageTasks[image.id] == nil {
+                let result = try await api.write("/api/preflight/fix/pull_image", body: ["image": image.image])
+                guard isCurrent(api) else { return }
+                guard let id = result["task_id"] as? String, !id.isEmpty else { throw APIError(message: "未收到下载任务，请刷新核对。") }
+                imageTasks[image.id] = id
+            }
+            guard let id = imageTasks[image.id] else { return }
+            let deadline = ContinuousClock.now.advanced(by: imageWaitLimit)
+            var failures = 0
             while isCurrent(api) && !Task.isCancelled {
+                if ContinuousClock.now >= deadline { throw APIError(message: "等待下载结果超时。任务可能仍在进行，可稍后查看进度。") }
                 if visible {
-                    let state = try await api.get("/api/preflight/fix/\(id)", as: PullStatus.self)
+                    let state: PullStatus
+                    do {
+                        state = try await api.get("/api/preflight/fix/\(id)", as: PullStatus.self)
+                        failures = 0
+                    } catch {
+                        guard isCurrent(api) else { return }
+                        if let failure = error as? APIError, failure.statusCode == 404 {
+                            imageTasks[image.id] = nil
+                            throw APIError(message: "此下载记录已失效，请刷新镜像清单核对结果后再操作。")
+                        }
+                        failures += 1
+                        if failures >= 5 || Task.isCancelled { throw error }
+                        imageProgress[image.id] = "暂时无法查询进度，正在重试…"
+                        try await Task.sleep(for: imagePollInterval)
+                        continue
+                    }
                     guard isCurrent(api) else { return }
                     imageProgress[image.id] = state.progress
-                    if state.status == "done" { message = "镜像已准备"; return }
-                    if state.status == "error" { throw APIError(message: state.error ?? "下载未完成") }
+                    if state.status == "done" {
+                        imageTasks[image.id] = nil; imageProgress[image.id] = "已准备"; message = "镜像已准备"; return
+                    }
+                    if state.status == "error" {
+                        imageTasks[image.id] = nil
+                        imageProgress[image.id] = state.error ?? "下载未完成"
+                        self.error = state.error ?? "下载未完成"; return
+                    }
                 }
-                try await Task.sleep(for: .seconds(2))
+                try await Task.sleep(for: imagePollInterval)
             }
+            if isCurrent(api) { imageProgress[image.id] = "进度查询已暂停，可继续查看" }
         } catch { if isCurrent(api) { self.error = error.localizedDescription; imageProgress[image.id] = "下载状态待确认，请刷新核对" } }
     }
     func previewImage(_ file: URL) async {

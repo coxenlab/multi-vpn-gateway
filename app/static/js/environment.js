@@ -223,7 +223,7 @@ import { PreflightPanel, pullImageTask } from "./preflightPanel.js";
         pullBtn.textContent = "拉取到本机";
         pullBtn.addEventListener("click", function doPull() {
           const image = `${e.repo}:${state.tag}`;
-          pullBtn.disabled = true; const orig = pullBtn.textContent; pullBtn.textContent = "拉取中…";
+          pullBtn.disabled = true; pullBtn.textContent = "拉取中…";
           const tip = document.createElement("div"); tip.className = "banner info"; cmds.prepend(tip);
           const sp = fb.spinner("拉取镜像…"); tip.appendChild(sp);
           const spMsg = sp.querySelector("span:last-child");
@@ -237,10 +237,10 @@ import { PreflightPanel, pullImageTask } from "./preflightPanel.js";
               tip.remove();
               const wrap = document.createElement("div"); cmds.prepend(wrap);
               fb.errorBanner(wrap, {
-                fromError: err, retryLabel: "重拉",
+                fromError: err, retryLabel: err.pullTaskPending ? "查看进度" : "重试",
                 onRetry: () => { wrap.remove(); doPull(); },
               });
-              pullBtn.disabled = false; pullBtn.textContent = orig;
+              pullBtn.disabled = false; pullBtn.textContent = err.pullTaskPending ? "查看进度" : "拉取到本机";
             });
         });
         actions.appendChild(pullBtn);

@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use bollard::Docker;
 use crate::{registry, dockerhub};
 
@@ -401,31 +402,89 @@ pub async fn image_inventory(docker: Option<&Docker>, host_arch: &str, mirrors: 
 }
 
 // ── 后台拉镜像任务表(对照 _TASKS) ──
-fn tasks() -> &'static Mutex<HashMap<String, Value>> {
-    static T: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
-    T.get_or_init(|| Mutex::new(HashMap::new()))
+struct PullTask {
+    key: (String, String),
+    state: Value,
+    finished: Option<Instant>,
+}
+
+#[derive(Default)]
+struct PullTasks { entries: HashMap<String, PullTask> }
+
+impl PullTasks {
+    fn prune(&mut self, now: Instant) {
+        let mut finished: Vec<_> = self.entries.iter().filter_map(|(id, e)| e.finished.map(|when| (when, id.clone()))).collect();
+        finished.sort();
+        let excess = finished.len().saturating_sub(32);
+        for (index, (when, id)) in finished.into_iter().enumerate() {
+            if now.duration_since(when) >= Duration::from_secs(3600) || index < excess {
+                self.entries.remove(&id);
+            }
+        }
+    }
+
+    fn reserve(&mut self, image: &str, arch: &str, now: Instant) -> Result<(String, bool), &'static str> {
+        self.prune(now);
+        let (repo, tag) = image.split_once(':').unwrap_or((image, "latest"));
+        let key = (format!("{repo}:{}", if tag.is_empty() { "latest" } else { tag }), arch.to_string());
+        let active: Vec<_> = self.entries.iter().filter(|(_, e)| e.finished.is_none()).collect();
+        if let Some((tid, _)) = active.iter().find(|(_, e)| e.key == key) {
+            return Ok(((*tid).clone(), false));
+        }
+        if active.len() >= 2 { return Err("已有 2 个镜像正在下载，请等待其中一个完成后重试"); }
+        let tid = format!("{:032x}", rand::random::<u128>());
+        self.entries.insert(tid.clone(), PullTask { key, finished: None,
+            state: json!({"status":"running", "progress":"准备拉取…", "log_tail":[], "error":null}) });
+        Ok((tid, true))
+    }
+
+    fn finish(&mut self, tid: &str, now: Instant) {
+        if let Some(entry) = self.entries.get_mut(tid) {
+            if entry.state["status"] == "running" {
+                entry.state["status"] = json!("error");
+                entry.state["error"] = json!("下载任务意外结束，请核对镜像清单后重试");
+            }
+            entry.finished = Some(now);
+        }
+        self.prune(now);
+    }
+}
+
+fn tasks() -> &'static Mutex<PullTasks> {
+    static T: OnceLock<Mutex<PullTasks>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(PullTasks::default()))
 }
 
 pub fn get_task(tid: &str) -> Option<Value> {
-    tasks().lock().unwrap().get(tid).cloned()
+    let mut tasks = tasks().lock().unwrap();
+    tasks.prune(Instant::now());
+    tasks.entries.get(tid).map(|e| e.state.clone())
 }
 
 fn set_task(tid: &str, v: Value) {
-    tasks().lock().unwrap().insert(tid.to_string(), v);
+    if let Some(entry) = tasks().lock().unwrap().entries.get_mut(tid) { entry.state = v; }
 }
 
-/// 对照 start_pull:后台任务遍历 mirror 拉取(pull_retag),更新任务表。返回 task_id(8 hex)。
-pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<String>, activity: crate::runtime_lifecycle::Activity) -> String {
-    let tid: String = (0..4).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
-    set_task(&tid, json!({ "status": "running", "progress": "准备拉取…", "log_tail": [], "error": Value::Null }));
+// Covers early return, panic and cancellation. Active work is never expired by a reader.
+struct PullCompletion(String);
+impl Drop for PullCompletion {
+    fn drop(&mut self) { tasks().lock().unwrap().finish(&self.0, Instant::now()); }
+}
+
+/// Share in-flight work, cap workers at two, retain at most 32 finished records for one hour.
+pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<String>, activity: crate::runtime_lifecycle::Activity) -> Result<String, &'static str> {
+    let (tid, created) = tasks().lock().unwrap().reserve(image, host_arch, Instant::now())?;
+    if !created { return Ok(tid); }
     let (image, host_arch, tid2) = (image.to_string(), host_arch.to_string(), tid.clone());
     let mirrors = if mirrors.is_empty() {
         DEFAULT_MIRRORS.iter().map(|s| s.to_string()).collect()
     } else {
         mirrors
     };
+    let completion = PullCompletion(tid2.clone());
     tokio::spawn(async move {
         let _activity = activity;
+        let _completion = completion;
         let (repo, tag) = match image.split_once(':') {
             Some((r, t)) => (r.to_string(), if t.is_empty() { "latest".into() } else { t.to_string() }),
             None => (image.clone(), "latest".to_string()),
@@ -457,7 +516,7 @@ pub fn start_pull(docker: Docker, image: &str, host_arch: &str, mirrors: Vec<Str
         set_task(&tid2, json!({ "status": "error", "progress": "", "log_tail": log,
             "error": "所有镜像源均失败,建议配置 Docker daemon 国内源后重试(见教程)" }));
     });
-    tid
+    Ok(tid)
 }
 
 #[cfg(test)]
@@ -479,7 +538,64 @@ mod tests {
 
     #[test]
     fn pull_task_lifecycle() {
-        assert!(get_task("nope").is_none());
+        let mut tasks = PullTasks::default();
+        let now = Instant::now();
+        let (first, created) = tasks.reserve("repo", "arm64", now).unwrap();
+        assert!(created);
+        assert_eq!(tasks.reserve("repo:latest", "arm64", now).unwrap(), (first.clone(), false));
+        let (second, _) = tasks.reserve("repo:other", "arm64", now).unwrap();
+        let later = now + Duration::from_secs(7200);
+        assert!(tasks.reserve("repo", "amd64", later).is_err());
+        assert_eq!(tasks.reserve("repo", "arm64", later).unwrap(), (first.clone(), false));
+        tasks.entries.get_mut(&first).unwrap().state["status"] = json!("done");
+        // A published result alone must not release an active worker's slot.
+        assert!(tasks.reserve("repo", "amd64", later).is_err());
+        tasks.finish(&first, later);
+        tasks.prune(later + Duration::from_secs(3599));
+        assert!(tasks.entries.contains_key(&first));
+        tasks.prune(later + Duration::from_secs(3600));
+        assert!(!tasks.entries.contains_key(&first));
+        assert!(tasks.entries.contains_key(&second));
+        assert!(tasks.reserve("repo", "amd64", later + Duration::from_secs(3600)).is_ok());
+    }
+
+    #[test]
+    fn pull_tasks_bound_history_and_concurrent_requests() {
+        let tasks = std::sync::Arc::new(Mutex::new(PullTasks::default()));
+        let requests: Vec<_> = (0..16).map(|_| {
+            let tasks = tasks.clone();
+            std::thread::spawn(move || tasks.lock().unwrap().reserve("repo", "arm64", Instant::now()).unwrap())
+        }).collect();
+        let results: Vec<_> = requests.into_iter().map(|r| r.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|(_, created)| *created).count(), 1);
+        assert!(results.iter().all(|(id, _)| id == &results[0].0));
+        let mut tasks = tasks.lock().unwrap();
+        for i in 0..40 {
+            let now = Instant::now();
+            let (id, _) = tasks.reserve(&format!("history:{i}"), "arm64", now).unwrap();
+            tasks.finish(&id, now);
+            assert_eq!(tasks.entries[&id].state["status"], "error");
+        }
+        assert_eq!(tasks.entries.len(), 33); // 32 completed plus the live worker.
+    }
+
+    #[tokio::test]
+    async fn abandoned_pull_releases_activity_and_publishes_failure() {
+        let coordinator = std::sync::Arc::new(crate::runtime_lifecycle::Coordinator::default());
+        let activity = coordinator.activity().await.unwrap();
+        let (id, _) = tasks().lock().unwrap().reserve("aborted-fixture", "arm64", Instant::now()).unwrap();
+        let completion = PullCompletion(id.clone());
+        let handle = tokio::spawn(async move {
+            let _activity = activity;
+            let _completion = completion;
+            std::future::pending::<()>().await;
+        });
+        handle.abort();
+        assert!(handle.await.unwrap_err().is_cancelled());
+        let result = get_task(&id).unwrap();
+        assert_eq!(result["status"], "error");
+        tokio::time::timeout(Duration::from_secs(1), coordinator.quiesce()).await.unwrap();
+        assert!(tasks().lock().unwrap().entries[&id].finished.is_some());
     }
 
     #[tokio::test]
