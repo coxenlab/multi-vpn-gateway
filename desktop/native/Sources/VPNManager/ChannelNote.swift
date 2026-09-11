@@ -67,15 +67,19 @@ struct ChannelNoteView: View {
         }.task(id: channelID) { await load() }
     }
     private func fetch() async throws -> String {
-        guard let api = model.api else { throw APIError(message: "本地服务尚未就绪") }
+        guard let api = model.api, model.isCurrent(api) else { throw APIError(message: "本地服务尚未就绪") }
         struct Note: Decodable { let note: String }
-        return try await api.get("/api/channels/\(channelID)/note", as: Note.self).note
+        let note = try await api.get("/api/channels/\(channelID)/note", as: Note.self).note
+        guard model.isCurrent(api) else { throw CancellationError() }
+        return note
     }
     private func load(discard: Bool = false) async { await draft.load(discardDraft: discard, fetch: fetch) }
     private func save() async {
-        guard let api = model.api else { return }
+        guard let api = model.api, model.isCurrent(api) else { return }
         if await draft.save(write: { note, expected in
+            guard model.isCurrent(api) else { throw CancellationError() }
             _ = try await api.write("/api/channels/\(channelID)/note", method: "PUT", body: ["note": note, "expected_note": expected])
-        }, fetch: fetch) { model.message = draft.dirty ? "备注已保存，后续输入仍在草稿中" : "备注已保存" }
+            guard model.isCurrent(api) else { throw CancellationError() }
+        }, fetch: fetch), model.isCurrent(api) { model.message = draft.dirty ? "备注已保存，后续输入仍在草稿中" : "备注已保存" }
     }
 }

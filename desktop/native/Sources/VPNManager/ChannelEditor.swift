@@ -85,7 +85,7 @@ struct ChannelEditor: View {
                     Text("确认后将准备运行环境并创建通道。首次准备可能需要下载镜像。")
                     Text("密码仅在本机加密保存。").foregroundStyle(.secondary)
                 }
-            }.formStyle(.grouped).disabled(busy)
+            }.formStyle(.grouped).disabled(busy || !model.ready)
             if busy, let detail = model.system?.runtime?.detail, !detail.isEmpty { Text(detail).font(.callout).foregroundStyle(.secondary) }
             if let error = model.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
@@ -93,9 +93,9 @@ struct ChannelEditor: View {
                 Spacer()
                 if channel == nil && step > 0 { Button("上一步") { step -= 1 }.disabled(busy) }
                 if channel == nil && step < 2 {
-                    Button("继续") { step += 1 }.keyboardShortcut(.defaultAction).disabled(step == 0 ? adapter == nil : !complete)
+                    Button("继续") { step += 1 }.keyboardShortcut(.defaultAction).disabled(!model.ready || (step == 0 ? adapter == nil : !complete))
                 } else {
-                    Button(busy ? "处理中…" : channel == nil ? "创建并连接" : "保存") { Task { await save() } }.keyboardShortcut(.defaultAction).disabled(busy || !complete)
+                    Button(busy ? "处理中…" : channel == nil ? "创建并连接" : "保存") { Task { await save() } }.keyboardShortcut(.defaultAction).disabled(!model.ready || busy || !complete)
                 }
             }
         }.padding(24).frame(width: 540, height: 580).interactiveDismissDisabled(busy)

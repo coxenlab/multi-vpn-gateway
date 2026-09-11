@@ -56,16 +56,20 @@ struct APIError: LocalizedError {
 }
 
 actor LocalAPI {
+    typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     private let base: URL
     private let session: URLSession
-    init(port: Int) {
+    private let transport: Transport?
+    init(port: Int, transport: Transport? = nil) {
         base = URL(string: "http://127.0.0.1:\(port)")!
+        self.transport = transport
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 25
         configuration.timeoutIntervalForResource = 1200
         configuration.connectionProxyDictionary = [:]
         session = URLSession(configuration: configuration)
     }
+    func invalidate() { session.invalidateAndCancel() }
     func url(_ path: String) -> URL { URL(string: path, relativeTo: base)!.absoluteURL }
     func data(_ path: String, method: String = "GET", body: [String: Any]? = nil, long: Bool = false) async throws -> Data {
         var request = URLRequest(url: url(path))
@@ -74,7 +78,10 @@ actor LocalAPI {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await session.data(for: request)
+        let result: (Data, URLResponse)
+        if let transport { result = try await transport(request) }
+        else { result = try await session.data(for: request) }
+        let (data, response) = result
         guard let http = response as? HTTPURLResponse else { throw APIError(message: "本地服务响应无法识别") }
         guard (200..<300).contains(http.statusCode) else {
             let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]

@@ -8,7 +8,7 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 
 从本 clone 运行 `desktop/native/dev.sh`。默认独立 `vpnmgr-native-dev` profile、`~/Library/Application Support/vpnmgr-native-dev` 数据与 `vpnmgr_native_dev_vpnnet` 网络；可用 `VPNMGR_NATIVE_DATA_DIR` 指定另一份开发数据。脚本不打包、不安装。启动界面只读配置；用户点连接/创建才会启动该开发 VM。调试二进制缺少显式开发身份会拒绝启动；核心同一数据目录的重复原生进程在生成或改写运行参数前被拒绝。
 
-关闭窗口仅隐藏，隐藏后停止界面轮询与登录视图；退出关闭本应用持有的 stdin 管道，core 执行已有完整清理。父进程异常退出同样使管道 EOF；core 收到 SIGTERM 也清理。stdout 只消费结构化 ready 事件中的本机端口，迟到的旧进程事件不能覆盖新实例。
+关闭窗口仅隐藏，隐藏后停止界面轮询与登录视图；退出关闭本应用持有的 stdin 管道，core 执行已有完整清理。父进程异常退出同样使管道 EOF；core 收到 SIGTERM 也清理。stdout 只消费结构化 ready 事件中的本机端口，迟到的旧进程事件不能覆盖新实例。核心退出时立即清除过期列表与进行中状态，取消旧连接；重新连接后，旧请求不能覆盖新数据、取消新操作或误报成功。未保存备注保留在本次界面会话中。
 
 ## 已接入的功能
 

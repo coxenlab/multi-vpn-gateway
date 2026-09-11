@@ -89,12 +89,8 @@ struct ChannelView: View {
     }
     private func uploadInstaller() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let file = panel.url, let api = model.api else { return }
-        Task {
-            model.busy.insert(channel.id); defer { model.busy.remove(channel.id) }
-            do { try await api.upload("/api/channels/\(channel.id)/upload", file: file); model.message = "安装包已上传，请在登录桌面中继续安装。" }
-            catch { model.error = error.localizedDescription }
-        }
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        Task { await model.uploadInstaller(file, channelID: channel.id) }
     }
     private var needsRuntimeForDelete: Bool { model.system?.runtime?.ready != true && (channel.container_id != nil || channel.replacement != nil) }
     private func action(_ name: String, method: String = "POST", message: String = "操作已完成") {
