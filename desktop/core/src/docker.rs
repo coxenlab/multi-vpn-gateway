@@ -403,7 +403,15 @@ where
 {
     let src = format!("{mirror}/{repo}");
     let platform = format!("linux/{host_arch}");
-    let opts = CreateImageOptions { from_image: src.clone(), tag: tag.to_string(), platform, ..Default::default() };
+    let locked = crate::image_sources::for_image(repo, tag, host_arch)?;
+    let full_src = match &locked {
+        Some(identity) => format!("{src}@{}", identity.manifest),
+        None => format!("{src}:{tag}"),
+    };
+    let opts = match &locked {
+        Some(_) => CreateImageOptions { from_image: full_src.clone(), platform, ..Default::default() },
+        None => CreateImageOptions { from_image: src.clone(), tag: tag.to_string(), platform, ..Default::default() },
+    };
     let mut stream = docker.create_image(Some(opts), None, None);
     let mut progress = PullProgress::default();
     while let Some(item) = stream.next().await {
@@ -413,17 +421,24 @@ where
         }
         on_progress(progress.observe(&info));
     }
-    let full_src = format!("{src}:{tag}");
     let arch = match docker.inspect_image(&full_src).await {
-        Ok(info) => match info.architecture.filter(|arch| !arch.is_empty()) {
-            Some(arch) => arch,
-            None => {
-                let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
-                return Err(anyhow!("inspect {full_src}: architecture 缺失"));
+        Ok(info) => {
+            if let Some(identity) = &locked {
+                identity.verify(info.id.as_deref())?;
+                anyhow::ensure!(info.architecture.as_deref() == Some(host_arch), "mihomo 镜像架构与锁定来源不同");
+            }
+            match info.architecture.filter(|arch| !arch.is_empty()) {
+                Some(arch) => arch,
+                None => {
+                    let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+                    return Err(anyhow!("inspect {full_src}: architecture 缺失"));
+                }
             }
         },
         Err(e) => {
-            let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+            if locked.is_none() {
+                let _ = docker.remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None).await;
+            }
             return Err(anyhow!("inspect {full_src}: {e}"));
         }
     };
@@ -438,6 +453,9 @@ where
         .tag_image(&full_src, Some(TagImageOptions { repo: repo.to_string(), tag: tag.to_string() }))
         .await
         .map_err(|e| anyhow!("tag {repo}:{tag}: {e}"))?;
+    // Keep the immutable source reference for provenance; deleting a digest is
+    // not the same operation as removing a temporary mirror tag.
+    if locked.is_some() { return Ok(PullOutcome::Tagged(arch)); }
     if let Err(e) = docker
         .remove_image(&full_src, Some(RemoveImageOptions { force: true, ..Default::default() }), None)
         .await

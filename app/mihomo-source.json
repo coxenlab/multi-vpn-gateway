@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "version": "v1.19.27",
+  "image": "metacubex/mihomo:v1.19.27",
+  "repository": "metacubex/mihomo",
+  "index": "sha256:23e7666401c91e2e293e01fb2f842b0a75530821c29b8ff2ed79409cd51fc74f",
+  "platforms": {
+    "amd64": {
+      "manifest": "sha256:41d360d47309344fc629b788263dde603b5905d9bcb08f1bc28c52e48984a338",
+      "config": "sha256:6d4225dd092221c8705411af809dc585660d2bf2b364215d67c1b6cc3bf53d9d"
+    },
+    "arm64": {
+      "manifest": "sha256:5fa9cee01c5e01dafc78b80b3e607221f457994709734d572b2df097f0162603",
+      "config": "sha256:5fdfdb31a38c1c1e20c0613ecf63809639d69c5d2898d4df21a120d6ecce8861"
+    }
+  },
+  "darwin_arm64": {
+    "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-darwin-arm64-v1.19.27.gz",
+    "sha256": "3617c9d8a5a55aecfe1ebd0f55ff59f2706c8ad68fd65c6c4e5f7cf2b74263f1",
+    "size": 15719003,
+    "binary_sha256": "6f01da0543dc3043b7e1a79fae421f0f3003cc05bcd6a1d0a211eb9ddc5656d6",
+    "binary_size": 42715154
+  }
+}

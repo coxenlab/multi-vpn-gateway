@@ -265,7 +265,7 @@ def test_known_repos_contains_mihomo():
 
 def test_infra_images_declared():
     imgs = {i["image"] for i in preflight.INFRA_IMAGES}
-    assert "metacubex/mihomo:latest" in imgs
+    assert preflight.MIHOMO_IMAGE in imgs
     assert "app" in imgs
 
 
@@ -313,7 +313,7 @@ def test_inventory_fixed_pull_has_present_and_single_version(monkeypatch):
 
 def test_inventory_includes_infra(monkeypatch):
     _, by = _inv(monkeypatch)
-    assert by["metacubex/mihomo:latest"]["role"] == "infra"
+    assert by[preflight.MIHOMO_IMAGE]["role"] == "infra"
     app = by["app"]
     assert app["kind"] == "compose"
     assert app["present"] is None and app["versions"] == []
@@ -337,3 +337,30 @@ def test_inventory_versioned_uses_real_fallback(monkeypatch):
     # easyconnect 在 adapters.yaml 里 fallback_versions: ["7.6.3", "7.6.7"]
     assert seen["fb"] == ["7.6.3", "7.6.7"]
     assert [v["tag"] for v in by["hagb/docker-easyconnect"]["versions"]] == ["7.6.3", "7.6.7"]
+
+
+def test_mihomo_pull_uses_digest_and_rejects_content_before_tagging(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    pinned = preflight.MIHOMO_SOURCE['platforms']['arm64']
+    monkeypatch.setattr(preflight, '_mirror_reachable', lambda _: True)
+    for image_id, architecture, succeeds in [(pinned['config'], 'arm64', True),
+                                            (pinned['manifest'], 'arm64', True),
+                                            (preflight.MIHOMO_SOURCE['index'], 'arm64', True),
+                                            ('sha256:' + '0' * 64, 'arm64', False),
+                                            (pinned['config'], 'amd64', False)]:
+        image = SimpleNamespace(id=image_id, attrs={'Architecture': architecture}, tag=Mock())
+        images = SimpleNamespace(pull=Mock(return_value=image), remove=Mock())
+        state = {'status': 'running', 'log_tail': []}
+        preflight._pull_worker(SimpleNamespace(images=images), preflight.MIHOMO_IMAGE, 'arm64', ['mirror.invalid'], state)
+        images.pull.assert_called_once_with('mirror.invalid/metacubex/mihomo@' + pinned['manifest'], platform='linux/arm64')
+        assert state['status'] == ('done' if succeeds else 'error')
+        assert image.tag.call_count == (1 if succeeds else 0)
+        images.remove.assert_not_called()
+
+
+def test_compose_uses_same_pinned_mihomo_index():
+    from pathlib import Path
+    import yaml
+    compose = yaml.safe_load((Path(__file__).resolve().parents[1]/'docker-compose.yml').read_text())
+    assert compose['services']['mihomo']['image'] == preflight.MIHOMO_IMAGE + '@' + preflight.MIHOMO_SOURCE['index']

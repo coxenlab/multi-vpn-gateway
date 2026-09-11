@@ -9,6 +9,11 @@ import requests
 import docker
 import registry
 import dockerhub
+import json
+from pathlib import Path
+
+MIHOMO_SOURCE = json.loads(Path(__file__).with_name("mihomo-source.json").read_text())
+MIHOMO_IMAGE = MIHOMO_SOURCE["image"]
 
 # P1 硬编码镜像源(按顺序探测可达再拉);P2 改为读 store.mirrors 表
 # 内置国内 Docker Hub 加速源(优先级序)。⚠️ 收录标准:实测能取到真实 manifest
@@ -26,7 +31,7 @@ _BUILD_CONTEXT = {"vpnmgr/oss-vpn": "images/oss", "vpnmgr/byo-desktop": "images/
 
 # 基础设施镜像(定义在 docker-compose,不在 adapters):分流底座 + 管理后端
 INFRA_IMAGES = [
-    {"image": "metacubex/mihomo:latest", "kind": "pull", "title": "mihomo 分流底座",
+    {"image": MIHOMO_IMAGE, "kind": "pull", "title": "mihomo 分流底座",
      "arch": ["amd64", "arm64"]},
     {"image": "app", "kind": "compose", "title": "管理后端(FastAPI)",
      "build_context": "app", "arch": []},
@@ -358,6 +363,12 @@ def _pull_worker(dc, image, host_arch, mirrors, st):
     repo, _, tag = image.partition(":")
     tag = tag or "latest"
     platform = f"linux/{host_arch}"
+    pinned = None
+    if image == MIHOMO_IMAGE:
+        pinned = MIHOMO_SOURCE["platforms"].get(host_arch)
+        if pinned is None:
+            st.update(status="error", error="mihomo 不支持当前架构")
+            return
     for m in mirrors:
         try:
             st["progress"] = f"探测镜像源 {m}…"
@@ -366,14 +377,22 @@ def _pull_worker(dc, image, host_arch, mirrors, st):
                 continue
             src = f"{m}/{repo}"
             st["progress"] = f"从 {m} 拉取 {repo}:{tag}({platform})…"
-            img = dc.images.pull(src, tag=tag, platform=platform)
+            if pinned:
+                img = dc.images.pull(f"{src}@{pinned['manifest']}", platform=platform)
+                if getattr(img, "id", None) not in (pinned["config"], pinned["manifest"], MIHOMO_SOURCE["index"]):
+                    raise ValueError("mihomo 镜像内容与锁定版本不同，未启用该镜像")
+            else:
+                img = dc.images.pull(src, tag=tag, platform=platform)
             arch = (getattr(img, "attrs", {}) or {}).get("Architecture")
+            if pinned and arch != host_arch:
+                raise ValueError("mihomo 镜像架构与锁定来源不同")
             if arch and arch != host_arch:
                 _log(st, f"{m} 拉到 {arch}(非 {host_arch}),弃用")
                 dc.images.remove(f"{src}:{tag}", force=True)
                 continue
             img.tag(repo, tag)
-            dc.images.remove(f"{src}:{tag}", force=True)
+            if not pinned:
+                dc.images.remove(f"{src}:{tag}", force=True)
             st["progress"] = f"完成:{repo}:{tag}({arch or host_arch})"
             st["status"] = "done"
             return

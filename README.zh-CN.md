@@ -77,7 +77,7 @@ cd app/static && python3 -m http.server 8080
 在宿主跑单测(不需要 FastAPI,依赖与 app 镜像分开):
 
 ```bash
-pip install -r tests/requirements-dev.txt
+pip install --require-hashes --only-binary=:all: -r tests/requirements-dev.txt
 pytest
 ```
 

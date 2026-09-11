@@ -11,6 +11,7 @@ import platform
 import plistlib
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +51,16 @@ class ReleaseTests(unittest.TestCase):
         for name in release.TOOLS:
             self.write(self.runtime / 'bin' / name, 'synthetic runtime tool', executable=True)
         self.write(self.engine, 'synthetic host engine', executable=True)
+        configuration = json.dumps({'os': 'linux', 'architecture': 'arm64', 'rootfs': {'diff_ids': []}}).encode()
+        config_hash = hashlib.sha256(configuration).hexdigest()
+        self.engine_source = {'schema': 1, 'image': 'metacubex/mihomo:v1.19.27',
+                              'platforms': {'arm64': {'config': 'sha256:' + config_hash}},
+                              'darwin_arm64': {'binary_sha256': release.digest(self.engine)}}
+        self.write(self.repo/'app/mihomo-source.json', json.dumps(self.engine_source))
+        with tarfile.open(self.images/'mihomo.tar.gz', 'w:gz') as archive:
+            for name, body in [(config_hash+'.json', configuration), ('manifest.json', json.dumps([
+                    {'Config': config_hash+'.json', 'RepoTags': [self.engine_source['image']], 'Layers': []}]).encode())]:
+                entry = tarfile.TarInfo(name); entry.size = len(body); archive.addfile(entry, io.BytesIO(body))
         self.write(self.runtime / 'share/lima/lima-guestagent.Linux-aarch64.gz', gzip.compress(b'guest'))
         self.write(self.runtime / 'share/lima/templates/default.yaml', 'synthetic template')
         self.manifest = {'schema':1,'sources':lock,'variant':'baseline','lima_version':'v2.1.2',
@@ -111,6 +122,30 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '候选不匹配'): self.inspect('gvisor698')
         self.write(self.runtime / 'bin/colima', 'tampered', executable=True)
         with self.assertRaisesRegex(RuntimeError, '校验失败'): self.inspect()
+
+    def test_host_and_container_mihomo_must_match_source_lock(self):
+        self.write(self.engine, 'different host version', executable=True)
+        with self.assertRaisesRegex(RuntimeError, '宿主 mihomo'): self.inspect()
+        self.write(self.engine, 'synthetic host engine', executable=True)
+        self.engine_source['platforms']['arm64']['config'] = 'sha256:' + 'b' * 64
+        self.write(self.repo/'app/mihomo-source.json', json.dumps(self.engine_source))
+        with self.assertRaisesRegex(RuntimeError, '镜像版本或内容'): self.inspect()
+
+    def test_correct_image_metadata_cannot_hide_a_corrupt_layer(self):
+        layer = b'synthetic layer tar'
+        config = json.dumps({'os': 'linux', 'architecture': 'arm64',
+                             'rootfs': {'diff_ids': ['sha256:' + hashlib.sha256(layer).hexdigest()]}}).encode()
+        key = hashlib.sha256(config).hexdigest()
+        self.engine_source['platforms']['arm64']['config'] = 'sha256:' + key
+        self.write(self.repo/'app/mihomo-source.json', json.dumps(self.engine_source))
+        for payload, succeeds in [(layer, True), (gzip.compress(layer), True), (b'corrupted layer', False)]:
+            with tarfile.open(self.images/'mihomo.tar.gz', 'w:gz') as archive:
+                for name, body in [('layer.tar', payload), (key+'.json', config), ('manifest.json', json.dumps([
+                        {'Config': key+'.json', 'RepoTags': [self.engine_source['image']], 'Layers': ['layer.tar']}]).encode())]:
+                    entry = tarfile.TarInfo(name); entry.size = len(body); archive.addfile(entry, io.BytesIO(body))
+            if succeeds: self.inspect()
+            else:
+                with self.assertRaisesRegex(RuntimeError, '分层内容'): self.inspect()
 
     def test_stale_build_identity_and_source_lock_are_rejected(self):
         self.manifest['build_id'] = '0' * 64; self.save_manifest()

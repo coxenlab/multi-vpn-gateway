@@ -100,7 +100,7 @@ Run the host-side suite (FastAPI not required; deps are separate from the app
 image):
 
 ```bash
-pip install -r tests/requirements-dev.txt
+pip install --require-hashes --only-binary=:all: -r tests/requirements-dev.txt
 pytest
 ```
 

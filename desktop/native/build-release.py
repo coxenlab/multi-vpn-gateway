@@ -13,6 +13,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 
 REPO = Path(__file__).resolve().parents[2]
@@ -44,6 +45,50 @@ def verify_gzip(path):
             expanded += len(block)
             require(expanded <= 32 * 1024 * 1024 * 1024, '内置镜像展开大小超过 32 GiB')
     require(expanded > 0, '内置镜像为空: ' + str(path))
+
+
+def verify_mihomo_archive(path, source):
+    expected = source['platforms']['arm64']['config'].removeprefix('sha256:')
+    manifest = None
+    configurations = {}
+    layers = {}
+    expanded = 0
+    seen = set()
+    with tarfile.open(path, 'r|gz') as archive:
+        for entry in archive:
+            name = str(Path(entry.name))
+            require(name not in seen, '内置 mihomo 镜像含重复文件')
+            seen.add(name)
+            if name != 'manifest.json' and name not in (expected + '.json', 'blobs/sha256/' + expected):
+                if entry.isfile():
+                    stream = archive.extractfile(entry)
+                    content = gzip.GzipFile(fileobj=stream) if stream.peek(2)[:2] == b'\x1f\x8b' else stream
+                    checksum = hashlib.sha256()
+                    for block in iter(lambda: content.read(1024 * 1024), b''):
+                        expanded += len(block)
+                        require(expanded <= 32 * 1024 * 1024 * 1024, '内置 mihomo 镜像分层展开大小超过限制')
+                        checksum.update(block)
+                    layers[name] = 'sha256:' + checksum.hexdigest()
+                continue
+            require(entry.isfile() and 0 < entry.size <= 1024 * 1024, '内置 mihomo 镜像元数据无效')
+            body = archive.extractfile(entry).read()
+            if name == 'manifest.json':
+                require(manifest is None, '内置 mihomo 镜像清单重复')
+                manifest = json.loads(body)
+            else:
+                require(hashlib.sha256(body).hexdigest() == expected, '内置 mihomo 镜像内容与锁定来源不同')
+                config = json.loads(body)
+                require(config.get('architecture') == 'arm64' and config.get('os') == 'linux', '内置 mihomo 镜像架构不符')
+                configurations[name] = config
+    require(isinstance(manifest, list) and len(manifest) == 1 and isinstance(manifest[0], dict), '内置 mihomo 须为单一 Docker 镜像归档')
+    entry = manifest[0]
+    require(source['image'] in entry.get('RepoTags', []) and entry.get('Config') in configurations,
+            '内置 mihomo 镜像版本或内容未匹配锁定来源')
+    names = entry.get('Layers')
+    expected_layers = configurations[entry['Config']].get('rootfs', {}).get('diff_ids')
+    require(isinstance(names, list) and isinstance(expected_layers, list)
+            and len(names) == len(expected_layers) and all(isinstance(name, str) and name in layers for name in names)
+            and [layers[name] for name in names] == expected_layers, '内置 mihomo 镜像分层内容校验失败')
 
 
 def regular(path, root, executable=False):
@@ -117,6 +162,11 @@ def inspect_inputs(runtime, images, vm_images, engine, variant, repo=REPO, packa
         sources['static/' + str(path.relative_to(static))] = path
     sources['icon.icns'] = regular(repo / 'desktop/app/icons/icon.icns', repo)
     sources['runtime/helper/mihomo'] = regular(engine, engine.parent, executable=True)
+    engine_lock = regular(repo / 'app/mihomo-source.json', repo)
+    engine_source = json.loads(engine_lock.read_text())
+    require(engine_source.get('schema') == 1 and digest(engine) == engine_source['darwin_arm64']['binary_sha256'],
+            '宿主 mihomo 与锁定来源不同')
+    sources['mihomo-source.json'] = engine_lock
     vm_source = json.loads((repo / 'desktop/app/vm-image-source.json').read_text())
     require(vm_source.get('schema') == 1 and vm_source['colima_version'] == lock['colima']['version'], 'VM 镜像与 Colima 来源版本不一致')
     key = hashlib.sha256(vm_source['url'].encode()).hexdigest()
@@ -127,6 +177,7 @@ def inspect_inputs(runtime, images, vm_images, engine, variant, repo=REPO, packa
         regular(path, path.parent)
         verify_gzip(path)
         sources[destination] = path
+    verify_mihomo_archive(images / 'mihomo.tar.gz', engine_source)
     hashes = {name: digest(path) for name, path in sources.items()}
     return {'info': info, 'sources': sources, 'hashes': hashes, 'runtime_build_id': manifest['build_id'],
             'runtime_variant': variant, 'bytes': sum(path.stat().st_size for path in sources.values()),
@@ -277,5 +328,5 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (RuntimeError, OSError, EOFError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (RuntimeError, OSError, EOFError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
         raise SystemExit('原生发布检查未通过: ' + str(error))

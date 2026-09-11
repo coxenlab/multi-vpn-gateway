@@ -495,7 +495,7 @@ def test_byo_start_inplace_not_recreate(client, monkeypatch):
 
 
 def test_images_inventory_route(client, monkeypatch):
-    import dockerhub
+    import dockerhub, preflight
     monkeypatch.setattr(dockerhub, "versions",
                         lambda repo, arch, fb: [{"tag": "7.6.7", "arch": ["arm64"], "usable_here": True}])
 
@@ -507,7 +507,7 @@ def test_images_inventory_route(client, monkeypatch):
     assert "docker.1ms.run" in j["mirrors"]
     by = {e["image"]: e for e in j["images"]}
     assert by["hagb/docker-easyconnect"]["versioned"] is True
-    assert by["metacubex/mihomo:latest"]["role"] == "infra"
+    assert by[preflight.MIHOMO_IMAGE]["role"] == "infra"
     assert by["vpnmgr/oss-vpn:latest"]["kind"] == "build"
     assert len(by["vpnmgr/oss-vpn:latest"]["used_by"]) == 8
 

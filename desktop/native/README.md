@@ -45,6 +45,8 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 
 检查来源锁、构建身份、逐文件摘要、架构/签名、完整 gzip 校验和静态登录资源；这是本地完整性检查，不代替镜像来源认证与真实载入验收。旧暂存目录没有 manifest 时会停止，不能静默用 Homebrew 或已安装 App 的运行工具补齐。可用 `--runtime-dir`、`--images-dir`、`--vm-image-dir`、`--mihomo` 显式选已准备资源。候选 runtime 还必须同时指定 `--runtime-variant gvisor698`，默认 baseline。
 
+宿主和容器 mihomo 共用 `app/mihomo-source.json`：宿主必须匹配官方二进制 SHA256；Docker 归档必须包含对应版本标签、已锁 config ID 和一致的分层摘要。旧的 `latest` 归档或被本机重签/替换的宿主引擎会被拒绝，需显式准备已锁版本后再检查；检查不会替换旧暂存文件或现用组件。来源准备命令见 `docs/development.md`。
+
 **当前不执行打包安装。** 完成相关验收并进入发布阶段后，构建须显式提供不存在的仓库外目录，例如：
 
 ```sh

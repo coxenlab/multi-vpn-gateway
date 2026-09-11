@@ -12,11 +12,22 @@ cd "$(dirname "$0")"
 export DOCKER_HOST
 DOCKER="${DOCKER:-docker}"
 mkdir -p bundled-images
+MIHOMO_IMAGE=$(python3 -c 'import json; print(json.load(open("../../app/mihomo-source.json"))["image"])')
+MIHOMO_IDS=$(python3 -c 'import json; s=json.load(open("../../app/mihomo-source.json")); p=s["platforms"]["arm64"]; print(" ".join([p["config"], p["manifest"], s["index"]]))')
 # oss-vpn(自建,registry 拉不到)+ mihomo(分流内核;内置后第 05 步离线,免赖镜像源)
-for PAIR in "vpnmgr/oss-vpn:latest oss-vpn.tar.gz" "metacubex/mihomo:latest mihomo.tar.gz"; do
+for PAIR in "vpnmgr/oss-vpn:latest oss-vpn.tar.gz" "$MIHOMO_IMAGE mihomo.tar.gz"; do
   IMG=${PAIR% *}; OUT=${PAIR#* }
   "$DOCKER" image inspect "$IMG" >/dev/null 2>&1 \
     || { echo "context $DOCKER_HOST 里没有 $IMG;先 build/load 它再跑本脚本"; exit 1; }
+  if [ "$OUT" = mihomo.tar.gz ]; then
+    ACTUAL_ID=$("$DOCKER" image inspect --format '{{.Id}}' "$IMG")
+    case " $MIHOMO_IDS " in
+      *" $ACTUAL_ID "*) ;;
+      *) echo 'mihomo 实际镜像与锁定来源不同，拒绝导出。' >&2; exit 1 ;;
+    esac
+    [ "$("$DOCKER" image inspect --format '{{.Architecture}}' "$IMG")" = arm64 ] \
+      || { echo 'mihomo 镜像不是 arm64，拒绝导出。' >&2; exit 1; }
+  fi
   echo "docker save $IMG → bundled-images/$OUT  (DOCKER_HOST=$DOCKER_HOST)"
   "$DOCKER" save "$IMG" | gzip > "bundled-images/$OUT"
   ls -lh "bundled-images/$OUT" | awk '{print "  staged:", $5, $NF}'

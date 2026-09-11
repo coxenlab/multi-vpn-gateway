@@ -151,6 +151,14 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 单元测试用 `.venv/bin/pytest tests -q`，不要从仓库根递归扫描 handoff 符号链接。测试强制使用本轮创建的临时目录，拒绝真实 Docker/requests 网络操作。
 
+Python 直接依赖在 `app/requirements.in` 和 `tests/requirements-dev.in`；对应 `.txt` 是包含传递依赖、平台条件和官方 PyPI 文件 SHA256 的精确锁文件。生产镜像安装与本地测试都使用锁文件，禁止临时删版本约束解决安装错误；Docker 构建要求 `--require-hashes --only-binary=:all:`，缺少对应平台的 wheel 时停止，不回退到未锁构建依赖的源码安装。测试锁复用生产锁的版本约束，支持现有 Python 3.9 测试环境和 Python 3.11 Linux 镜像；锁文件不等于已完成真实容器运行验收。
+
+在新的虚拟环境安装：`python -m pip install --require-hashes --only-binary=:all: -r tests/requirements-dev.txt`。重新生成锁文件的命令在各文件头部，先生成生产锁，再生成测试锁；审核直接/传递依赖变化后运行 `./verify.sh`，并在全新环境校验安装和相关 Linux 架构 wheel。初始版本沿用本项目已测 Python 依赖，没有借锁定工作升级 FastAPI 等主依赖。哈希模式依据 [pip 官方说明](https://pip.pypa.io/en/stable/topics/secure-installs/)。
+
+`app/mihomo-source.json` 锁定 [mihomo v1.19.27 官方发布](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.27)：Docker Hub 多架构索引、各架构 manifest/config，以及 macOS arm64 官方 gzip/解压后二进制的大小和 SHA256。Compose 使用索引摘要；Rust/Web 镜像获取按架构 manifest 拉取，实际 ID/架构读回一致才标记成功并赋予版本标签。ID 校验兼容经典存储的 config 摘要和 [containerd 存储的 manifest/index 摘要](https://github.com/moby/moby/blob/master/daemon/containerd/image_inspect.go)，仅接受清单绑定的内容。Rust 新建分流容器使用读回且核对过的 image ID，标签被重新指向也不会切到其他内容；既有运行容器不在此处自动替换，实际升级与链路回归仍须单独验收。
+
+`desktop/app/stage-mihomo.py --output <新暂存文件>` 获取并验证宿主引擎，`--archive <官方 gzip>` 可离线准备，`--binary <文件>` 只接受与官方解压内容完全相同的文件。已有不同版本、损坏下载或并发写入均不覆盖；保留官方 Go 二进制的 ad-hoc 签名，不自行改字节。`stage-helper.sh` 调用此入口，不再从 PATH 任选 mihomo，`MIHOMO_VERSION` 覆盖会明确拒绝。原生发布检查还核对宿主二进制及内置 Docker 归档的配置 ID、版本标签和各层内容摘要。来源锁仅覆盖这里列出的运行组件，不宣称所有厂商镜像、OS 基础镜像或 apt 包已可逐字节复现。
+
 升级核对可用 `vpnmgr-core --prepare-upgrade <原目录> <不存在的副本目录>`：SQLite backup 纳入已提交 WAL，复制主密钥、infra 参数、启动配置、分流/TUN 意图和日志开关；核对加密字段、恢复记录、配置密钥匹配，且副本升级 schema。源目录只读，输出目录 0700、文件 0600，已有目标拒绝覆盖。v2 的 `upgrade-review.json` 记录原目录、profile、数量及文件摘要，不含凭据；准备后的原数据或副本变化会阻止启用。副本保留 `upgrade-pending`，不会因准备成功自动启动。
 
 macOS 离线切换命令使用 `DATA_DIR` 指定新版本数据目录、`VPNMGR_VM_PROFILE` 指定同一个原 profile：`--activate-upgrade <副本目录>`、`--upgrade-status`、`--resume-upgrade`、`--rollback-upgrade`、`--finish-upgrade`。须先退出使用原目录或目标目录的应用；目标目录必须已由新版本初始化，profile 必须读回为 Stopped。这些命令不启动/停止 VM、不修改容器或宿主网络。原生确认入口先正常关闭自己的 core，再调用离线命令并重新启动管理服务；其他安装版仍运行时拒绝切换，不终止对方。服务无法启动时，主界面仍提供升级恢复入口。

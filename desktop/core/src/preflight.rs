@@ -136,7 +136,7 @@ pub struct InfraImage {
 }
 
 pub const INFRA_IMAGES: &[InfraImage] = &[
-    InfraImage { image: "metacubex/mihomo:latest", kind: "pull", title: "mihomo 分流底座", build_context: None, arch: &["amd64", "arm64"] },
+    InfraImage { image: crate::image_sources::MIHOMO_IMAGE, kind: "pull", title: "mihomo 分流底座", build_context: None, arch: &["amd64", "arm64"] },
     InfraImage { image: "app", kind: "compose", title: "管理后端(FastAPI)", build_context: Some("app"), arch: &[] },
 ];
 

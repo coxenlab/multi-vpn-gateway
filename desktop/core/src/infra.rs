@@ -34,7 +34,7 @@ pub const MIHOMO_CFG_PATH: &str = "/cfg/config.yaml";
 /// 配置持久卷名。
 pub const MIHOMO_VOLUME: &str = "vpnmgr_mihomo_cfg";
 /// mihomo 分流底座镜像(对照 docker-compose 的 mihomo 服务)。
-pub const MIHOMO_IMAGE: &str = "metacubex/mihomo:latest";
+pub use crate::image_sources::MIHOMO_IMAGE;
 /// 容器内分流端口(mixed)。宿主侧由 [`crate::tunnel`] 的 SSH 转发伺服,不 publish。
 pub const MIHOMO_PROXY_PORT: u16 = 7899;
 /// 容器内控制端口(external-controller)。同上,不 publish。
@@ -197,13 +197,13 @@ async fn container_running(docker: &Docker, name: &str) -> bool {
 /// **不 publish 端口**:一旦 publish,VM 里就出现 listener,lima 会自动把同号宿主端口
 /// 抢过去转发——而那条转发会僵死且永不重建(见 [`crate::tunnel`] 模块注释)。宿主分流口/
 /// 控制口改由 app 自持的 SSH 转发直连容器 IP 伺服,lima 全程不参与。
-fn mihomo_container_config(cfg: &Config) -> ContainerConfig<String> {
+fn mihomo_container_config(cfg: &Config, image_id: &str) -> ContainerConfig<String> {
     let mut exposed = HashMap::new();
     exposed.insert(format!("{MIHOMO_PROXY_PORT}/tcp"), HashMap::new());
     exposed.insert(format!("{MIHOMO_CTRL_PORT_IN}/tcp"), HashMap::new());
 
     ContainerConfig {
-        image: Some(MIHOMO_IMAGE.to_string()),
+        image: Some(image_id.to_string()),
         cmd: Some(vec!["-d".to_string(), MIHOMO_CFG_DIR.to_string()]),
         exposed_ports: Some(exposed),
         host_config: Some(HostConfig {
@@ -235,7 +235,16 @@ pub async fn ensure_bundled_images(docker: &Docker, images_dir: &Path) -> Result
         (MIHOMO_IMAGE, "mihomo.tar.gz"),
     ] {
         let tarball = images_dir.join(file);
-        if tarball.exists() && docker::load_image_if_absent(docker, image, &tarball).await? {
+        if !tarball.exists() { continue; }
+        let loaded = if file == "mihomo.tar.gz" {
+            let arch = crate::registry::host_arch();
+            if crate::image_sources::installed_mihomo(docker, &arch).await?.is_some() { continue; }
+            let pinned = crate::image_sources::mihomo(&arch)?;
+            let loaded = docker::load_image_if_absent(docker, &pinned.manifest, &tarball).await?;
+            anyhow::ensure!(crate::image_sources::installed_mihomo(docker, &arch).await?.is_some(), "内置 mihomo 未载入锁定版本");
+            loaded
+        } else { docker::load_image_if_absent(docker, image, &tarball).await? };
+        if loaded {
             crate::ev!(info, "boot", "bundled_image_loaded", "内置镜像已载入", { "image": image });
         }
     }
@@ -247,17 +256,20 @@ pub async fn ensure_mihomo_image_with_progress<F>(docker: &Docker, cfg: &Config,
 where
     F: FnMut(String) + Send,
 {
-    if docker::image_present(docker, MIHOMO_IMAGE).await == Some(true) {
+    let host_arch = crate::registry::host_arch();
+    if crate::image_sources::installed_mihomo(docker, &host_arch).await?.is_some() {
         on_progress("mihomo 镜像已存在".to_string());
         return Ok(());
     }
 
     on_progress(format!("从 Docker Hub 拉取 {MIHOMO_IMAGE}…"));
     let mut errors = Vec::new();
-    match docker::ensure_image_with_progress(docker, MIHOMO_IMAGE, |p| {
+    let (repo, tag) = MIHOMO_IMAGE.split_once(':').expect("locked image has a version");
+    match docker::pull_retag_with_progress(docker, "docker.io", repo, tag, &host_arch, |p| {
         on_progress(format!("Docker Hub · {}", p.detail));
     }).await {
-        Ok(()) => return Ok(()),
+        Ok(docker::PullOutcome::Tagged(_)) => return Ok(()),
+        Ok(docker::PullOutcome::ArchMismatch(arch)) => errors.push(format!("Docker Hub 镜像架构不符: {arch}")),
         Err(e) => {
             let message = format!("Docker Hub 失败: {e}");
             on_progress(message.clone());
@@ -265,8 +277,6 @@ where
         }
     }
 
-    let (repo, tag) = MIHOMO_IMAGE.split_once(':').unwrap_or((MIHOMO_IMAGE, "latest"));
-    let host_arch = crate::registry::host_arch();
     let mut mirrors: Vec<String> = crate::store::list_mirrors(&cfg.db_path())
         .unwrap_or_default()
         .into_iter()
@@ -317,6 +327,8 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
         }
         true
     } else { false };
+    let image_id = crate::image_sources::installed_mihomo(docker, &crate::registry::host_arch()).await?
+        .ok_or_else(|| anyhow!("锁定 mihomo 镜像不可用"))?;
     docker::rm_force(docker, MIHOMO_CONTAINER).await?; // 清理停止态残留 / 旧形态
 
     if cfg.mihomo_host_port.is_empty() {
@@ -341,7 +353,7 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
     let delivered = std::fs::read_to_string(host_path)
         .unwrap_or_else(|_| render_base_config(&cfg.mihomo_secret));
 
-    let config = mihomo_container_config(cfg);
+    let config = mihomo_container_config(cfg, &image_id);
     docker
         .create_container(
             Some(CreateContainerOptions { name: MIHOMO_CONTAINER.to_string(), platform: None }),
@@ -501,7 +513,8 @@ mod tests {
     #[test]
     fn container_publishes_nothing_and_keeps_volume() {
         let cfg = Config::from_getter(|_| None);
-        let c = mihomo_container_config(&cfg);
+        let c = mihomo_container_config(&cfg, "sha256:verified-image");
+        assert_eq!(c.image.as_deref(), Some("sha256:verified-image"));
         let h = c.host_config.as_ref().unwrap();
         assert_eq!(h.binds, Some(vec!["vpnmgr_mihomo_cfg:/cfg".to_string()]));
         assert_eq!(h.network_mode.as_deref(), Some("vpnmgr_vpnnet"));

@@ -7,7 +7,7 @@ volumes:
 
 services:
   mihomo:
-    image: metacubex/mihomo:latest
+    image: metacubex/mihomo:v1.19.27@sha256:23e7666401c91e2e293e01fb2f842b0a75530821c29b8ff2ed79409cd51fc74f
     command: -d /cfg
     volumes:
       - ./mihomo:/cfg

@@ -9,6 +9,7 @@ pub mod docker;
 pub mod vm;
 pub mod vm_image_cache;
 pub mod infra;
+pub mod image_sources;
 pub mod manager;
 pub mod mihomo;
 pub mod server;

@@ -25,7 +25,7 @@ cd app/static && python3 -m http.server 8080
 单元测试用 pytest,依赖独立于运行镜像(`tests/conftest.py` 在 import 前注入测试用 env,SQLite 落临时目录,manager 的容器 / 探活等副作用全 monkeypatch 掉),从仓库根运行:
 
 ```bash
-pip install -r tests/requirements-dev.txt
+pip install --require-hashes --only-binary=:all: -r tests/requirements-dev.txt
 pytest tests/                           # adapters / api / clash / dockerhub / manager / registry / store
 ```
 
