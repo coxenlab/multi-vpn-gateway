@@ -58,11 +58,15 @@ struct WorkspaceView: View {
     @State private var page: Page? = .channels
     @State private var selection: String?
     @State private var creating = false
+    @State private var channelSearch = ""
+    private var filteredChannels: [Channel] {
+        model.channels.filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }
+    }
     init(initialSelection: String? = nil, initialPage: Page = .channels) { _selection = State(initialValue: initialSelection); _page = State(initialValue: initialPage) }
     var body: some View {
         NavigationSplitView {
             List(Page.allCases, selection: $page) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
-                .navigationSplitViewColumnWidth(min: 170, ideal: 190)
+                .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 210)
                 .safeAreaInset(edge: .bottom) {
                     if model.visible { GatewayStatusSummary().font(.caption).padding() }
                 }
@@ -72,7 +76,7 @@ struct WorkspaceView: View {
                     HStack(alignment: .top) { Label(error, systemImage: "exclamationmark.triangle"); Spacer(); Button("关闭") { model.error = nil } }
                         .padding().background(.orange.opacity(0.12)).accessibilityElement(children: .contain)
                 } else if let message = model.message {
-                    HStack { Text(message); Spacer(); Button("关闭") { model.message = nil }.buttonStyle(.plain) }.font(.callout).padding(12).background(.quaternary)
+                    HStack { Label(message, systemImage: "info.circle"); Spacer(); Button { model.message = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("关闭提示").accessibilityLabel("关闭提示") }.font(.callout).padding(.horizontal, 16).padding(.vertical, 8).background(.quaternary)
                 }
                 if model.ready && model.visible { GatewayStatusView { page = $0 } }
                 if !model.ready {
@@ -86,14 +90,30 @@ struct WorkspaceView: View {
                     switch page ?? .channels {
                     case .channels:
                         HSplitView {
-                            List(selection: $selection) {
-                                ForEach(model.channels) { ch in
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(ch.name).font(.headline)
-                                        Text(ch.statusLabel(runtime: model.system?.runtime)).font(.caption).foregroundStyle(.secondary)
-                                    }.padding(.vertical, 5).tag(ch.id)
+                            VStack(spacing: 0) {
+                                HStack {
+                                    Text("全部通道").font(.headline)
+                                    Text("\(model.channels.count)").foregroundStyle(.secondary).monospacedDigit()
+                                    Spacer()
+                                    Button { creating = true } label: { Image(systemName: "plus") }
+                                        .help("新建通道（⌘N）").accessibilityLabel("新建通道")
+                                }.padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 10)
+                                TextField("搜索通道", text: $channelSearch).textFieldStyle(.roundedBorder)
+                                    .padding(.horizontal, 12).padding(.bottom, 12)
+                                Divider()
+                                List(selection: $selection) {
+                                    ForEach(filteredChannels) { ch in
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            Text(ch.name).font(.headline).lineLimit(2).help(ch.name)
+                                            Text(ch.statusLabel(runtime: model.system?.runtime)).font(.caption).foregroundStyle(.secondary)
+                                        }.padding(.vertical, 6).tag(ch.id)
+                                    }
+                                }.overlay {
+                                    if filteredChannels.isEmpty {
+                                        Text(model.channels.isEmpty ? "还没有通道" : "没有匹配的通道").foregroundStyle(.secondary)
+                                    }
                                 }
-                            }.frame(minWidth: 220, idealWidth: 240, maxWidth: 320)
+                            }.frame(minWidth: 210, idealWidth: 230, maxWidth: 260)
                             if let ch = model.channels.first(where: { $0.id == selection }) { ChannelView(channel: ch).id(ch.id) }
                             else { ContentUnavailableView(model.channels.isEmpty ? "添加第一条通道" : "选择一条通道", systemImage: "network", description: Text("在这里管理连接、登录和分流规则。")) }
                         }
@@ -104,13 +124,17 @@ struct WorkspaceView: View {
                 }
             }.navigationTitle(page?.rawValue ?? "通道")
                 .toolbar {
-                    if page == .channels { Button { creating = true } label: { Label("新建通道", systemImage: "plus") }.disabled(!model.ready) }
                     Button {
                         if let pageRefresh { pageRefresh.perform() }
                         else { Task { await model.refresh() } }
                     } label: { Label("刷新", systemImage: "arrow.clockwise") }.disabled(!model.ready || pageRefresh?.enabled == false)
                 }
-        }.onChange(of: model.createdChannelID) { _, id in if let id { selection = id; page = .channels; model.createdChannelID = nil } }
+        }.onChange(of: model.createdChannelID) { _, id in if let id { selection = id; channelSearch = ""; page = .channels; model.createdChannelID = nil } }
+        .task(id: model.message) {
+            guard let message = model.message else { return }
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            if model.message == message { model.message = nil }
+        }
         .sheet(isPresented: $creating) { ChannelEditor(channel: nil) }
         .sheet(isPresented: $model.upgradePresented) {
             VStack {

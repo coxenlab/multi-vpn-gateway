@@ -19,17 +19,18 @@ struct RulesView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ConfigApplicationView().padding([.horizontal, .top])
             HStack {
-                TextField("搜索域名、IP 或通道", text: $search).textFieldStyle(.roundedBorder)
+                TextField(channelID == nil ? "搜索域名、IP 或通道" : "搜索域名或 IP", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 320)
+                Spacer(minLength: 8)
                 if !selected.isEmpty {
                     Menu("批量操作") {
                         Button("启用所选规则") { batch(true) }
                         Button("停用所选规则") { batch(false) }
                     }.disabled(model.busy.contains("__batch-rules"))
                 }
-                Button("添加规则") { selectedChannel = channelID ?? model.channels.first?.id ?? ""; adding = true }.disabled(model.channels.isEmpty)
-            }.padding([.horizontal, .top])
+                Button("添加规则") { selectedChannel = channelID ?? model.channels.first?.id ?? ""; adding = true }.buttonStyle(.borderedProminent).disabled(model.channels.isEmpty)
+            }.padding(.horizontal, 20).padding(.top, 16)
+            ConfigApplicationView().padding(.horizontal, 20)
             if !conflicts.isEmpty {
                 DisclosureGroup("\(conflicts.count) 组规则交叠\(conflicts.count == 100 ? "（最多显示 100 组）" : "")") {
                     ScrollView {
@@ -42,24 +43,31 @@ struct RulesView: View {
                     }.frame(maxHeight: 160)
                 }.foregroundStyle(.orange).padding(.horizontal)
             }
-            if rows.isEmpty { ContentUnavailableView("没有匹配的规则", systemImage: "line.3.horizontal.decrease") }
+            if rows.isEmpty { ContentUnavailableView(search.isEmpty ? "还没有分流规则" : "没有匹配的规则", systemImage: "line.3.horizontal.decrease", description: Text(search.isEmpty ? "添加内网域名或 IP，指定使用的通道。" : "试试其他域名、IP 或通道名称。")) }
             else {
-                Table(rows, selection: $selected) {
-                    TableColumn("启用") { item in
-                        Toggle("启用 \(item.rule.pattern)", isOn: Binding(get: { item.rule.enabled != 0 }, set: { next in
-                            Task { await model.perform("/api/channels/\(item.channel.id)/rules/\(item.rule.id)", key: "rule-\(item.id)", method: "PATCH", body: ["enabled": next], success: "规则已保存") }
-                        })).labelsHidden().disabled(item.rule.locked == 1 || model.busy.contains("rule-\(item.id)"))
-                    }.width(48)
-                    TableColumn("域名 / IP") { item in
-                        Text(item.rule.pattern).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                            .contextMenu { Button("备注与锁定…") { editing = item; ruleNote = item.rule.note ?? ""; ruleLocked = item.rule.locked == 1 } }
+                if channelID == nil {
+                    Table(rows, selection: $selected) {
+                        TableColumn("启用") { enabledCell($0) }.width(48)
+                        TableColumn("域名 / IP") { patternCell($0) }
+                        TableColumn("通道") { Text($0.channel.name).lineLimit(1).help($0.channel.name) }.width(min: 100, ideal: 180, max: 260)
+                        TableColumn("状态") { statusCell($0) }.width(90)
+                        TableColumn("") { actionCell($0) }.width(32)
                     }
-                    TableColumn("通道") { Text($0.channel.name) }
-                    TableColumn("状态") { item in Text(item.channel.stop_pending == true ? "停用待确认" : model.system?.routing_off == true || !item.channel.routing_enabled || ["stopped", "down", "error"].contains(item.channel.configured_status ?? item.channel.status) ? "暂不分流" : item.rule.enabled == 0 ? "未启用" : "已保存").foregroundStyle(.secondary) }
-                    TableColumn("") { item in Button(role: .destructive) { deleting = item } label: { Image(systemName: "trash") }.buttonStyle(.borderless).help("删除规则").disabled(item.rule.locked == 1) }.width(36)
+                } else {
+                    Table(rows, selection: $selected) {
+                        TableColumn("启用") { enabledCell($0) }.width(48)
+                        TableColumn("域名 / IP") { patternCell($0) }
+                        TableColumn("状态") { statusCell($0) }.width(90)
+                        TableColumn("") { actionCell($0) }.width(32)
+                    }
                 }
             }
-            Text("已保存的规则与实际生效状态分开确认。环境休眠时，连接后再同步。").font(.caption).foregroundStyle(.secondary).padding([.horizontal, .bottom])
+            HStack {
+                Text("\(rows.count) 条规则")
+                if !selected.isEmpty { Text("· 已选择 \(selected.count) 条") }
+                Spacer()
+                Text("数量按已保存配置计算")
+            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12)
         }.task(id: RuleAnalysisInput(channels: model.channels, off: model.system?.routing_off == true)) {
             let input = RuleAnalysisInput(channels: model.channels, off: model.system?.routing_off == true)
             let result = await Task.detached(priority: .utility) { findRuleConflicts(input) }.value
@@ -96,6 +104,26 @@ struct RulesView: View {
             if let item = deleting { Button("删除 \(item.rule.pattern)", role: .destructive) { Task { await model.perform("/api/channels/\(item.channel.id)/rules/\(item.rule.id)", key: "rule-\(item.id)", method: "DELETE", success: "规则已删除") }; deleting = nil } }
         }
     }
+    private func enabledCell(_ item: RuleItem) -> some View {
+        Toggle("启用 \(item.rule.pattern)", isOn: Binding(get: { item.rule.enabled != 0 }, set: { next in
+            Task { await model.perform("/api/channels/\(item.channel.id)/rules/\(item.rule.id)", key: "rule-\(item.id)", method: "PATCH", body: ["enabled": next], success: "规则已保存") }
+        })).labelsHidden().disabled(item.rule.locked == 1 || model.busy.contains("rule-\(item.id)"))
+    }
+    private func patternCell(_ item: RuleItem) -> some View {
+        Text(item.rule.pattern).font(.system(.body, design: .monospaced)).lineLimit(1).help(item.rule.pattern).textSelection(.enabled)
+            .contextMenu { Button("备注与锁定…") { edit(item) } }
+    }
+    private func statusCell(_ item: RuleItem) -> some View {
+        Text(item.channel.stop_pending == true ? "停用待确认" : model.system?.routing_off == true || !item.channel.routing_enabled || ["stopped", "down", "error"].contains(item.channel.configured_status ?? item.channel.status) ? "暂不分流" : item.rule.enabled == 0 ? "未启用" : "已保存").foregroundStyle(.secondary)
+    }
+    private func actionCell(_ item: RuleItem) -> some View {
+        Menu {
+            Button("备注与锁定…") { edit(item) }
+            Button("删除规则", role: .destructive) { deleting = item }.disabled(item.rule.locked == 1)
+        } label: { Image(systemName: item.rule.locked == 1 ? "lock" : "ellipsis") }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).help("规则操作").accessibilityLabel("\(item.rule.pattern) 的操作")
+    }
+    private func edit(_ item: RuleItem) { editing = item; ruleNote = item.rule.note ?? ""; ruleLocked = item.rule.locked == 1 }
     private func batch(_ enabled: Bool) {
         let ids = rows.filter { selected.contains($0.id) }.map { $0.rule.id }
         guard !ids.isEmpty else { return }

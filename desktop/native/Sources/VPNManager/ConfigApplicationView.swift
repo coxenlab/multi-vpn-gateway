@@ -46,10 +46,10 @@ struct ConfigApplicationView: View {
                 }
                 if let reason = state.reason { Text(reason).font(.caption).foregroundStyle(.secondary) }
                 if let checked = state.verified_at {
-                    Text("上次确认同步：\(Date(timeIntervalSince1970: TimeInterval(checked)).formatted(date: .abbreviated, time: .shortened))。数量按已保存设置计算。")
+                    Text("上次确认同步：\(Date(timeIntervalSince1970: TimeInterval(checked)).formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption).foregroundStyle(.secondary)
-                } else { Text("尚无成功同步记录，数量按已保存设置计算。").font(.caption).foregroundStyle(.secondary) }
-            }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                } else { Text("尚无成功同步记录。").font(.caption).foregroundStyle(.secondary) }
+            }.font(.callout).padding(.vertical, 8)
         }
     }
 }

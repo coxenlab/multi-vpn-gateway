@@ -10,36 +10,38 @@ struct ChannelView: View {
     @State private var loginURL: URL?
     private var busy: Bool { model.busy.contains(channel.id) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) { Text(channel.name).font(.title2.bold()); Text(channel.statusLabel(runtime: model.system?.runtime)).foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 5) { Text(channel.name).font(.title2.bold()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true); Text(channel.statusLabel(runtime: model.system?.runtime)).font(.callout).foregroundStyle(.secondary) }
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
                 Button(channel.replacement?.phase == "queued" ? "应用并启动" : channel.needsStart ? "启动" : "停止") {
                     action(channel.needsStart ? "start" : "stop")
                 }.buttonStyle(.borderedProminent).disabled(busy)
-                if channel.needsStart && channel.configured_status != "stopped" { Button("停用") { action("stop") }.disabled(busy) }
                 Menu {
+                    if channel.needsStart && channel.configured_status != "stopped" { Button("停用通道") { action("stop") } }
                     Button("编辑连接信息") { editing = true }
                     if channel.login_method == "byo" { Button("上传客户端安装包…") { uploadInstaller() }.disabled(channel.needsStart || model.system?.runtime?.ready != true) }
                     Button("检测连通") { action("status", method: "GET", message: "检测完成") }.disabled(channel.needsStart)
                     Button(channel.routing_enabled ? "暂停参与分流" : "恢复参与分流") { Task { await model.perform("/api/channels/\(channel.id)", key: channel.id, method: "PATCH", body: ["routing_enabled": !channel.routing_enabled], success: "已保存分流设置") } }
                     Divider(); Button("删除通道", role: .destructive) { deleting = true }
-                } label: { Image(systemName: "ellipsis.circle") }.disabled(busy)
-            }
-            if channel.stop_pending == true { Label("已保存停用，环境恢复后确认停止。", systemImage: "clock").font(.callout).foregroundStyle(.secondary) }
+                } label: { Image(systemName: "ellipsis.circle") }.menuIndicator(.hidden).help("更多通道操作").disabled(busy)
+            }.padding(20)
+            if channel.stop_pending == true { Label("已保存停用，环境恢复后确认停止。", systemImage: "clock").font(.callout).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.bottom, 12) }
             if let pending = channel.replacement {
                 HStack {
                     Text(pending.phase == "queued" ? "连接设置已保存，启动后应用" : pending.phase == "awaiting_login" ? "新设置等待登录验证" : "上次操作仍在处理中")
                     Spacer()
                     if pending.can_restore { Button(pending.phase == "queued" ? "撤销修改" : "恢复上一次设置") { action("restore", message: "已恢复设置") }.disabled(busy || (channel.stop_pending == true && pending.phase != "queued")) }
-                }.font(.callout).padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                }.font(.callout).padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 20).padding(.bottom, 12)
             }
             Picker("通道内容", selection: $tab) {
                 Text("概览").tag("概览")
                 if channel.login_method != "headless" { Text("登录").tag("登录") }
                 Text("分流规则").tag("分流规则"); Text("日志").tag("日志")
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 420)
+                .padding(.horizontal, 20).padding(.bottom, 16)
+            Divider()
             switch tab {
             case "登录":
                 if channel.needsStart { ContentUnavailableView("请先启动通道", systemImage: "power") }
@@ -49,23 +51,28 @@ struct ChannelView: View {
             case "日志": TextEndpointView(path: "/api/channels/\(channel.id)/logs", title: "通道日志")
             default:
                 Form {
-                    Section("连接信息") {
+                    Section {
                         LabeledContent("类型", value: model.adapters.first(where: { $0.key == channel.vpn_type })?.label ?? channel.vpn_type)
                         LabeledContent("网关", value: channel.server.isEmpty ? "未填写" : channel.server).textSelection(.enabled)
                         LabeledContent("账号", value: channel.username.isEmpty ? "未填写" : channel.username)
                         LabeledContent("验证地址", value: channel.probe_url.isEmpty ? "未填写" : channel.probe_url)
-                        Button("编辑连接信息") { editing = true }
-                    }
-                    Section("连接状态") {
-                        LabeledContent("状态", value: channel.statusLabel(runtime: model.system?.runtime))
-                        LabeledContent("最近延迟", value: channel.status == "logged_in" ? channel.latency_ms.map { "\($0) ms" } ?? "待检测" : "—")
-                        Text("是否连通以内网检测结果为准。").font(.caption).foregroundStyle(.secondary)
-                        Button("检测连通") { action("status", method: "GET", message: "检测完成") }.disabled(channel.needsStart || busy)
-                    }
+                        LabeledContent {
+                            HStack(spacing: 12) {
+                                Text(channel.status == "logged_in" ? channel.latency_ms.map { "\($0) ms" } ?? "待检测" : "—").foregroundStyle(.secondary)
+                                Button("检测连通") { action("status", method: "GET", message: "检测完成") }.disabled(channel.needsStart || busy)
+                            }
+                        } label: { Text("最近延迟") }.accessibilityElement(children: .contain)
+                    } header: {
+                        HStack {
+                            Text("连接信息")
+                            Spacer()
+                            Button("编辑…") { editing = true }.buttonStyle(.borderless).accessibilityLabel("编辑连接信息")
+                        }
+                    } footer: { Text("是否连通以内网检测结果为准。") }
                     ChannelNoteView(channelID: channel.id, draft: model.noteDraft(for: channel.id))
                 }.formStyle(.grouped)
             }
-        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .task(id: channel.id) {
                 if let api = model.api {
                     loginURL = await api.url("/native-login.html?id=\(channel.id)")

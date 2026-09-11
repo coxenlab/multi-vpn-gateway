@@ -18,6 +18,8 @@ final class LayoutTests: XCTestCase {
             guard request.httpMethod == "GET" else { throw APIError(message: "布局测试禁止写请求") }
             let data: Data
             switch request.url!.path {
+            case "/api/entry/tun": data = Data(#"{"enabled":true,"installed":true,"resources":true,"helper":{"version":"0.2.0"},"expected_version":"0.2.0"}"#.utf8)
+            case "/api/entry/system-proxy": data = Data(#"{"enabled":false,"is_ours":false}"#.utf8)
             case "/api/events": data = eventsData
             case "/api/containers": data = containersData
             case "/api/mirrors": data = Data(#"[{"id":1,"host":"registry.fixture.invalid","priority":1,"enabled":1}]"#.utf8)
@@ -33,13 +35,16 @@ final class LayoutTests: XCTestCase {
         for (appearance, scheme) in [("light", ColorScheme.light), ("dark", .dark)] {
             let model = AppModel(); model.connect(to: LocalAPI(port: 1, transport: transport))
             model.channels = channels; model.adapters = adapters
-            model.system = try JSONDecoder().decode(SystemStatus.self, from: Data(#"{"runtime":{"phase":"ready"},"routing_off":false,"self_heal_enabled":true}"#.utf8))
+            model.system = try JSONDecoder().decode(SystemStatus.self, from: Data(#"{"runtime":{"phase":"dormant"},"routing_off":false,"self_heal_enabled":true,"host_integrations_available":true,"config_application":{"available":true,"pending":false}}"#.utf8))
             defer { model.disconnect() }
             let cases: [(String, CGFloat, CGFloat, AnyView)] = [
                 ("channels", 920, 620, AnyView(WorkspaceView(initialSelection: channels[0].id))),
                 ("rules", 920, 620, AnyView(WorkspaceView(initialPage: .rules))),
                 ("monitor", 920, 620, AnyView(WorkspaceView(initialPage: .monitor))),
                 ("settings", 920, 620, AnyView(WorkspaceView(initialPage: .settings))),
+                ("settings-backup", 740, 620, AnyView(SettingsView(initialCategory: .backup))),
+                ("settings-maintenance", 740, 620, AnyView(SettingsView(initialCategory: .maintenance))),
+                ("channel-rules", 500, 500, AnyView(RulesView(channelID: channels[0].id))),
                 ("images", 780, 620, AnyView(ImagesView())),
                 ("containers", 780, 620, AnyView(ContainersView())),
                 ("events", 780, 620, AnyView(EventsView())),

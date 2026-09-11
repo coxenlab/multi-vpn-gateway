@@ -20,14 +20,21 @@ struct MonitorView: View {
     private var rows: [TrafficConnection] { (feed?.connections ?? []).filter { search.isEmpty || ($0.metadata.host ?? "").localizedCaseInsensitiveContains(search) || ($0.metadata.destinationIP ?? "").localizedCaseInsensitiveContains(search) || outbound($0.chains ?? []).localizedCaseInsensitiveContains(search) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 32) {
+                metric("下载速度", value: downloadRate.map { size($0) + "/s" } ?? "—", symbol: "arrow.down")
+                metric("上传速度", value: uploadRate.map { size($0) + "/s" } ?? "—", symbol: "arrow.up")
+                metric("当前连接", value: String(feed?.connections?.count ?? 0), symbol: "point.3.connected.trianglepath.dotted")
+                Spacer(minLength: 0)
+                Button { paused.toggle(); request.cancel(); resetRates() } label: {
+                    Label(paused ? "继续刷新" : "暂停刷新", systemImage: paused ? "play" : "pause")
+                }
+            }.padding(.vertical, 4)
+            Divider()
             HStack {
-                Text("↓ \(downloadRate.map { size($0) + "/s" } ?? "—")    ↑ \(uploadRate.map { size($0) + "/s" } ?? "—")").monospacedDigit()
-                Text("\(feed?.connections?.count ?? 0) 个连接").foregroundStyle(.secondary)
-                Spacer(); Button("导出当前列表…") { export() }.disabled(rows.isEmpty)
-                Button("刷新") { Task { await load(allowPaused: true) } }.disabled(request.loading || model.system?.runtime?.ready != true)
-                Button(paused ? "继续刷新" : "暂停刷新") { paused.toggle(); request.cancel(); resetRates() }
+                TextField("搜索目标地址或通道", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 320)
+                Spacer()
+                Button("导出当前列表…") { export() }.disabled(rows.isEmpty)
             }
-            TextField("搜索目标地址或通道", text: $search).textFieldStyle(.roundedBorder)
             if model.system?.runtime?.ready != true { ContentUnavailableView("运行环境未连接", systemImage: "moon", description: Text("连接通道后，这里会显示当前流量。")) }
             else if let error = request.error { ContentUnavailableView("流量暂不可用", systemImage: "wifi.exclamationmark", description: Text(error)) }
             else {
@@ -52,6 +59,12 @@ struct MonitorView: View {
             .pageRefresh(enabled: !request.loading && model.system?.runtime?.ready == true) { Task { await load(allowPaused: true) } }
             .onChange(of: model.visible) { _, visible in if !visible { request.cancel(); resetRates() } }
             .onChange(of: model.system?.runtime?.ready) { _, ready in if ready != true { request.cancel(); feed = nil; resetRates() } }
+    }
+    private func metric(_ title: String, value: String, symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title2.weight(.medium)).monospacedDigit()
+        }.frame(minWidth: 120, alignment: .leading).accessibilityElement(children: .ignore).accessibilityLabel("\(title)：\(value)")
     }
     private func load(allowPaused: Bool = false) async {
         guard model.system?.runtime?.ready == true else { return }
