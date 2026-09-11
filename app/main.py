@@ -19,6 +19,7 @@ import docker
 from fastapi import FastAPI, Request, UploadFile, File, Body, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 import store
 import manager
@@ -370,15 +371,28 @@ def _confirmed_rebuild():
     return code, None
 
 
+# These operations used to run serially on the event loop. Keep their planning and
+# writes ordered in workers, so moving blocking I/O does not introduce duplicate imports/rules.
+_config_write_lock = threading.Lock()
+
+
+def _config_write(operation, *args):
+    with _config_write_lock:
+        return operation(*args)
+
+
 @app.post("/api/channels/{cid}/rules")
 async def add_rules(cid, req: Request):
+    return await run_in_threadpool(_config_write, _add_rules, cid, await req.json())
+
+
+def _add_rules(cid, b):
     try:
         ch = store.get_channel(cid)
     except sqlite3.Error as exc:
         return JSONResponse({"error": f"database error: {exc}"}, status_code=500)
     if not ch:
         raise HTTPException(404, "channel not found")
-    b = await req.json()
     if not isinstance(b, dict):
         raise HTTPException(400, "invalid rule request")
     patterns = b.get("patterns") or ([b["pattern"]] if b.get("pattern") else [])
@@ -441,7 +455,10 @@ def del_rule(cid, rid: int):
 
 @app.patch("/api/channels/{cid}/rules/{rid}")
 async def patch_rule(cid, rid: int, req: Request):
-    b = await req.json()
+    return await run_in_threadpool(_config_write, _patch_rule, cid, rid, await req.json())
+
+
+def _patch_rule(cid, rid, b):
     if not isinstance(b, dict):
         raise HTTPException(400, "invalid rule request")
     try:
@@ -455,7 +472,10 @@ async def patch_rule(cid, rid: int, req: Request):
 
 @app.patch("/api/rules")
 async def patch_rules(req: Request):
-    b = await req.json()
+    return await run_in_threadpool(_config_write, _patch_rules, await req.json())
+
+
+def _patch_rules(b):
     if not isinstance(b, dict) or not isinstance(b.get("enabled"), bool):
         raise HTTPException(400, "enabled must be boolean")
     raw_ids = b.get("ids")
@@ -592,6 +612,13 @@ async def config_import(req: Request):
             if len(raw) + len(chunk) > 16 * 1024 * 1024:
                 return JSONResponse({"error": "配置备份不能超过 16 MiB"}, status_code=413)
             raw.extend(chunk)
+    except Exception:
+        return JSONResponse({"error": "不是有效的配置导出文件"}, status_code=400)
+    return await run_in_threadpool(_config_write, _config_import, raw)
+
+
+def _config_import(raw):
+    try:
         b = json.loads(raw)
     except Exception:
         return JSONResponse({"error": "不是有效的配置导出文件"}, status_code=400)

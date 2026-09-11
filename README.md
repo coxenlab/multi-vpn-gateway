@@ -159,7 +159,7 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | GET | `/api/channels/{cid}/health` | shared probe cache for automatic refresh, with `checked_at` / `stale`; stale results refresh in the background; manual checks still use `/status` |
 | POST | `/api/channels/{cid}/rules` | add routing rules (`patterns[]` or `pattern`, optional `kind: domain\|ip`; bare IPs auto-get `/32` or `/128`) → `{reload_status, domains, ips, added, rejected}` |
 | PATCH | `/api/channels/{cid}/rules/{rid}` | update one rule (`enabled`, or desktop-only `note` / `locked`) → `{ok, rule, reload_status?}` |
-| PATCH | `/api/rules` | desktop batch enable / disable; locked rules are skipped → `{updated, skipped_locked, reload_status}` |
+| PATCH | `/api/rules` | batch enable / disable with `ids[]` and `enabled`; desktop additionally skips locked rules and returns `skipped_locked` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | delete one rule → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | start / stop container → `{ok}` |
 | POST | `/api/channels/{cid}/restore` | restore the previous settings while a replacement awaits verification; saved login notes are retained |
@@ -169,6 +169,13 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | GET | `/api/config/export` | export channels and rules, retaining routing switches and rule enabled/note/locked fields; includes automatic-login credentials, so keep the file private |
 | POST | `/api/config/import` | JSON backup up to 16 MiB; import stopped channels, preserving rule metadata; returns imported and skipped items |
 | POST | `/api/config/retry` | retry saved routing configuration; confirm managed rules/proxies and persist the boot config |
+| GET | `/api/preflight` | environment checks; optional `vpn_type`, `version`, and `scope=full` for a complete diagnostic; may run a temporary TUN probe |
+| POST | `/api/preflight/fix/{action}` | `create_network` or `pull_image`; a pull returns `task_id`, or 429 when workers are occupied |
+| GET | `/api/preflight/fix/{task_id}` | image-download progress/result; 404 means the task record is unavailable, so inspect images before starting another pull |
+| GET | `/api/images` | image inventory and available versions for the current architecture |
+| GET / POST | `/api/mirrors` | list download mirrors / add one with `{host}` |
+| PATCH / DELETE | `/api/mirrors/{mid}` | update mirror `priority` / `enabled`, or remove it |
+| POST | `/api/mirrors/test` | test a mirror's HTTPS `/v2/` endpoint with `{host}`; returns reachability and latency |
 | GET | `/api/system` | mihomo status / ports / controller and `config_application` (pending, confirmed generation/time); desktop also returns cached `usernet` diagnostics and the last egress-guard check |
 | POST | `/api/system/self-heal` | desktop-only in-memory watchdog action toggle (`enabled`); app restart restores it |
 | GET \| POST | `/api/routing` | desktop-only persistent global direct-routing switch (`{off}`); preserves raw rule states |

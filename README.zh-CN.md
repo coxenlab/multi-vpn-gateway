@@ -132,7 +132,7 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | GET | `/api/channels/{cid}/health` | 自动刷新读取共享探活缓存，含 `checked_at` / `stale`；过期先返回旧结果并后台更新，手动检测继续用 `/status` |
 | POST | `/api/channels/{cid}/rules` | 加分流规则(`patterns[]` 或 `pattern`,可选 `kind: domain\|ip`;裸 IP 自动补 `/32`、`/128`)→ `{reload_status, domains, ips, added, rejected}` |
 | PATCH | `/api/channels/{cid}/rules/{rid}` | 修改单条规则(`enabled`，桌面版另支持 `note` / `locked`)→ `{ok, rule, reload_status?}` |
-| PATCH | `/api/rules` | 桌面版批量启停；锁定规则跳过 → `{updated, skipped_locked, reload_status}` |
+| PATCH | `/api/rules` | 以 `ids[]` 和 `enabled` 批量启停；桌面版额外跳过锁定规则并返回 `skipped_locked` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | 删规则 → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | 起 / 停容器 → `{ok}` |
 | POST | `/api/channels/{cid}/restore` | 替换尚未验证时恢复上一次设置；保留已保存的登录备注 |
@@ -142,6 +142,13 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | GET | `/api/config/export` | 导出通道与规则，保留分流开关、规则启停/备注/锁定状态；含自动登录所需凭据，文件须妥善保管 |
 | POST | `/api/config/import` | 接受不超过 16 MiB 的 JSON 备份，保留规则元数据；导入后为停止状态，返回已导入与跳过项 |
 | POST | `/api/config/retry` | 重试已保存规则的同步，读回托管规则/代理并保存启动配置 |
+| GET | `/api/preflight` | 环境分项检查；可传 `vpn_type`、`version`，`scope=full` 执行完整诊断；可能运行临时 TUN 探针 |
+| POST | `/api/preflight/fix/{action}` | `create_network` 或 `pull_image`；下载返回 `task_id`，工作槽位占满时返回 429 |
+| GET | `/api/preflight/fix/{task_id}` | 镜像下载进度/结果；404 表示记录不可用，应先核对镜像清单再决定是否重新下载 |
+| GET | `/api/images` | 镜像清单及当前架构可用版本 |
+| GET / POST | `/api/mirrors` | 查询镜像下载源 / 以 `{host}` 新增下载源 |
+| PATCH / DELETE | `/api/mirrors/{mid}` | 修改 `priority` / `enabled`，或移除下载源 |
+| POST | `/api/mirrors/test` | 以 `{host}` 检查下载源 HTTPS `/v2/` 入口，返回可达性与延迟 |
 | GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址，以及 `config_application` 的待同步状态、确认代次和时间；桌面额外含 `usernet` 低频诊断缓存及最近守卫核对结果 |
 | POST | `/api/system/self-heal` | 桌面版内存态自愈动作开关(`enabled`)；重开 app 自动恢复 |
 | GET \| POST | `/api/routing` | 桌面版持久化全直连总开关(`{off}`)；不改规则原始启停状态 |
