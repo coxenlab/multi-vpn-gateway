@@ -18,7 +18,8 @@ struct SettingsView: View {
     @State private var helperResources = false
     @State private var helperVersion: String?
     @State private var helperAction: String?
-    private var isolated: Bool { ProcessInfo.processInfo.environment["VPNMGR_DEV_MODE"] == "1" }
+    private var isolated: Bool { model.system?.host_integrations_available == false }
+    private var hostAvailable: Bool { model.system?.host_integrations_available == true }
     var body: some View {
         Form {
             Section("运行环境") {
@@ -34,10 +35,10 @@ struct SettingsView: View {
             }
             Section("分流入口") {
                 Toggle("启用分流", isOn: Binding(get: { model.system?.routing_off != true }, set: { enabled in Task { await model.perform("/api/routing", key: "__routing", body: ["off": !enabled], success: "分流设置已保存") } })).disabled(model.system?.routing_off == nil || model.busy.contains("__routing"))
-                Toggle("系统自动代理", isOn: Binding(get: { systemProxy }, set: { value in if value && foreignProxy { confirmProxy = true } else { setProxy(value) } })).disabled(!entryLoaded || entryRequest.loading || isolated || model.busy.contains("__entry"))
+                Toggle("系统自动代理", isOn: Binding(get: { systemProxy }, set: { value in if value && foreignProxy { confirmProxy = true } else { setProxy(value) } })).disabled(!entryLoaded || entryRequest.loading || !hostAvailable || model.busy.contains("__entry"))
                 if foreignProxy { Text("当前自动代理由其他应用设置。启用此入口会替换当前设置。").font(.caption).foregroundStyle(.secondary) }
-                Toggle("TUN 接管", isOn: Binding(get: { tun }, set: { value in Task { if await model.perform("/api/entry/tun", key: "__entry", body: ["enable": value]) { await loadEntry() } } })).disabled(!entryLoaded || entryRequest.loading || !helperInstalled || isolated || model.busy.contains("__entry"))
-                if !isolated {
+                Toggle("TUN 接管", isOn: Binding(get: { tun }, set: { value in Task { if await model.perform("/api/entry/tun", key: "__entry", body: ["enable": value]) { await loadEntry() } } })).disabled(!entryLoaded || entryRequest.loading || !helperInstalled || !hostAvailable || model.busy.contains("__entry"))
+                if hostAvailable {
                     LabeledContent("TUN 助手", value: !entryLoaded ? "待确认" : helperInstalled ? "已安装\(helperVersion.map { " · " + $0 } ?? "")" : "未安装")
                     HStack {
                         Button(helperInstalled ? "更新助手…" : "安装助手…") { helperAction = "install" }.disabled(!entryLoaded || entryRequest.loading || !helperResources || model.busy.contains("__entry"))
@@ -66,7 +67,7 @@ struct SettingsView: View {
                 Button("容器清单") { inspecting = Inspection(path: "/api/containers", title: "容器清单") }
                 Text("关闭窗口仅隐藏；从菜单选择“断开并退出”才会结束本次连接。").font(.caption).foregroundStyle(.secondary)
             }
-        }.formStyle(.grouped).task { entryRequest.activate(); backupRequest.activate(); await loadEntry() }
+        }.formStyle(.grouped).task(id: model.system?.host_integrations_available) { entryRequest.activate(); backupRequest.activate(); await loadEntry() }
             .onDisappear { entryRequest.suspend(); backupRequest.suspend() }
             .pageRefresh(enabled: !entryRequest.loading) { Task { await model.refresh(); await loadEntry() } }
             .sheet(item: $inspecting) { item in VStack {
@@ -102,7 +103,7 @@ struct SettingsView: View {
     }
     private func setProxy(_ enabled: Bool) { Task { if await model.perform("/api/entry/system-proxy", key: "__entry", body: ["enable": enabled]) { await loadEntry() } } }
     private func loadEntry() async {
-        guard !isolated else { return }
+        guard hostAvailable else { entryRequest.cancel(); entryLoaded = false; return }
         await entryRequest.run(model: model, operation: { api in
             async let tun = api.get("/api/entry/tun", as: TunEntryStatus.self)
             async let proxy = api.get("/api/entry/system-proxy", as: ProxyEntryStatus.self)

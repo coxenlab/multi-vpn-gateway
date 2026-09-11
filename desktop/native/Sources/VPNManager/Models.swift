@@ -38,6 +38,7 @@ struct Runtime: Decodable {
 struct SystemStatus: Decodable {
     let runtime: Runtime?; let routing_off: Bool?; let self_heal_enabled: Bool?
     let mihomo_status: String?; let config_application: ConfigApplication?
+    let host_integrations_available: Bool?
 }
 struct Adapter: Decodable, Identifiable {
     var id: String { key }

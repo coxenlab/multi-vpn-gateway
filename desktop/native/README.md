@@ -4,6 +4,10 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 
 当前为开发入口，尚未替换 Tauri 分发壳，未打包或安装。
 
+正式模式的启动代码已接入 `Contents/Resources`：本地 core、runtime 工具/助手、静态登录页面、内置容器镜像与 VM 镜像均先做可读性/执行权限检查。缺件时显示具体组件，在检查通过前不创建数据、不启动 core；另一个相同 bundle ID 的应用正在运行时拒绝启动。该检查不能替代资源来源校验或完整签名验证。
+
+正式版沿用 `~/Library/Application Support/com.vpnmgr.desktop` 和 `vpnmgr` profile；子进程只使用随包运行工具与系统 PATH，清除开发环境留下的端口、密钥、Docker context 和 profile 覆盖，运行参数由既有 `infra.json` 提供。只有首次连接运行环境时才在后台预置 VM 缓存；复制失败不会留下截断目标，并发时保留已有缓存。这里的正式模式已编译验证，尚未实际组装或运行正式 App。
+
 ## 隔离开发
 
 从本 clone 运行 `desktop/native/dev.sh`。默认独立 `vpnmgr-native-dev` profile、`~/Library/Application Support/vpnmgr-native-dev` 数据与 `vpnmgr_native_dev_vpnnet` 网络；可用 `VPNMGR_NATIVE_DATA_DIR` 指定另一份开发数据。脚本不打包、不安装。启动界面只读配置；用户点连接/创建才会启动该开发 VM。调试二进制缺少显式开发身份会拒绝启动；核心同一数据目录的重复原生进程在生成或改写运行参数前被拒绝。

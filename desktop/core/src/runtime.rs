@@ -124,6 +124,12 @@ async fn start(state: &AppState) -> Result<()> {
         }
     }
     if vm::status(&cfg.vm_profile).await != vm::VmStatus::Running {
+        if !cfg.dev_mode {
+            progress("检查内置运行环境镜像…");
+            if let Err(error) = crate::vm_image_cache::seed_bundled().await {
+                crate::ev!(warn, "runtime", "vm_image_cache_failed", "内置运行环境镜像准备失败，将尝试在线下载", {"error":error.to_string()});
+            }
+        }
         progress("正在启动运行环境，首次准备可能需要下载组件…");
         vm::start_with_progress(&cfg.vm_profile, rosetta, |detail| {
             crate::ev!(debug, "runtime", "vm_start_progress", "运行环境启动进度", {"detail":detail});

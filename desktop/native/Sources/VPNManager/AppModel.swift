@@ -65,14 +65,18 @@ import SwiftUI
             }
             let executable = URL(fileURLWithPath: path)
             #else
-            guard let executable = Bundle.main.url(forResource: "vpnmgr-core", withExtension: nil) else { throw APIError(message: "缺少本地运行组件，请重新安装完整版本。") }
-            let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("com.vpnmgr.desktop")
-            env["DATA_DIR"] = directory.path
-            env["VPNMGR_VM_PROFILE"] = "vpnmgr"
-            env.removeValue(forKey: "VPNMGR_DEV_MODE")
+            let otherInstance = NSRunningApplication.runningApplications(withBundleIdentifier: "com.vpnmgr.desktop")
+                .contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }
+            let plan = try NativeLaunchPlan.production(resources: Bundle.main.resourceURL,
+                home: FileManager.default.homeDirectoryForCurrentUser, inheritedEnvironment: env, otherInstanceRunning: otherInstance)
+            let executable = plan.executable
+            env = plan.environment
             #endif
             env["VPNMGR_MANAGED_VM"] = "1"; env["VPNMGR_NATIVE_CHILD"] = "1"
             let process = Process(); process.executableURL = executable; process.environment = env
+            #if !DEBUG
+            process.currentDirectoryURL = plan.workingDirectory
+            #endif
             let input = Pipe(), pipe = Pipe(); process.standardInput = input; process.standardOutput = pipe
             // stderr stays with the local launcher; credentials are never copied into UI logs.
             process.terminationHandler = { [weak self] process in
@@ -94,7 +98,13 @@ import SwiftUI
             }
             childInput = input; childOutput = pipe; child = process
             try process.run()
-        } catch { child = nil; starting = false; self.error = error.localizedDescription }
+        } catch {
+            generation = UUID()
+            childOutput?.fileHandleForReading.readabilityHandler = nil
+            try? childInput?.fileHandleForWriting.close()
+            childInput = nil; childOutput = nil; child = nil
+            starting = false; self.error = error.localizedDescription
+        }
     }
     private func read(_ data: Data) {
         output.append(data)
