@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{anyhow, ensure, Result};
 use fernet::Fernet;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 pub struct Record {
     pub channel_id: String,
@@ -41,16 +41,96 @@ pub fn data_volume(db: &Path, cid: &str) -> Result<String> {
 }
 
 pub fn begin(db: &Path, key: &str, cid: &str, operation: &str, payload: &Value) -> Result<()> {
+    begin_after_queue(db, key, cid, operation, payload, None)
+}
+
+/// 接续离线保存时，以同一事务把指定代次的待应用设置交给替换流程。
+pub fn begin_after_queue(db: &Path, key: &str, cid: &str, operation: &str, payload: &Value, queued: Option<&Record>) -> Result<()> {
     let encrypted = cipher(key)?.encrypt(&serde_json::to_vec(payload)?);
     let mut conn = Connection::open(db)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     ensure!(tx.query_row("SELECT COUNT(*) FROM channels WHERE id=?1", [cid], |r| r.get::<_, i64>(0))? == 1,
         "通道不存在");
-    ensure!(tx.query_row("SELECT COUNT(*) FROM channel_replacements WHERE channel_id=?1", [cid], |r| r.get::<_, i64>(0))? == 0,
-        "该通道已有未完成的容器替换");
-    tx.execute("INSERT INTO channel_replacements(channel_id,operation_id,phase,payload_enc,created_at) VALUES(?1,?2,'preparing',?3,CAST(strftime('%s','now') AS INTEGER))",
-        params![cid, operation, encrypted])?;
+    if let Some(queued) = queued {
+        ensure!(queued.channel_id == cid && queued.phase == "queued", "待应用设置与通道不匹配");
+        check_operation(&tx, cid, &queued.operation_id, "queued")?;
+        tx.execute("UPDATE channel_replacements SET operation_id=?2,phase='preparing',payload_enc=?3 WHERE channel_id=?1",
+            params![cid, operation, encrypted])?;
+    } else {
+        ensure!(tx.query_row("SELECT COUNT(*) FROM channel_replacements WHERE channel_id=?1", [cid], |r| r.get::<_, i64>(0))? == 0,
+            "该通道已有未完成的容器替换");
+        tx.execute("INSERT INTO channel_replacements(channel_id,operation_id,phase,payload_enc,created_at) VALUES(?1,?2,'preparing',?3,CAST(strftime('%s','now') AS INTEGER))",
+            params![cid, operation, encrypted])?;
+    }
     tx.commit()?;
+    Ok(())
+}
+
+/// 仅保存连接参数意图；原连接设置保持不变，供真正替换时回滚。
+/// 名称、验证地址、分流开关即时保存；两部分共用一个事务。
+pub fn queue_settings(db: &Path, key: &str, ch: &crate::store::ChannelPublic, fields: &Map<String, Value>, secrets: &[String]) -> Result<()> {
+    let prior = get(db, key, &ch.id)?;
+    ensure!(prior.as_ref().is_none_or(|r| r.phase == "queued"), "上次修改尚未完成");
+    let mut desired = prior.as_ref().and_then(|r| r.payload["fields"].as_object()).cloned().unwrap_or_default();
+    let mut immediate = fields.clone();
+    for field in ["server", "username", "password", "ec_ver"] {
+        if let Some(value) = immediate.remove(field) {
+            ensure!(value.is_string(), "连接设置必须是文本");
+            let raw = value.as_str().unwrap_or_default();
+            desired.insert(field.into(), json!(if field == "password" { raw.to_string() } else { crate::store::clean_field(field, raw) }));
+        }
+    }
+    let original = serde_json::to_value(ch)?;
+    let password = crate::store::get_password(db, key, &ch.id)?;
+    desired.retain(|field, value| {
+        let before = if field == "password" { password.as_str() } else { original[field].as_str().unwrap_or_default() };
+        value.as_str() != Some(before)
+    });
+    let payload = json!({"fields":desired,"old_id":ch.container_id,"old_volume":data_volume(db,&ch.id)?});
+    let f = cipher(key)?;
+    let encrypted = f.encrypt(&serde_json::to_vec(&payload)?);
+    let operation: String = (0..16).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    ensure!(tx.query_row("SELECT COUNT(*) FROM channels WHERE id=?1", [&ch.id], |r|r.get::<_,i64>(0))? == 1, "通道不存在");
+    if let Some(prior) = prior.as_ref() { check_operation(&tx, &ch.id, &prior.operation_id, "queued")?; }
+    else { ensure!(tx.query_row("SELECT COUNT(*) FROM channel_replacements WHERE channel_id=?1", [&ch.id], |r|r.get::<_,i64>(0))? == 0, "上次修改已变化"); }
+    crate::store::update_channel_on(&tx, &f, &ch.id, &immediate, secrets)?;
+    if desired.is_empty() {
+        tx.execute("DELETE FROM channel_replacements WHERE channel_id=?1", [&ch.id])?;
+    } else {
+        tx.execute("INSERT INTO channel_replacements(channel_id,operation_id,phase,payload_enc,created_at) VALUES(?1,?2,'queued',?3,CAST(strftime('%s','now') AS INTEGER)) ON CONFLICT(channel_id) DO UPDATE SET operation_id=excluded.operation_id,payload_enc=excluded.payload_enc",
+            params![ch.id,operation,encrypted])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn cancel_queued(db: &Path, record: &Record) -> Result<()> {
+    ensure!(record.phase == "queued", "该修改已经开始应用，请使用恢复流程");
+    let mut conn = Connection::open(db)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    check_operation(&tx, &record.channel_id, &record.operation_id, "queued")?;
+    tx.execute("DELETE FROM channel_replacements WHERE channel_id=?1", [&record.channel_id])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// UI 展示已保存的意图，运行/分流层仍读取原设置。密码不进入响应。
+pub fn overlay_queued(db: &Path, cid: &str, value: &mut Value) -> Result<()> {
+    if value["replacement"]["phase"] != "queued" { return Ok(()); }
+    let key = crate::store::master_key(db.parent().ok_or_else(||anyhow!("数据目录缺失"))?)?;
+    let record = get(db, &key, cid)?.ok_or_else(||anyhow!("待应用设置已变化，请刷新"))?;
+    ensure!(record.phase == "queued", "待应用设置已变化，请刷新");
+    for field in ["server", "username", "ec_ver"] {
+        if let Some(desired) = record.payload["fields"].get(field) {
+            value[field] = desired.clone();
+            if field != "ec_ver" {
+                if let Some(config) = value["config"].as_object_mut() { config.insert(field.into(), desired.clone()); }
+            }
+        }
+    }
+    value["deferred"] = json!(true);
     Ok(())
 }
 
@@ -85,6 +165,11 @@ pub fn public_status(db: &Path, cid: &str) -> Result<Option<Value>> {
     let conn = Connection::open(db)?;
     let phase: Option<String> = conn.query_row("SELECT phase FROM channel_replacements WHERE channel_id=?1", [cid], |r| r.get(0)).optional()?;
     Ok(phase.map(|phase| serde_json::json!({"can_restore":!matches!(phase.as_str(), "committed" | "rolled_back" | "deleting"),"phase":phase})))
+}
+
+pub fn has_active_replacements(db: &Path) -> Result<bool> {
+    let conn = Connection::open(db)?;
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM channel_replacements WHERE phase!='queued')", [], |r| r.get(0))?)
 }
 
 /// 替换过程的旧实例/候选不能被孤儿清理抢先删除；仅读身份列。
@@ -243,6 +328,61 @@ pub fn deleted(db: &Path, record: &Record) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn queued_settings_preserve_original_secrets_and_allow_cancel() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap(); let key = crate::store::master_key(dir.path()).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,server,status,container_id) VALUES('c1','old','old.example','stopped','original')", []).unwrap();
+        let secrets = vec!["password".into()];
+        crate::store::update_channel(&db,&key,"c1",json!({"password":"old-secret"}).as_object().unwrap(),&secrets).unwrap();
+        let ch = crate::store::get_channel(&db,"c1").unwrap().unwrap();
+        queue_settings(&db,&key,&ch,json!({"server":"new.example","password":" new-secret ","name":"renamed"}).as_object().unwrap(),&secrets).unwrap();
+        let current = crate::store::get_channel(&db,"c1").unwrap().unwrap();
+        assert_eq!(current.server,"old.example"); assert_eq!(current.name,"renamed");
+        assert_eq!(current.container_id.as_deref(),Some("original"));
+        assert_eq!(crate::store::get_password(&db,&key,"c1").unwrap(),"old-secret");
+        let queued = get(&db,&key,"c1").unwrap().unwrap();
+        assert_eq!(queued.payload["fields"]["password"]," new-secret ");
+        let encrypted: String = conn.query_row("SELECT payload_enc FROM channel_replacements", [], |r|r.get(0)).unwrap();
+        assert!(!encrypted.contains("new-secret"));
+        let mut public = json!({"replacement":public_status(&db,"c1").unwrap(),"server":"old.example"});
+        overlay_queued(&db,"c1",&mut public).unwrap();
+        assert_eq!(public["server"],"new.example"); assert!(!public.to_string().contains("new-secret"));
+        assert!(!has_active_replacements(&db).unwrap());
+        cancel_queued(&db,&queued).unwrap();
+        assert!(get(&db,&key,"c1").unwrap().is_none());
+        assert_eq!(crate::store::get_channel(&db,"c1").unwrap().unwrap().name,"renamed");
+    }
+
+    #[test]
+    fn queued_settings_transition_is_atomic_and_rejects_stale_edits() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap(); let key = crate::store::master_key(dir.path()).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,server,password_enc) VALUES('c1','old','old.example','')", []).unwrap();
+        let ch = crate::store::get_channel(&db,"c1").unwrap().unwrap();
+        let fields = json!({"server":"first.example","name":"first"});
+        conn.execute_batch("CREATE TRIGGER fail_queue BEFORE INSERT ON channel_replacements BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        assert!(queue_settings(&db,&key,&ch,fields.as_object().unwrap(),&[]).is_err());
+        assert_eq!(crate::store::get_channel(&db,"c1").unwrap().unwrap().name,"old");
+        conn.execute_batch("DROP TRIGGER fail_queue").unwrap();
+        queue_settings(&db,&key,&ch,fields.as_object().unwrap(),&[]).unwrap();
+        let stale = get(&db,&key,"c1").unwrap().unwrap();
+        queue_settings(&db,&key,&ch,json!({"server":"old.example","name":"kept"}).as_object().unwrap(),&[]).unwrap();
+        assert!(get(&db,&key,"c1").unwrap().is_none());
+        assert_eq!(crate::store::get_channel(&db,"c1").unwrap().unwrap().name,"kept");
+        queue_settings(&db,&key,&ch,json!({"server":"second.example"}).as_object().unwrap(),&[]).unwrap();
+        assert!(cancel_queued(&db,&stale).is_err());
+        assert!(begin_after_queue(&db,&key,"c1","next",&json!({}),Some(&stale)).is_err());
+        let current = get(&db,&key,"c1").unwrap().unwrap();
+        assert_eq!(current.payload["fields"]["server"],"second.example");
+        begin_after_queue(&db,&key,"c1","next",&json!({"prepared":true}),Some(&current)).unwrap();
+        assert!(has_active_replacements(&db).unwrap());
+        assert!(cancel_queued(&db,&current).is_err());
+        assert_eq!(get(&db,&key,"c1").unwrap().unwrap().phase,"preparing");
+    }
 
     #[test]
     fn restore_absent_is_atomic_and_keeps_notes() {

@@ -418,13 +418,15 @@ pub(crate) fn channel_json(db: &std::path::Path, cid: &str) -> axum::response::R
         Ok(Some(c)) => {
             let mut value = serde_json::to_value(&c).unwrap();
             value["config_application"] = config_application(db);
-            let deferred = value["config_application"]["last_error"] == "runtime_idle";
+            let mut deferred = value["config_application"]["last_error"] == "runtime_idle";
             value["saved"] = json!(true);
             value["deferred"] = json!(deferred);
             match crate::replacement_store::public_status(db, cid) {
                 Ok(pending) => value["replacement"] = json!(pending),
                 Err(e) => return err500(&format!("replacement status: {e}")),
             }
+            if let Err(error) = crate::replacement_store::overlay_queued(db, cid, &mut value) { return err500(&error.to_string()); }
+            deferred |= value["deferred"] == true;
             (if deferred { StatusCode::ACCEPTED } else { StatusCode::OK }, Json(value)).into_response()
         }
         _ => err404("not found"),
@@ -474,6 +476,22 @@ pub async fn config_retry(State(st): State<AppState>) -> axum::response::Respons
 
 pub async fn restore_channel(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     detached("restore", async move {
+        let db = st.cfg.db_path();
+        match crate::replacement_store::public_status(&db, &cid) {
+            Ok(Some(pending)) if pending["phase"] == "queued" => {
+                let _operation = match st.lifecycle.mutate(&cid).await { Ok(guard) => guard, Err(e) => return err503(&e.to_string()) };
+                let result = (|| -> anyhow::Result<()> {
+                    let key = store::master_key(&st.cfg.data_dir)?;
+                    let record = crate::replacement_store::get(&db, &key, &cid)?.ok_or_else(||anyhow::anyhow!("待应用设置已变化，请刷新"))?;
+                    crate::replacement_store::cancel_queued(&db, &record)
+                })();
+                if let Err(e) = result { return err_detail(StatusCode::CONFLICT, &e.to_string()); }
+                crate::events::audit("channel_restore", "已撤销待应用的连接设置", json!({"target_kind":"channel","target_id":cid,"result":"ok"}));
+                return channel_json(&db, &cid);
+            }
+            Err(e) => return err500(&e.to_string()),
+            _ => {},
+        }
         if let Err(e) = crate::runtime::ensure(&st).await { return err503(&e.to_string()); }
         let _operation = match st.lifecycle.mutate(&cid).await { Ok(guard) => guard, Err(e) => return err503(&e.to_string()) };
         let db = st.cfg.db_path();
@@ -656,14 +674,16 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         Ok(None) => return err404("not found"),
         Err(e) => return err500(&format!("{e}")),
     };
-    match crate::replacement_store::public_status(&db, &cid) {
+    let queued = match crate::replacement_store::public_status(&db, &cid) {
+        Ok(Some(pending)) if pending["phase"] == "queued" => true,
         Ok(Some(pending)) if matches!(pending["phase"].as_str(), Some("committed" | "rolled_back")) => {
             if let Err(e) = crate::replacement::cleanup(&st, &cid).await { return err_detail(StatusCode::CONFLICT, &format!("上次操作的资源清理未完成: {e}")); }
+            false
         }
         Ok(Some(_)) => return err_detail(StatusCode::CONFLICT, "上次修改尚未验证，请先完成登录或恢复上一次设置"),
-        Ok(None) => {},
+        Ok(None) => false,
         Err(e) => return err500(&format!("replacement status: {e}")),
-    }
+    };
     let sk = secret_keys_of(&ch.vpn_type);
     let password_changed = if let Some(value) = fields.get("password") {
         match store::get_password(&db, &key, &cid) {
@@ -698,8 +718,14 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         rollback_fields.insert("routing_enabled".into(), json!(ch.routing_enabled));
         store::update_channel(&db, &key, &cid, &rollback_fields, &sk)
     };
-    let provisioned = touched && ch.container_id.is_some();
-    let changed = if provisioned {
+    let save_for_later = queued || (st.cfg.managed_vm && st.docker().is_none() && touched && ch.container_id.is_some());
+    if save_for_later && registry::get(&ch.vpn_type).is_ok_and(|spec| spec.runtime == "byo") {
+        return err_detail(StatusCode::CONFLICT, "自装客户端的连接信息请在登录窗口中修改");
+    }
+    let provisioned = !save_for_later && touched && ch.container_id.is_some();
+    let changed = if save_for_later {
+        crate::replacement_store::queue_settings(&db, &key, &ch, &fields, &sk)
+    } else if provisioned {
         crate::replacement::replace(&st, &ch, &fields, false).await
     } else {
         store::update_channel(&db, &key, &cid, &fields, &sk)
@@ -744,11 +770,17 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
             return err_detail(StatusCode::BAD_GATEWAY, &format!("mihomo reload failed: {reload}"));
         }
     }
+    let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid));
+    detail["reprovisioned"] = json!(provisioned);
+    detail["deferred"] = json!(save_for_later);
     crate::events::audit(
         "channel_update",
-        "通道已更新",
-        audit_detail("ok", channel_snapshot_of(&db, &cid)),
+        if save_for_later { "连接设置已保存，启动通道后应用" } else { "通道已更新" },
+        detail,
     );
+    if !save_for_later && st.cfg.managed_vm && st.docker().is_none() && touched {
+        let _ = manager::rebuild(&st.cfg, None, &db).await;
+    }
     channel_json(&db, &cid)
 }
 
@@ -1658,12 +1690,26 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
         Err(e) => return err500(&format!("list_channels: {e}")),
     };
     let mut out = Vec::new();
-    for ch in &channels {
+    for original in &channels {
+        let mut ch = original.clone();
         // 命门 #5 例外:get_config 返回 secret 解密后的完整 map(含密码/私钥)。
         let mut config = match store::get_config(&db, &key, &ch.id) {
             Ok(m) => m,
             Err(e) => return err500(&format!("get_config {}: {e}", ch.id)),
         };
+        match crate::replacement_store::get(&db, &key, &ch.id) {
+            Ok(Some(record)) if record.phase == "queued" => {
+                let fields = &record.payload["fields"];
+                if let Some(value) = fields["server"].as_str() { ch.server = value.into(); }
+                if let Some(value) = fields["username"].as_str() { ch.username = value.into(); }
+                if let Some(value) = fields["ec_ver"].as_str() { ch.ec_ver = Some(value.into()); }
+                for field in ["server", "username", "password"] {
+                    if let Some(value) = fields.get(field) { config.insert(field.into(), value.clone()); }
+                }
+            }
+            Err(error) => return err500(&format!("读取待应用设置失败: {error}")),
+            _ => {},
+        }
         // 交互登录密码不导出(导入后重新登录);byo 安装器文件名引用带不走(二进制在数据卷里)。
         if ch.login_method != "headless" {
             config.remove("password");

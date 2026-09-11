@@ -115,7 +115,11 @@ fn validate_source(info: &ContainerInspectResponse, cid: &str, volume: &str) -> 
 pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Value>, force_start: bool) -> Result<()> {
     let docker = st.docker().ok_or_else(|| anyhow!("docker unavailable"))?;
     let db = st.cfg.db_path(); let key = store::master_key(&st.cfg.data_dir)?;
-    ensure!(journal::get(&db, &key, &ch.id)?.is_none(), "上一次修改尚未验证，请先完成登录或恢复上一次设置");
+    let queued = journal::get(&db, &key, &ch.id)?;
+    ensure!(queued.as_ref().is_none_or(|r| r.phase == "queued"), "上一次修改尚未验证，请先完成登录或恢复上一次设置");
+    let mut merged = queued.as_ref().and_then(|r| r.payload["fields"].as_object()).cloned().unwrap_or_default();
+    merged.extend(fields.clone());
+    let fields = &merged;
     let spec = registry::get(&ch.vpn_type)?;
     ensure!(spec.runtime != "byo" || ch.container_id.is_none(), "自装客户端的安装在原容器中，不能通过重建恢复或修改连接参数");
     let old = match ch.container_id.as_deref() { Some(old_id) => get(&docker, old_id).await?, None => None };
@@ -156,7 +160,7 @@ pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Val
         "old_id":old.as_ref().and_then(|o|o.id.as_deref()),"old_volume":volume,"old_image":old.as_ref().and_then(|o|o.image.as_deref()),"new_image":plan.config.image,
         "old_running":old.as_ref().is_some_and(|o|running(o)==Some(true)),"old_policy":old.as_ref().and_then(|o|o.host_config.as_ref()).and_then(|h| h.restart_policy.clone()).unwrap_or_else(|| policy(RestartPolicyNameEnum::NO)),
         "start":force_start || ch.status != "stopped","config_applied":false});
-    journal::begin(&db, &key, &ch.id, &operation, &payload)?;
+    journal::begin_after_queue(&db, &key, &ch.id, &operation, &payload, queued.as_ref())?;
     let outcome = async {
         let record = journal::get(&db, &key, &ch.id)?.ok_or_else(|| anyhow!("替换记录丢失"))?;
         resources::ensure_volume(&docker, &owner).await?;
@@ -334,8 +338,9 @@ pub fn confirmed(st: &AppState, cid: &str) -> Result<()> {
 pub async fn recover_all(st: &AppState) {
     let records = (|| { let key=store::master_key(&st.cfg.data_dir)?; journal::list(&st.cfg.db_path(),&key) })();
     let records = match records { Ok(r)=>r, Err(error)=> { crate::ev!(error,"replacement","recovery_failed","替换进度无法读取",{"error":error.to_string()}); return; } };
-    let had_records = !records.is_empty();
-    for record in records {
+    let had_records = records.iter().any(|record| record.phase != "queued");
+    // 保存不等于应用；等用户明确启动该通道。
+    for record in records.into_iter().filter(|record| record.phase != "queued") {
         let Ok(_guard)=st.lifecycle.mutate(&record.channel_id).await else { return; };
         let result = match record.phase.as_str() {
             "awaiting_login" => reconcile_waiting(st,&record.channel_id).await,
@@ -369,6 +374,11 @@ pub async fn resume(st: &AppState,cid:&str)->Result<bool> {
     let docker=st.docker().ok_or_else(||anyhow!("docker unavailable"))?;
     let db=st.cfg.db_path();let key=store::master_key(&st.cfg.data_dir)?;
     let Some(record)=journal::get(&db,&key,cid)? else {return Ok(false);};
+    if record.phase == "queued" {
+        let ch=store::get_channel(&db,cid)?.ok_or_else(||anyhow!("通道不存在"))?;
+        replace(st,&ch,&Map::new(),true).await?;
+        return Ok(true);
+    }
     if matches!(record.phase.as_str(),"committed"|"rolled_back") {cleanup(st,cid).await?;return Ok(false);}
     ensure!(record.phase=="awaiting_login","上次操作尚未恢复，请先恢复上一次设置");
     let owner=owner(&record,false);let ch=store::get_channel(&db,cid)?.ok_or_else(||anyhow!("通道不存在"))?;
@@ -402,6 +412,7 @@ pub async fn resume(st: &AppState,cid:&str)->Result<bool> {
 pub async fn before_stop(st:&AppState,cid:&str)->Result<()> {
     let db=st.cfg.db_path();let key=store::master_key(&st.cfg.data_dir)?;
     let Some(record)=journal::get(&db,&key,cid)? else {return Ok(());};
+    if record.phase == "queued" { return Ok(()); }
     if record.phase=="awaiting_login" {return reconcile_waiting(st,cid).await;}
     ensure!(record.phase!="deleting","通道删除已开始，请重试删除");
     if matches!(record.phase.as_str(),"committed"|"rolled_back") {return cleanup(st,cid).await;}

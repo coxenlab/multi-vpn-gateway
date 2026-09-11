@@ -52,6 +52,8 @@ def _channel_result(cid):
     value = store.get_channel(cid)
     if value:
         value['config_application'] = config_apply_store.public_status()
+        value['replacement'] = replacement_store.public_status(cid)
+        replacement_store.overlay_queued(cid, value)
     return value
 
 
@@ -107,6 +109,7 @@ def channels():
         c["ips"] = [r for r in rs if r["kind"] == "ip"]
         c["volume_name"] = replacement_store.data_volume(c['id'])
         c["replacement"] = replacement_store.public_status(c['id'])
+        replacement_store.overlay_queued(c['id'], c)
         c["socks_proxy"] = f"ch-{c['id']}"
         c["socks_endpoint"] = f"vpn-{c['id']}:1080"
         up = manager.uptime(c["id"]) if c["status"] != "stopped" else None
@@ -173,7 +176,7 @@ def update(cid: str, b: dict = Body(...)):
             try: replacement.cleanup(cid)
             except Exception:
                 return JSONResponse({"error": "上次操作的资源清理未完成，请稍后重试"}, status_code=409)
-        else:
+        elif pending['phase'] != 'queued':
             return JSONResponse({"error": "上次修改尚未验证，请先完成登录或恢复上一次设置"}, status_code=409)
     for key in ("name", "server", "username", "password", "ec_ver", "probe_url"):
         if key in b and not isinstance(b[key], str):
@@ -187,6 +190,10 @@ def update(cid: str, b: dict = Body(...)):
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
     except KeyError:
         secret_keys = []
+    if pending and pending['phase'] == 'queued':
+        replacement_store.queue_settings(ch, b, secret_keys)
+        result = _channel_result(cid)
+        return JSONResponse(result, status_code=202 if result.get('deferred') else 200)
     # 准备期间不写字段；替换函数在实际切换成功后与运行态一次提交。
     if touched and ch.get("container_id"):
         try:
@@ -212,6 +219,9 @@ def restore_channel(cid):
     pending = replacement_store.public_status(cid)
     if not pending or not pending['can_restore']:
         return JSONResponse({"error": "没有可恢复的上一次设置"}, status_code=409)
+    if pending['phase'] == 'queued':
+        replacement_store.cancel_queued(replacement_store.get(cid))
+        return _channel_result(cid)
     try:
         replacement.recover(cid)
     except Exception as e:
@@ -502,6 +512,11 @@ def config_export():
     channels = []
     for c in store.list_channels():
         cfg = store.get_config(c["id"])
+        pending = replacement_store.get(c['id'])
+        if pending and pending.phase == 'queued':
+            for field, value in pending.payload['fields'].items():
+                if field in ('server', 'username', 'ec_ver'): c[field] = value
+                if field in ('server', 'username', 'password'): cfg[field] = value
         if c.get("login_method") != "headless":
             cfg.pop("password", None)   # 交互登录密码不随导出
         # 登录备注一律不随导出:「键入到容器」自动留档默认开,备注里大概率就是上一行

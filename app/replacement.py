@@ -124,7 +124,9 @@ def _validate_source(c, cid, volume):
 def replace(ch, fields, force_start=False):
     import manager
     dc = manager.dc; cid = ch['id']
-    if journal.get(cid): raise RuntimeError('上一次修改尚未验证，请先完成登录或恢复上一次设置')
+    queued = journal.get(cid)
+    if queued and queued.phase != 'queued': raise RuntimeError('上一次修改尚未验证，请先完成登录或恢复上一次设置')
+    fields = {**(queued.payload['fields'] if queued else {}), **fields}
     if registry.get(ch['vpn_type']).get('runtime') == 'byo' and ch.get('container_id'):
         raise RuntimeError('自装客户端的安装在原容器中，不能通过重建恢复或修改连接参数')
     old = _get(dc, ch['container_id']) if ch.get('container_id') else None
@@ -159,7 +161,7 @@ def replace(ch, fields, force_start=False):
                    old_running=old is not None and old.attrs.get('State', {}).get('Running') is True,
                    old_policy=old.attrs.get('HostConfig', {}).get('RestartPolicy', {'Name': 'no'}) if old is not None else {'Name': 'no'},
                    start=force_start or ch['status'] != 'stopped', config_applied=False)
-    journal.begin(cid, operation, payload)
+    journal.begin(cid, operation, payload, queued=queued)
     try:
         record = journal.get(cid)
         resources.ensure_volume(dc, owner)
@@ -324,6 +326,7 @@ def recover_all():
     except Exception:
         LOG.error('替换记录无法读取，保留所有资源等待恢复')
         return
+    records = [record for record in records if record.phase != 'queued']
     for record in records:
         try:
             with channel_state.mutation(record.channel_id):
@@ -353,6 +356,9 @@ def resume(cid):
     import manager
     dc = manager.dc; record = journal.get(cid)
     if record is None: return False
+    if record.phase == 'queued':
+        replace(store.get_channel(cid), {}, force_start=True)
+        return True
     if record.phase in ('committed', 'rolled_back'):
         cleanup(cid); return False
     if record.phase != 'awaiting_login': raise RuntimeError('上次操作尚未恢复，请先恢复上一次设置')
@@ -387,6 +393,7 @@ def before_stop(cid):
     import manager
     record = journal.get(cid)
     if record is None: return
+    if record.phase == 'queued': return
     if record.phase == 'awaiting_login': return reconcile_waiting(cid)
     if record.phase == 'deleting': raise RuntimeError('通道删除已开始，请重试删除')
     if record.phase in ('committed', 'rolled_back'):

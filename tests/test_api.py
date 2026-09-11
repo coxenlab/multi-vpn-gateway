@@ -574,6 +574,25 @@ def test_pending_replacement_blocks_edits_and_partial_login_without_exposing_pay
     assert client.get(f'/api/channels/{cid}/login').status_code == 409
 
 
+def test_queued_connection_settings_can_be_edited_exported_and_cancelled(client, monkeypatch):
+    import replacement, replacement_store as journal, store
+    cid = _create(client, password='original-secret')['id']
+    journal.queue_settings(store.get_channel(cid), {'server':'new.example', 'password':' new-secret '}, ('password',))
+    def forbidden(*args, **kwargs): raise AssertionError('saving queued settings must not replace the container')
+    monkeypatch.setattr(replacement, 'replace', forbidden)
+    response = client.patch(f'/api/channels/{cid}', json={'username':'new-user', 'name':'renamed'})
+    assert response.status_code == 202 and response.json()['server'] == 'new.example'
+    assert response.json()['config']['server'] == 'new.example'
+    assert 'new-secret' not in response.text
+    assert 'new-secret' not in client.get('/api/channels').text
+    exported = client.get('/api/config/export')
+    assert exported.json()['channels'][0]['server'] == 'new.example' and 'new-secret' not in exported.text
+    assert store.get_password(cid) == 'original-secret'
+    assert client.post(f'/api/channels/{cid}/restore').status_code == 200
+    assert journal.get(cid) is None and store.get_channel(cid)['server'] == 'https://x'
+    assert store.get_channel(cid)['name'] == 'renamed'
+
+
 def test_successful_fresh_probe_confirms_pending_candidate(client, monkeypatch):
     import threading
     import replacement, replacement_store as journal, store

@@ -9,7 +9,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     const wantId = params.get("id");
     let ch, sys;
     let restoring = false;
-    const needsStart = () => ch && ["stopped", "error", "down"].includes(ch.status);
+    const needsStart = () => ch && (ch.replacement?.phase === "queued" || ["stopped", "error", "down"].includes(ch.status));
     let k, kindLabel, containerId, hostName, methodLabel;
     const routingControlsSupported = () => sys && typeof sys.routing_off === "boolean";
     const routingOn = () => ch && (!routingControlsSupported() || (ch.routing_enabled !== false && ch.routing_enabled !== 0));
@@ -80,23 +80,25 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       if (!ch) { $("#ch-replacement").hidden = true; return; }
       const pending = ch.replacement;
       $("#ch-replacement").hidden = !pending;
-      const locked = restoring || (pending && !["committed", "rolled_back"].includes(pending.phase));
+      const locked = restoring || (pending && !["queued", "committed", "rolled_back"].includes(pending.phase));
       $("#cfg-edit").disabled = !!locked;
       $("#act-routing").disabled = !!locked;
       if (!pending) return;
       const waiting = pending.phase === "awaiting_login";
-      $("#replacement-title").textContent = waiting ? "新设置等待登录验证"
+      $("#replacement-title").textContent = pending.phase === "queued" ? "连接设置已保存，尚未应用" : waiting ? "新设置等待登录验证"
         : pending.phase === "committed" ? "新设置已应用"
         : pending.phase === "rolled_back" ? "上一次设置已恢复"
         : pending.phase === "deleting" ? "正在完成通道删除" : "上次操作尚未完成";
-      $("#replacement-message").textContent = waiting
+      $("#replacement-message").textContent = pending.phase === "queued"
+        ? "启动这条通道后应用新设置。原连接设置仍保留，你可以继续编辑或撤销本次修改。"
+        : waiting
         ? "启动通道、完成登录并通过内网检测后，本次修改才会完成。若新设置无法使用，可以恢复上一次设置；已保存的登录备注会保留。"
         : pending.can_restore ? "上一次设置和数据仍保留，可以恢复后再尝试。"
         : pending.phase === "deleting" ? "正在清理关联的通道实例，完成后会移除通道。" : "正在清理本次操作保留的旧资源。";
       const button = $("#replacement-restore");
       button.hidden = !pending.can_restore;
       button.disabled = restoring;
-      button.textContent = restoring ? "恢复中…" : "恢复上一次设置";
+      button.textContent = restoring ? "处理中…" : pending.phase === "queued" ? "撤销待应用修改" : "恢复上一次设置";
     }
 
     function rowsConfig() {
@@ -240,7 +242,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       const headless = ch.login_method === "headless";
       $("#top-badge").innerHTML = channelBadge();
       $("#h-status").innerHTML = badgeHTML(ch.status);
-      $("#act-power").textContent = stopped ? "启动" : "停止";
+      $("#act-power").textContent = ch.replacement?.phase === "queued" ? "应用并启动" : stopped ? "启动" : "停止";
       // 容器已停:登录窗口与检测都无意义 → 只留「启动」+「删除」
       $("#act-probe").style.display = stopped ? "none" : "";
       $("#act-relogin").style.display = (stopped || headless) ? "none" : "";
@@ -254,16 +256,17 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
 
     $("#replacement-restore").addEventListener("click", async () => {
       if (restoring || !ch.replacement?.can_restore) return;
+      const cancelling = ch.replacement.phase === "queued";
       restoring = true;
       vncView.pause();
       renderReplacement();
       try {
         await api.restore(ch.id);
         await boot();
-        toast(needsStart() ? "上一次设置已恢复，请启动通道后再登录" : "已恢复上一次设置，连通状态请重新检测", { variant: "success" });
+        toast(cancelling ? "已撤销待应用修改，原连接设置保留" : needsStart() ? "上一次设置已恢复，请启动通道后再登录" : "已恢复上一次设置，连通状态请重新检测", { variant: "success" });
       } catch (error) {
         await boot().catch(() => {});
-        toast("恢复未完成：" + fb.friendlyError(error).title, { variant: "danger" });
+        toast((cancelling ? "撤销未完成：" : "恢复未完成：") + fb.friendlyError(error).title, { variant: "danger" });
       } finally {
         restoring = false;
         renderReplacement();
@@ -320,10 +323,11 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       const connChanged = body.server !== (ch.server || "") ||
         body.username !== (ch.username || (ch.config && ch.config.username) || "") || !!pw;
       const btn = $("#e-save");
-      btn.disabled = true; btn.textContent = connChanged ? "保存并重新连接…" : "保存中…";
+      const saveForLater = ch.replacement?.phase === "queued" || (sys.runtime && !["ready", "waiting"].includes(sys.runtime.phase));
+      btn.disabled = true; btn.textContent = connChanged && !saveForLater ? "保存并重新连接…" : "保存中…";
       try {
         const result = await api.update(ch.id, body);
-        toast(result.deferred ? "已保存，连接后生效" : connChanged ? "已保存，正在重新连接" : "已保存", { variant: result.deferred ? "info" : "success" });
+        toast(result.replacement?.phase === "queued" ? "已保存，启动通道后应用" : result.deferred ? "已保存，连接后生效" : connChanged ? "已保存，正在重新连接" : "已保存", { variant: result.deferred ? "info" : "success" });
         location.reload();
       } catch (err) {
         toast("保存失败：" + fb.friendlyError(err).title, { variant: "danger", action: { label: "重试", onClick: submitEdit } });

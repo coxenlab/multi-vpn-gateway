@@ -137,6 +137,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dormant_connection_settings_are_previewed_and_cancellable_without_vm() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,vpn_type,server,status,container_id,login_method) VALUES('c1','offline','easyconnect','old.example','stopped','original','headless')", []).unwrap();
+        let key = crate::store::master_key(dir.path()).unwrap();
+        crate::store::update_channel(&db,&key,"c1",serde_json::json!({"password":"original-secret"}).as_object().unwrap(),&["password".into()]).unwrap();
+        let mut state = state_with_db(dir.path());
+        Arc::make_mut(&mut state.cfg).managed_vm = true;
+        let runtime = state.lifecycle.runtime().clone();
+        let app = build_router(state.clone());
+        let response = app.clone().oneshot(Request::builder().method("PATCH").uri("/api/channels/c1")
+            .header("content-type","application/json").body(Body::from(serde_json::json!({"name":"renamed","server":"new.example","password":" new-secret "}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::ACCEPTED);
+        let value: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(value["server"],"new.example"); assert_eq!(value["replacement"]["phase"],"queued");
+        assert_eq!(value["deferred"],true); assert!(!value.to_string().contains("new-secret"));
+        assert_eq!(crate::store::get_channel(&db,"c1").unwrap().unwrap().server,"old.example");
+        assert_eq!(crate::store::get_password(&db,&key,"c1").unwrap(),"original-secret");
+        crate::replacement::recover_all(&state).await;
+        assert_eq!(crate::replacement_store::get(&db,&key,"c1").unwrap().unwrap().phase,"queued");
+        for endpoint in ["/api/channels", "/api/config/export"] {
+            let response = app.clone().oneshot(Request::builder().uri(endpoint).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::OK);
+            let value: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap()).unwrap();
+            if endpoint.ends_with("export") {
+                assert_eq!(value["channels"][0]["server"],"new.example");
+                assert_eq!(value["channels"][0]["config"]["password"]," new-secret ");
+            } else {
+                assert_eq!(value[0]["server"],"new.example");
+                assert!(!value.to_string().contains("new-secret"));
+            }
+        }
+        // Interactive login backups must not expose even queued credentials.
+        rusqlite::Connection::open(&db).unwrap().execute("UPDATE channels SET login_method='interactive' WHERE id='c1'",[]).unwrap();
+        let response = app.clone().oneshot(Request::builder().uri("/api/config/export").body(Body::empty()).unwrap()).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("new-secret"));
+        let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/channels/c1/restore").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let current = crate::store::get_channel(&db,"c1").unwrap().unwrap();
+        assert_eq!(current.server,"old.example"); assert_eq!(current.name,"renamed");
+        assert_eq!(current.container_id.as_deref(),Some("original"));
+        assert!(crate::replacement_store::get(&db,&key,"c1").unwrap().is_none());
+        assert_eq!(runtime.snapshot().start_attempt,0);
+    }
+
+    #[tokio::test]
     async fn dormant_config_writes_persist_without_starting_or_claiming_application() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("vpnmgr.db");

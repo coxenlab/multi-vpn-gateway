@@ -4,6 +4,67 @@ import replacement_store as journal
 import store
 
 
+def test_queued_settings_wait_for_explicit_start_and_survive_preparation_failure(make_channel, monkeypatch):
+    import replacement, manager
+    store.add_channel(make_channel('c1', server='old.example'))
+    store.set_container('c1', 'original', None, 'stopped')
+    journal.queue_settings(store.get_channel('c1'), {'server':'new.example'})
+    original = journal.get('c1')
+    def forbidden(*args, **kwargs): raise AssertionError('recovery must leave queued changes dormant')
+    monkeypatch.setattr(manager, 'rebuild', forbidden)
+    monkeypatch.setattr(replacement, '_get', forbidden)
+    replacement.recover_all()
+    replacement.before_stop('c1')
+    assert journal.get('c1').operation_id == original.operation_id
+    def unavailable(*args): raise RuntimeError('injected prepare failure')
+    monkeypatch.setattr(replacement, '_get', unavailable)
+    with pytest.raises(RuntimeError, match='prepare failure'): replacement.resume('c1')
+    pending = journal.get('c1')
+    assert pending.phase == 'queued' and pending.payload == original.payload
+    assert store.get_channel('c1')['server'] == 'old.example'
+
+
+def test_queued_settings_keep_originals_and_cancellation_keeps_metadata(make_channel):
+    store.add_channel(make_channel('c1', password='old-secret', server='old.example'))
+    ch = store.get_channel('c1')
+    journal.queue_settings(ch, {'server':'new.example', 'password':' new-secret ', 'name':'renamed'}, ('password',))
+    assert store.get_channel('c1')['server'] == 'old.example'
+    assert store.get_channel('c1')['name'] == 'renamed'
+    assert store.get_password('c1') == 'old-secret'
+    queued = journal.get('c1')
+    assert queued.payload['fields']['password'] == ' new-secret '
+    with store._c() as c:
+        assert 'new-secret' not in c.execute('SELECT payload_enc FROM channel_replacements').fetchone()[0]
+    public = {'replacement':journal.public_status('c1'), 'server':'old.example'}
+    journal.overlay_queued('c1', public)
+    assert public['server'] == 'new.example' and 'new-secret' not in str(public)
+    journal.cancel_queued(queued)
+    assert journal.get('c1') is None and store.get_channel('c1')['name'] == 'renamed'
+
+
+def test_queue_transition_and_metadata_are_atomic(make_channel):
+    store.add_channel(make_channel('c1', server='old.example'))
+    ch = store.get_channel('c1')
+    with store._c() as c:
+        c.execute("CREATE TRIGGER fail_queue BEFORE INSERT ON channel_replacements BEGIN SELECT RAISE(ABORT,'injected'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        journal.queue_settings(ch, {'server':'new.example', 'name':'wrong'})
+    assert store.get_channel('c1')['name'] == 'c1'
+    with store._c() as c: c.execute('DROP TRIGGER fail_queue')
+    journal.queue_settings(ch, {'server':'first.example'})
+    stale = journal.get('c1')
+    journal.queue_settings(ch, {'server':'old.example', 'name':'kept'})
+    assert journal.get('c1') is None and store.get_channel('c1')['name'] == 'kept'
+    journal.queue_settings(ch, {'server':'second.example'})
+    with pytest.raises(RuntimeError): journal.cancel_queued(stale)
+    with pytest.raises(RuntimeError): journal.begin('c1', 'new', {}, queued=stale)
+    current = journal.get('c1')
+    assert current.payload['fields']['server'] == 'second.example'
+    journal.begin('c1', 'new', {'prepared':True}, queued=current)
+    assert journal.get('c1').phase == 'preparing'
+    with pytest.raises(RuntimeError): journal.cancel_queued(current)
+
+
 def test_staged_config_commits_with_runtime_and_keeps_new_notes(make_channel):
     store.add_channel(make_channel("c1", password="old"))
     fields = {"name": "new", "password": "fixture-password"}

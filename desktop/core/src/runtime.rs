@@ -34,7 +34,7 @@ pub async fn track_request(
 pub async fn can_release(state: &AppState) -> Result<bool> {
     let db = state.cfg.db_path();
     if crate::store::list_channels(&db)?.iter().any(|channel| channel.status != "stopped")
-        || !crate::replacement_store::protected_names(&db)?.is_empty()
+        || crate::replacement_store::has_active_replacements(&db)?
         || crate::config_apply_store::status(&db, crate::store::routing_off(&state.cfg.data_dir))?.pending
         || crate::novnc::has_viewers(state).await {
         return Ok(false);

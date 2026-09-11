@@ -1,6 +1,7 @@
 """容器替换记录。准备期间不改配置，凭据只加密留存于内部 payload。"""
 from dataclasses import dataclass
 import json
+import uuid
 from typing import Optional
 import store
 
@@ -34,16 +35,68 @@ def data_volume(cid):
         return row[0] if row else f"vpndata-{cid}"
 
 
-def begin(cid, operation, payload):
+def begin(cid, operation, payload, queued=None):
     encrypted = store.F.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode()
     with store._c() as c:
         c.execute("BEGIN IMMEDIATE")
         if not c.execute("SELECT 1 FROM channels WHERE id=?", (cid,)).fetchone():
             raise RuntimeError("通道不存在")
-        if c.execute("SELECT 1 FROM channel_replacements WHERE channel_id=?", (cid,)).fetchone():
-            raise RuntimeError("该通道已有未完成的容器替换")
-        c.execute("INSERT INTO channel_replacements(channel_id,operation_id,phase,payload_enc,created_at) VALUES(?,?,'preparing',?,CAST(strftime('%s','now') AS INTEGER))",
-                  (cid, operation, encrypted))
+        if queued is not None:
+            if queued.channel_id != cid or queued.phase != 'queued': raise RuntimeError('待应用设置与通道不匹配')
+            _check(c, cid, queued.operation_id, 'queued')
+            c.execute("UPDATE channel_replacements SET operation_id=?,phase='preparing',payload_enc=? WHERE channel_id=?", (operation, encrypted, cid))
+        else:
+            if c.execute("SELECT 1 FROM channel_replacements WHERE channel_id=?", (cid,)).fetchone():
+                raise RuntimeError("该通道已有未完成的容器替换")
+            c.execute("INSERT INTO channel_replacements(channel_id,operation_id,phase,payload_enc,created_at) VALUES(?,?,'preparing',?,CAST(strftime('%s','now') AS INTEGER))",
+                      (cid, operation, encrypted))
+
+
+def queue_settings(ch, fields, secret_keys=()):
+    """接续桌面离线保存的设置；名称等元信息立即更新，连接参数保留为加密意图。"""
+    cid = ch['id']; prior = get(cid)
+    if prior is not None and prior.phase != 'queued': raise RuntimeError('上次修改尚未完成')
+    desired = dict(prior.payload['fields']) if prior else {}
+    immediate = dict(fields)
+    for field in ('server', 'username', 'password', 'ec_ver'):
+        if field in immediate:
+            value = immediate.pop(field)
+            if not isinstance(value, str): raise ValueError('连接设置必须是文本')
+            desired[field] = value if field == 'password' else store._clean_field(field, value)
+    password = store.get_password(cid)
+    desired = {k:v for k,v in desired.items() if v != (password if k == 'password' else (ch.get(k) or ''))}
+    payload = {'fields':desired, 'old_id':ch.get('container_id'), 'old_volume':data_volume(cid)}
+    encrypted = store.F.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode()
+    with store._c() as c:
+        c.execute('BEGIN IMMEDIATE')
+        if not c.execute('SELECT 1 FROM channels WHERE id=?', (cid,)).fetchone(): raise RuntimeError('通道不存在')
+        if prior: _check(c, cid, prior.operation_id, 'queued')
+        elif c.execute('SELECT 1 FROM channel_replacements WHERE channel_id=?', (cid,)).fetchone(): raise RuntimeError('上次修改已变化')
+        store._update_channel(c, cid, immediate, secret_keys)
+        if not desired:
+            c.execute('DELETE FROM channel_replacements WHERE channel_id=?', (cid,))
+        else:
+            c.execute("INSERT INTO channel_replacements(channel_id,operation_id,phase,payload_enc,created_at) VALUES(?,?,'queued',?,CAST(strftime('%s','now') AS INTEGER)) ON CONFLICT(channel_id) DO UPDATE SET operation_id=excluded.operation_id,payload_enc=excluded.payload_enc",
+                      (cid, uuid.uuid4().hex, encrypted))
+
+
+def cancel_queued(record):
+    if record.phase != 'queued': raise RuntimeError('该修改已经开始应用，请使用恢复流程')
+    with store._c() as c:
+        c.execute('BEGIN IMMEDIATE')
+        _check(c, record.channel_id, record.operation_id, 'queued')
+        c.execute('DELETE FROM channel_replacements WHERE channel_id=?', (record.channel_id,))
+
+
+def overlay_queued(cid, value):
+    if (value.get('replacement') or {}).get('phase') != 'queued': return
+    record = get(cid)
+    if record is None or record.phase != 'queued': raise RuntimeError('待应用设置已变化，请刷新')
+    for field in ('server', 'username', 'ec_ver'):
+        if field in record.payload['fields']:
+            value[field] = record.payload['fields'][field]
+            if field != 'ec_ver' and isinstance(value.get('config'), dict): value['config'][field] = value[field]
+    value['deferred'] = True
 
 
 def records():

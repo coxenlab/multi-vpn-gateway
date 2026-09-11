@@ -139,7 +139,12 @@ pub async fn channels(State(st): State<AppState>) -> axum::response::Response {
     for channel in &mut response {
         let cid = channel["id"].as_str().unwrap_or_default().to_string();
         match (crate::replacement_store::public_status(&db, &cid), crate::replacement_store::data_volume(&db, &cid)) {
-            (Ok(pending), Ok(volume)) => { channel["replacement"] = json!(pending); channel["volume_name"] = json!(volume); },
+            (Ok(pending), Ok(volume)) => {
+                channel["replacement"] = json!(pending); channel["volume_name"] = json!(volume);
+                if let Err(error) = crate::replacement_store::overlay_queued(&db, &cid, channel) {
+                    return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+                }
+            },
             _ => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, "replacement runtime unavailable"),
         }
     }

@@ -46,6 +46,8 @@ import { loadWithSystem } from "../page-data.js";
 
     function actionsFor(c) {
       const detail = `<a class="btn btn-sm btn-secondary spacer" href="channel.html?id=${fb.esc(c.id)}">详情</a>`;
+      if (c.replacement?.phase === "queued")
+        return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">应用并启动</button>${detail}`;
       if (sys.runtime && !["ready", "waiting"].includes(sys.runtime.phase)) {
         const action = ["running", "logged_in"].includes(c.configured_status) ? "connect" : "start";
         return `<button class="btn btn-sm btn-primary" data-action="${action}" data-id="${fb.esc(c.id)}">连接</button>${detail}`;

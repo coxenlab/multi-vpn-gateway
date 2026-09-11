@@ -82,7 +82,7 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
    配置应用由同进程锁及数据目录内的 `mihomo-apply.lock` 跨进程串行。两栈共用 `config_apply_schema.sql`：业务写入与来源 revision 同事务，内容 generation 与重试 attempt 独立；旧确认不能覆盖新处理，失败保留历史已确认版本，`/api/system.config_application` 给出 pending / 时间 / 原因码，`POST /api/config/retry` 只重新同步，不重做通道操作。规则已保存而同步失败的响应带 `saved:true`；通道操作另带 `config_application` / `rules_applied`。
 
-   托管桌面未连接 Docker 时，规则增删/启停、分流开关与配置导入只保存设置，以 HTTP 202、`saved:true` / `deferred:true` 返回，应用记录保持 `pending` / `runtime_idle`；不写启动配置、不启动 VM，也不宣称规则已生效。页面提供“连接并同步”，该显式动作才准备底座并重新读回确认。普通名称编辑同样不启动 VM；已有实例的连接参数修改、停止与删除仍需补齐休眠语义。
+   托管桌面未连接 Docker 时，规则增删/启停、分流开关与配置导入只保存设置，以 HTTP 202、`saved:true` / `deferred:true` 返回，应用记录保持 `pending` / `runtime_idle`；不写启动配置、不启动 VM，也不宣称规则已生效。页面提供“连接并同步”，该显式动作才准备底座并重新读回确认。普通名称编辑同样不启动 VM。已有实例的连接参数存入加密替换记录的 `queued` 阶段，原连接参数和实例 ID 不变；名称、验证地址等非连接字段同事务保存。列表/详情展示待应用的公开字段，密码不回传；详情可继续编辑或撤销，显式“应用并启动”才把对应代次原子交给替换流程，准备失败保留待应用内容。启动其他通道或恢复运行环境不会自动应用 queued。备份导出采用用户已保存的新设置，仍剥除交互密码与登录备注；Web 可读取、继续编辑、撤销和应用共享数据中的 queued。自装客户端仍在原客户端内改连接信息。休眠停止与删除尚需补齐。
 
    通道 `container_id` 变化也增加来源 revision：代理仍为 `vpn-{id}` 时配置正文不变，但旧的代理服务器 DNS 缓存可能继续指向旧实例。免重载路径遇到新来源或上次未确认时调用 `POST /cache/dns/flush`，失败保持 pending；全文重载会创建新的解析器。普通名称/备注/探活状态更新不触发刷新。该刷新影响缓存，不主动关闭已建立连接。
 
