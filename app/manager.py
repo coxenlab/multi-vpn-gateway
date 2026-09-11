@@ -258,6 +258,10 @@ _DNS_RECOVERY_SCRIPT = Path(__file__).with_name("hagb_dns_recover.sh").read_text
 
 def _recover_hagb_dns(ch):
     try:
+        # The canonical name may have been reused while the failed probe ran.
+        container_id = ch.get("container_id")
+        if not container_id:
+            return False
         tun = registry.get(ch.get("vpn_type", "")).get("dns_recovery_tun")
         if not tun:
             return False
@@ -271,7 +275,7 @@ def _recover_hagb_dns(ch):
         except ValueError:
             pass
         port = url.port or (443 if url.scheme == "https" else 80)
-        result = dc.containers.get(f"vpn-{ch['id']}").exec_run(
+        result = dc.containers.get(container_id).exec_run(
             ["timeout", "18", "bash", "-c", _DNS_RECOVERY_SCRIPT, "vpnmgr-dns-recover",
              host.encode("idna").decode(), str(port), url.scheme, tun], user="root")
         return result.exit_code == 0 and b"VPNMGR_DNS_RECOVERED" in result.output.splitlines()

@@ -167,9 +167,11 @@ async fn recover_hagb_dns(docker: Option<&bollard::Docker>, ch: &ChannelPublic) 
     if host.parse::<std::net::IpAddr>().is_ok() { return false; }
     let Some(port) = url.port_or_known_default() else { return false };
     let port = port.to_string();
-    let name = format!("vpn-{}", ch.id);
+    // A probe may outlive a concurrent replacement. The canonical name can now
+    // point at a new instance, whose Dante must not be restarted by old work.
+    let Some(container_id) = ch.container_id.as_deref().filter(|id| !id.is_empty()) else { return false };
     let result = tokio::time::timeout(std::time::Duration::from_secs(18), crate::docker::exec_capture(
-        docker, &name, vec!["timeout", "18", "bash", "-c", DNS_RECOVERY_SCRIPT, "vpnmgr-dns-recover", host, &port, url.scheme(), &tun],
+        docker, container_id, vec!["timeout", "18", "bash", "-c", DNS_RECOVERY_SCRIPT, "vpnmgr-dns-recover", host, &port, url.scheme(), &tun],
     )).await;
     let recovered = matches!(result, Ok(Ok(ref s)) if s.lines().any(|l| l == "VPNMGR_DNS_RECOVERED"));
     if recovered {
@@ -545,6 +547,37 @@ mod tests {
     fn rule(cid: &str, kind: &str, pat: &str, enabled: i64) -> Rule {
         Rule { id: 0, channel_id: cid.into(), kind: kind.into(), pattern: pat.into(), enabled,
             note: String::new(), locked: 0 }
+    }
+
+    #[tokio::test]
+    async fn dns_recovery_cannot_touch_replacement_with_reused_name() {
+        use axum::{http::StatusCode, Router};
+        use std::sync::{Arc, Mutex};
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let seen = requested.clone();
+        let server = Router::new().fallback(move |request: axum::extract::Request| {
+            let seen = seen.clone();
+            async move {
+                seen.lock().unwrap().push(request.uri().path().to_owned());
+                // The captured old container has stopped. Do not fall back to
+                // its canonical name, which now belongs to the replacement.
+                StatusCode::CONFLICT
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        let docker = bollard::Docker::connect_with_http(&address, 5, bollard::API_DEFAULT_VERSION).unwrap();
+        let mut channel = ch("c1"); channel.vpn_type = "atrust".into();
+        channel.probe_url = "https://fixture.test/".into(); channel.container_id = Some("old-container".into());
+        assert!(!recover_hagb_dns(Some(&docker), &channel).await);
+        let paths = requested.lock().unwrap().clone();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("/containers/old-container/exec"), "stale recovery targeted replacement: {paths:?}");
+        channel.container_id = None;
+        assert!(!recover_hagb_dns(Some(&docker), &channel).await);
+        assert_eq!(requested.lock().unwrap().len(), 1);
+        task.abort();
     }
 
     #[test]

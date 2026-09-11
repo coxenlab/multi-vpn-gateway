@@ -44,6 +44,28 @@ def test_probe_no_url():
     assert ok is False and ms is None
 
 
+def test_dns_recovery_cannot_touch_replacement_with_reused_name(monkeypatch):
+    import manager
+    from types import SimpleNamespace
+    touched = []
+    def get(reference):
+        # The first probe started before replacement; the canonical name now
+        # resolves to the new container, which must not have Dante restarted.
+        resolved = "new-container" if reference == "vpn-c1" else reference
+        def execute(*args, **kwargs):
+            touched.append(resolved)
+            return SimpleNamespace(exit_code=0, output=b"VPNMGR_DNS_RECOVERED\n")
+        return SimpleNamespace(exec_run=execute)
+    monkeypatch.setattr(manager, "dc", SimpleNamespace(containers=SimpleNamespace(get=get)))
+    channel = {"id":"c1", "vpn_type":"atrust", "probe_url":"https://fixture.test/", "container_id":"old-container"}
+    assert manager._recover_hagb_dns(channel)
+    assert touched == ["old-container"]
+    touched.clear()
+    channel["container_id"] = None
+    assert not manager._recover_hagb_dns(channel)
+    assert touched == []
+
+
 def test_dns_recovery_still_requires_real_probe(monkeypatch):
     import manager
     attempts = iter([(False, None), (False, None)])

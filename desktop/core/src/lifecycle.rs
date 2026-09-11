@@ -276,6 +276,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stalled_channel_does_not_block_or_invalidate_another_channel() {
+        let (_dir, st) = fixture();
+        rusqlite::Connection::open(st.cfg.db_path()).unwrap().execute(
+            "INSERT INTO channels(id,name,vpn_type,probe_url,status) VALUES('c2','other','atrust','http://fixture.test','running')", []
+        ).unwrap();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (started_tx, mut started_rx) = watch::channel(false);
+        let run = { let gate = gate.clone(); move |_, _| {
+            let gate = gate.clone(); let tx = started_tx.clone();
+            async move { tx.send(true).unwrap(); gate.acquire().await.unwrap().forget(); (true, Some(1)) }
+        }};
+        let slow = tokio::spawn(sample_with(st.clone(), "c1".into(), true, run));
+        started_rx.changed().await.unwrap();
+        let healthy = tokio::time::timeout(Duration::from_millis(500),
+            sample_with(st.clone(), "c2".into(), true, |_, _| async { (true, Some(7)) })).await.unwrap().unwrap();
+        {
+            let _guard = st.lifecycle.mutate("c1").await.unwrap();
+            store::set_status(&st.cfg.db_path(), "c1", "stopped").unwrap();
+        }
+        gate.add_permits(1);
+        assert_eq!(slow.await.unwrap().unwrap()["status"], "stopped");
+        let unchanged = sample_with(st.clone(), "c2".into(), false, |_, _| async { panic!("unrelated channel cache invalidated") }).await.unwrap();
+        assert_eq!(healthy, unchanged);
+        assert_eq!(store::get_channel(&st.cfg.db_path(), "c2").unwrap().unwrap().status, "logged_in");
+    }
+
+    #[tokio::test]
     async fn polling_uses_cache_but_manual_probe_is_fresh() {
         let (_dir,st)=fixture(); let count=Arc::new(AtomicUsize::new(0));
         let run={let count=count.clone();move |_,_| {let count=count.clone();async move {
