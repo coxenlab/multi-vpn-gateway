@@ -133,8 +133,10 @@ import { loadWithSystem } from "../page-data.js";
       btn.disabled = true;
       btn.textContent = doing;
       try {
-        await fn();
-        if (done) toast(done, { variant: "success" });
+        const outcome = await fn();
+        if (outcome && outcome.ok === false)
+          toast(outcome.error || "操作未完成，请核对当前状态", { variant: outcome.pending ? "info" : "danger" });
+        else if (done) toast(done, { variant: "success" });
         await load(false);
       } catch (e) {
         toast(fb.friendlyError(e).title || "操作失败", { variant: "danger" });

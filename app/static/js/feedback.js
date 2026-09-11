@@ -11,6 +11,7 @@ import "./app.js";
   const SVG = {
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>',
     cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+    info:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 10v7M12 6v1"/></svg>',
     spin:  '<svg class="fb-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>',
   };
   const esc = (s) =>
@@ -32,7 +33,7 @@ import "./app.js";
     const t = document.createElement("div");
     t.className = "toast" + (variant !== "default" ? " toast-" + variant : "");
     let icon = "";
-    if (wantIcon) icon = `<span class="toast-ic">${variant === "danger" ? SVG.cross : SVG.check}</span>`;
+    if (wantIcon) icon = `<span class="toast-ic">${variant === "danger" ? SVG.cross : variant === "info" ? SVG.info : SVG.check}</span>`;
     let act = "";
     if (opt.action && opt.action.label)
       act = `<button class="toast-act" type="button">${esc(opt.action.label)}</button>`;
@@ -146,9 +147,10 @@ import "./app.js";
     if (gh === "transport_dead" || gh === "transport_degraded" || gh === "vm_down") {
       return F("底座连接中断,容器操作暂不可用",
         gh === "vm_down" ? "本地引擎(VM)不可达,通道管理操作都会失败。"
-                         : "宿主到 VM 的连接通道中断,看门狗正在自愈;现有分流不受影响。",
+                         : gh === "transport_degraded" ? "分流入口仍可响应，但容器管理连接异常，请核对当前业务连接。"
+                         : "分流链路和容器管理连接均不可用，正在尝试恢复。",
         gh === "vm_down" ? "重新打开 app 会自动重建底座后再重试。"
-                         : "等顶部横幅消失(约 1 分钟内自动恢复)后重试;若持续,重开 app 会自动修复。", detail);
+                         : "等待连接状态恢复后重试；若持续失败，请查看运行日志和诊断。", detail);
     }
 
     // 1) 语义关键词优先(后端原文里的特征串)
@@ -440,6 +442,7 @@ import "./app.js";
         try {
           const r = await window.api.healProxy();
           if (r && r.reachable) window.toast("分流链路已修复");
+          else if (r && r.pending) window.toast(r.error || "修复正在进行，请稍后查看连接状态", { variant: "info" });
           else window.toast(r && r.error ? r.error : "修复未生效,请重开 app", { variant: "danger" });
         } catch (e) {
           window.toast("修复失败:" + (e && e.message ? e.message : e), { variant: "danger" });
@@ -576,8 +579,7 @@ import "./app.js";
       } else if (sys.gave_up) {
         healing = false;
         banner("danger", SVG.cross, "分流口反复不可达,已暂停自动修复",
-          "容器正常但浏览器/Clash 连不到分流口,通道当前都打不开。点「手动修复」重试;" +
-          "仍不行请从托盘退出并重新打开 app(重开会重建转发链路)。", healBtn());
+          "多次尝试后分流链路仍未恢复。请查看运行日志，或点「手动修复」重试。", healBtn());
         bindHeal();
       } else if (gh === "container_down") {
         healing = false;
@@ -589,17 +591,17 @@ import "./app.js";
         healing = true;
         banner("warn", SVG.spin, "分流链路中断,正在自动修复…",
           "容器正常,但宿主分流口暂时不过数据(通常睡醒/网络抖动所致)。正在重建转发," +
-          "约 1 分钟内自动恢复,通道无需重新登录。", logOnly());
+          "修复结果会在此更新，现有登录信息会保留。", logOnly());
       } else if (gh === "transport_dead") {
         // 传输层(mux)坏死:VM/容器都正常,看门狗正在直上备援隧道(盲区 #3)。
         healing = true;
         banner("warn", SVG.spin, "底座传输中断,正在重建转发…",
-          "VM 与容器正常,但宿主到 VM 的连接断了(通常睡醒/网络切换所致)。正在自动重建,通道无需重新登录。", logOnly());
+          "本地环境仍能响应，但分流链路暂不可用。正在尝试恢复连接，请稍后查看状态。", logOnly());
       } else if (gh === "transport_degraded") {
         // 降级稳态:分流口活着(备援隧道),容器管理不可用。重开 app 由 boot 自愈重建底座。
         healing = false;
         banner("warn", SVG.check, "分流可用,容器管理暂不可用(降级运行)",
-          "现有通道可正常上网;新建/启停通道、登录窗暂不可用。从托盘退出并重新打开 app 将自动修复。");
+          "入口可以响应，容器状态暂时无法读取。请先核对当前业务连接；管理连接恢复后会自动更新状态。");
       }
     }
 

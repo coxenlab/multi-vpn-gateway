@@ -42,6 +42,9 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
 /// 后者在转发僵死时恒真,旧版据此反复回「已修复」而链路其实是死的(2026-08-04 事故)。
 /// 不破命门 #1:不碰登录态;只修宿主→分流口这条转发链。
 pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
+    let Some(_repair) = st.lifecycle.try_gateway_repair() else {
+        return Json(json!({"ok":false,"reachable":false,"pending":true,"error":"修复正在进行，请稍后查看连接状态"}));
+    };
     if let Err(error) = crate::runtime::ensure(&st).await {
         return Json(json!({"ok":false,"reachable":false,"error":error.to_string()}));
     }
@@ -105,7 +108,8 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
             "result": "failed", "error": "端到端探活未通过"
         }));
     }
-    Json(json!({"ok": true, "reachable": reachable, "method": method}))
+    Json(json!({"ok": reachable, "reachable": reachable, "method": method,
+        "error": if reachable { None } else { Some("修复动作已结束，但分流链路仍未通过检测，请查看运行日志") }}))
 }
 
 pub async fn proxies(State(st): State<AppState>) -> Json<Value> {

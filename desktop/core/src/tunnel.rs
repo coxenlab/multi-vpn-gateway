@@ -141,6 +141,11 @@ pub async fn fwds(state: &AppState) -> Result<Vec<Fwd>> {
 /// 判据用 [`crate::health::proxy_serves`](真握手)而非「进程还在」——ssh 进程活着但
 /// 转发失效是存在的(VM 侧目标变了/容器换 IP),那正是要重建的场景。
 pub async fn ensure(state: &AppState) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(45), ensure_with_retries(state)).await
+        .map_err(|_| anyhow!("等待 SSH 转发就绪超时；已创建的进程仍由应用管理，后续检查会核对其状态"))?
+}
+
+async fn ensure_with_retries(state: &AppState) -> Result<()> {
     // 绑不上宿主端口通常是「上一秒还占着口的人正在退场」:升级首启时 lima 要等
     // guestagent 报完端口移除才松手,旧隧道进程退出也有毫秒级延迟。多试几次即可,
     // 不必把用户丢给 40s 后的下一拍看门狗。
@@ -198,23 +203,29 @@ async fn try_ensure(state: &AppState) -> Result<()> {
     *state.tunnel.lock().await = Some(child);
     crate::ev!(info, "tunnel", "tunnel_spawn", "SSH 转发进程已拉起", { "forwards": forward_summary });
 
-    // 等端到端真通(ssh 建连 + 转发就绪,通常 <1s;VM 忙时给到 15s)。
-    for _ in 0..30 {
-        if crate::health::proxy_serves(&state.cfg.mihomo_host_port).await {
-            crate::ev!(info, "tunnel", "tunnel_ready", "SSH 转发已就绪", { "duration_ms": started.elapsed().as_millis() as u64 });
-            return Ok(());
+    wait_ready(state, started, Duration::from_secs(15)).await
+}
+
+async fn wait_ready(state: &AppState, started: std::time::Instant, budget: Duration) -> Result<()> {
+    // 15 秒是整段就绪等待预算，不能把每次最多 6 秒的探测重复 30 次。
+    let ready = tokio::time::timeout(budget, async {
+        loop {
+            if crate::health::proxy_serves(&state.cfg.mihomo_host_port).await {
+                crate::ev!(info, "tunnel", "tunnel_ready", "SSH 转发已就绪", { "duration_ms": started.elapsed().as_millis() as u64 });
+                return Ok(());
+            }
+            // 进程当场退出 → 立刻报错,不空等满 15s;死因看 stderr(端口被占/认证失败/refused)。
+            if let Some(st) = take_exited(state).await? {
+                // 给 stderr 读取任务一点时间把最后几行冲进缓冲。
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let stderr = stderr_tail();
+                crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程在就绪前退出", { "exit_code": st.code(), "stderr": stderr });
+                return Err(anyhow!("SSH 转发进程退出(exit {:?}):{}", st.code(), if stderr.is_empty() { "无 stderr 输出".to_string() } else { stderr }));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        // 进程当场退出 → 立刻报错,不空等满 15s;死因看 stderr(端口被占/认证失败/refused)。
-        if let Some(st) = take_exited(state).await? {
-            // 给 stderr 读取任务一点时间把最后几行冲进缓冲。
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let stderr = stderr_tail();
-            crate::ev!(error, "tunnel", "tunnel_exited", "SSH 转发进程在就绪前退出", { "exit_code": st.code(), "stderr": stderr });
-            return Err(anyhow!("SSH 转发进程退出(exit {:?}):{}", st.code(), if stderr.is_empty() { "无 stderr 输出".to_string() } else { stderr }));
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    Err(anyhow!("SSH 转发已拉起但分流口仍不过数据(VM 内 mihomo 异常?)"))
+    }).await;
+    ready.unwrap_or_else(|_| Err(anyhow!("SSH 转发已拉起但分流口仍不过数据(VM 内 mihomo 异常?)")))
 }
 
 /// 每拍检查已就绪隧道是否意外退出；退出时顺带清掉失效句柄。
@@ -253,6 +264,32 @@ pub async fn kill_confirmed(state: &AppState) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn readiness_timeout_preserves_owned_child_for_later_check_and_cleanup() {
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let _connection = proxy.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into(); cfg.ui_port = 0; cfg.dev_mode = true;
+        cfg.managed_vm = true; cfg.vm_profile = "vpnmgr-watchdog-test".into();
+        cfg.mihomo_host_port = port.to_string();
+        let (_ui, state) = crate::app::bootstrap(cfg).await.unwrap();
+        let child = Command::new("/bin/sleep").arg("60").kill_on_drop(true).spawn().unwrap();
+        let pid = child.id().unwrap();
+        *state.tunnel.lock().await = Some(child);
+        let result = tokio::time::timeout(Duration::from_secs(1),
+            wait_ready(&state, std::time::Instant::now(), Duration::from_millis(100))).await.unwrap();
+        assert!(result.is_err());
+        assert_eq!(status(&state).await, (Some(pid), true));
+        kill_confirmed(&state).await.unwrap();
+        assert_eq!(status(&state).await, (None, false));
+        server.abort(); let _ = server.await;
+    }
 
     #[tokio::test]
     async fn idle_stop_confirms_child_exit_and_is_idempotent() {

@@ -44,7 +44,7 @@ pub enum GatewayHealth {
     /// docker 不可达但 VM 的 sshd 可达且分流口也不通 = 传输层(mux/转发)坏死。
     /// 可自愈:直上二级备援隧道(一级 restart 需要 docker.sock,此态下不可用)。
     TransportDead,
-    /// docker 不可达但分流口可达(通常 = 备援隧道已接管)= 降级稳态:
+    /// Docker 不可达或运行状态无法读取，但分流口可达 = 降级稳态:
     /// 分流可用、容器管理不可用。不折腾,横幅引导重开 app(boot 自愈重建底座)。
     TransportDegraded,
     /// docker 与 VM sshd 都不可达(真·VM 死,不在本模块自愈范围,弹横幅引导重开 app)。
@@ -360,21 +360,26 @@ pub async fn check(state: &AppState) -> (GatewayHealth, ProxyProbe) {
     let Some(docker) = docker else {
         // 鉴别诊断(盲区 #3):docker.sock 与被检转发共享 mux 故障域,ping 挂 ≠ VM 死。
         // 独立 SSH 探针可达 = 仅传输层断(可自愈);再按分流口死活分「待救」vs「降级稳态」。
-        if !crate::vm::ssh_reachable(&state.cfg.vm_profile).await {
-            return (GatewayHealth::VmDown, ProxyProbe::Ok);
-        }
         let probe = probe_proxy(&state.cfg.mihomo_host_port).await;
-        return if probe == ProxyProbe::Ok {
-            (GatewayHealth::TransportDegraded, probe)
-        } else {
+        if probe == ProxyProbe::Ok { return (GatewayHealth::TransportDegraded, probe); }
+        return if crate::vm::ssh_reachable(&state.cfg.vm_profile).await {
             (GatewayHealth::TransportDead, probe)
-        };
+        } else { (GatewayHealth::VmDown, probe) };
     };
-    if !docker::is_running(&docker, infra::MIHOMO_CONTAINER).await {
-        return (GatewayHealth::ContainerDown, ProxyProbe::Ok);
-    }
+    let running = match docker::running_state(&docker, infra::MIHOMO_CONTAINER).await {
+        Ok(false) => return (GatewayHealth::ContainerDown, ProxyProbe::Ok),
+        Ok(true) => true,
+        Err(error) => {
+            crate::ev!(warn, "watchdog", "container_inspect_failed", "容器运行状态暂不可确认", { "error": error.to_string() });
+            false
+        }
+    };
     let probe = probe_proxy(&state.cfg.mihomo_host_port).await;
-    if probe == ProxyProbe::Ok {
+    if !running {
+        // Docker ping 可用但 inspect 失败，不能断言容器停止，更不能仅据此重启。
+        if probe == ProxyProbe::Ok { (GatewayHealth::TransportDegraded, probe) }
+        else { (GatewayHealth::TransportDead, probe) }
+    } else if probe == ProxyProbe::Ok {
         (GatewayHealth::Healthy, probe)
     } else {
         (GatewayHealth::ForwardDead, probe)
@@ -531,12 +536,13 @@ pub async fn heal_transport(state: &AppState) -> anyhow::Result<()> {
     // 失败不算致命——分流口已通,docker 留给下拍原生 sock 重连或重开 app。
     let sock = state.cfg.data_dir.join("docker-tun.sock");
     match crate::vm::spawn_docker_sock_tunnel(&state.cfg.vm_profile, &sock).await {
-        Ok(()) => match crate::docker::connect_at(&sock.display().to_string()).await {
-            Ok(d) => {
+        Ok(()) => match tokio::time::timeout(Duration::from_secs(5), crate::docker::connect_at(&sock.display().to_string())).await {
+            Ok(Ok(d)) => {
                 state.set_docker(Some(d));
                 crate::ev!(info, "watchdog", "docker_reconnect", "Docker 已经隧道连接恢复", { "via": "tunnel_sock" });
             }
-            Err(e) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker 隧道连接失败", { "via": "tunnel_sock", "error": e.to_string() }); }
+            Ok(Err(e)) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker 隧道连接失败", { "via": "tunnel_sock", "error": e.to_string() }); }
+            Err(_) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker 隧道连接超时", { "via": "tunnel_sock" }); }
         },
         Err(e) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker socket 隧道建立失败", { "via": "tunnel_sock", "error": e.to_string() }); }
     }
@@ -549,6 +555,68 @@ const TICK_SECS: u64 = 20;
 /// 墙钟比单调钟多走这么多 = 中间睡过(Mac 合盖冻结 VM)。取 3 拍,躲开调度抖动。
 const WAKE_GAP_SECS: u64 = TICK_SECS * 3;
 
+/// 后台修复持有独占权与维护许可，调用方无需阻塞健康采样。
+fn spawn_repair(
+    state: AppState,
+    repair: tokio::sync::OwnedMutexGuard<()>,
+    action: Action,
+    fail_streak: u32,
+    woke: bool,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let activity = state.lifecycle.runtime().maintenance()?;
+    Some(tokio::spawn(async move {
+        let _activity = activity;
+        let _repair = repair;
+        if !state.self_heal_enabled() { return; }
+        match action {
+            Action::Tunnel => {
+                // 重建决策的依据落盘:旧转发进程死活 + 端口被谁占着,heal 空转时靠它定责。
+                let (tunnel_pid, tunnel_alive) = crate::tunnel::status(&state).await;
+                let port_listener = port_listener_snapshot(&state.cfg.mihomo_host_port).await;
+                crate::ev!(warn, "watchdog", "heal_start", "分流口不过数据,重建 SSH 转发", {
+                    "action": action.as_str(), "fail_streak": fail_streak,
+                    "reason": if woke { "wake_gap" } else { "health_check" },
+                    "tunnel_pid": tunnel_pid, "tunnel_alive": tunnel_alive,
+                    "port_listener": port_listener
+                });
+                let action_started = std::time::Instant::now();
+                if !state.self_heal_enabled() { return; }
+                match heal_transport(&state).await {
+                    Ok(()) => { crate::ev!(info, "watchdog", "heal_done", "SSH 转发重建动作完成", { "action": action.as_str(), "duration_ms": action_started.elapsed().as_millis() as u64 }); }
+                    Err(e) => { crate::ev!(error, "watchdog", "heal_failed", "SSH 转发重建失败", { "action": action.as_str(), "error": e.to_string() }); }
+                }
+            }
+            Action::Restart => {
+                let (tunnel_pid, tunnel_alive) = crate::tunnel::status(&state).await;
+                let port_listener = port_listener_snapshot(&state.cfg.mihomo_host_port).await;
+                crate::ev!(warn, "watchdog", "heal_start", "重建转发无效,升级重启分流路由", {
+                    "action": action.as_str(), "fail_streak": fail_streak,
+                    "reason": if woke { "wake_gap" } else { "health_check" },
+                    "tunnel_pid": tunnel_pid, "tunnel_alive": tunnel_alive,
+                    "port_listener": port_listener
+                });
+                let action_started = std::time::Instant::now();
+                if proxy_serves(&state.cfg.mihomo_host_port).await {
+                    crate::ev!(info, "watchdog", "heal_skipped", "分流链路已恢复，取消本次重启", { "action": action.as_str() });
+                    return;
+                }
+                if !state.self_heal_enabled() { return; }
+                let result = async {
+                    let d = state.docker().ok_or_else(|| anyhow::anyhow!("docker 连接不可用"))?;
+                    docker::restart(&d, infra::MIHOMO_CONTAINER).await?;
+                    // 容器换了 IP,转发目标随之失效 → 立刻按新 IP 重建。
+                    crate::tunnel::ensure(&state).await
+                }.await;
+                match result {
+                    Ok(()) => { crate::ev!(info, "watchdog", "heal_done", "分流路由重启动作完成", { "action": action.as_str(), "duration_ms": action_started.elapsed().as_millis() as u64 }); }
+                    Err(e) => { crate::ev!(error, "watchdog", "heal_failed", "分流路由重启失败", { "action": action.as_str(), "error": e.to_string() }); }
+                }
+            }
+            Action::None => {}
+        }
+    }))
+}
+
 /// 后台看门狗:定时端到端探分流口,坏了重建 app 自持的 SSH 转发,状态写入快照。
 /// 在 `app::serve` 起头 spawn(bin 与 Tauri 壳共用,单处接入)。VM 死时只如实报 vm_down、不自愈。
 ///
@@ -559,6 +627,7 @@ pub fn spawn(state: AppState) {
         let mut wd = Watchdog::default();
         let started = std::time::Instant::now();
         let mut tick = tokio::time::interval(Duration::from_secs(TICK_SECS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_wall = std::time::SystemTime::now();
         let mut last_health: Option<GatewayHealth> = None;
         let mut self_heal_was_enabled = true;
@@ -715,14 +784,16 @@ pub fn spawn(state: AppState) {
             }
 
             let gave_up_before = wd.gave_up();
-            let action = wd.decide(health, now_ms);
-            let recovery = wd.take_recovery();
+            let repair = state.lifecycle.try_gateway_repair();
+            let repair_busy = repair.is_none();
+            let action = if repair_busy { Action::None } else { wd.decide(health, now_ms) };
+            let recovery = if repair_busy { None } else { wd.take_recovery() };
             if let Ok(mut snap) = state.health.lock() {
                 snap.gateway_health = health;
                 snap.proxy_port_reachable =
                     matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded);
-                snap.healing = wd.healing(health);
-                snap.gave_up = wd.gave_up();
+                snap.healing = repair_busy || wd.healing(health);
+                snap.gave_up = !repair_busy && wd.gave_up();
                 snap.vm_egress_dead = egress_dead;
             }
             if !gave_up_before && wd.gave_up() {
@@ -735,45 +806,9 @@ pub fn spawn(state: AppState) {
                     "final_action": recovery.final_action.map(Action::as_str).unwrap_or("none")
                 });
             }
-            match action {
-                Action::Tunnel => {
-                    // 重建决策的依据落盘:旧转发进程死活 + 端口被谁占着,heal 空转时靠它定责。
-                    let (tunnel_pid, tunnel_alive) = crate::tunnel::status(&state).await;
-                    let port_listener = port_listener_snapshot(&state.cfg.mihomo_host_port).await;
-                    crate::ev!(warn, "watchdog", "heal_start", "分流口不过数据,重建 SSH 转发", {
-                        "action": action.as_str(), "fail_streak": wd.fail_streak(),
-                        "reason": if woke { "wake_gap" } else { "health_check" },
-                        "tunnel_pid": tunnel_pid, "tunnel_alive": tunnel_alive,
-                        "port_listener": port_listener
-                    });
-                    let action_started = std::time::Instant::now();
-                    match heal_transport(&state).await {
-                        Ok(()) => { crate::ev!(info, "watchdog", "heal_done", "SSH 转发重建动作完成", { "action": action.as_str(), "duration_ms": action_started.elapsed().as_millis() as u64 }); }
-                        Err(e) => { crate::ev!(error, "watchdog", "heal_failed", "SSH 转发重建失败", { "action": action.as_str(), "error": e.to_string() }); }
-                    }
-                }
-                Action::Restart => {
-                    let (tunnel_pid, tunnel_alive) = crate::tunnel::status(&state).await;
-                    let port_listener = port_listener_snapshot(&state.cfg.mihomo_host_port).await;
-                    crate::ev!(warn, "watchdog", "heal_start", "重建转发无效,升级重启分流路由", {
-                        "action": action.as_str(), "fail_streak": wd.fail_streak(),
-                        "reason": if woke { "wake_gap" } else { "health_check" },
-                        "tunnel_pid": tunnel_pid, "tunnel_alive": tunnel_alive,
-                        "port_listener": port_listener
-                    });
-                    let action_started = std::time::Instant::now();
-                    let result = async {
-                        let d = state.docker().ok_or_else(|| anyhow::anyhow!("docker 连接不可用"))?;
-                        docker::restart(&d, infra::MIHOMO_CONTAINER).await?;
-                        // 容器换了 IP,转发目标随之失效 → 立刻按新 IP 重建。
-                        crate::tunnel::ensure(&state).await
-                    }.await;
-                    match result {
-                        Ok(()) => { crate::ev!(info, "watchdog", "heal_done", "分流路由重启动作完成", { "action": action.as_str(), "duration_ms": action_started.elapsed().as_millis() as u64 }); }
-                        Err(e) => { crate::ev!(error, "watchdog", "heal_failed", "分流路由重启失败", { "action": action.as_str(), "error": e.to_string() }); }
-                    }
-                }
-                Action::None => {}
+            if action == Action::None { continue; }
+            if let Some(repair) = repair {
+                spawn_repair(state.clone(), repair, action, wd.fail_streak(), woke);
             }
         }
     });
@@ -782,6 +817,133 @@ pub fn spawn(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_container_inspection_is_not_reported_as_stopped() {
+        use axum::{http::StatusCode, response::IntoResponse, Router};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        let responder = tokio::spawn(async move {
+            loop {
+                let (mut connection, _) = proxy.accept().await.unwrap();
+                let mut request = [0; 3];
+                connection.read_exact(&mut request).await.unwrap();
+                connection.write_all(&[5, 0]).await.unwrap();
+            }
+        });
+        let scenario = Arc::new(Mutex::new("error"));
+        let mode = scenario.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+          let mode = mode.clone();
+          async move {
+            if request.uri().path().ends_with("/_ping") { return StatusCode::OK.into_response(); }
+            let mode = *mode.lock().unwrap();
+            match mode {
+                "error" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                "missing" => StatusCode::NOT_FOUND.into_response(),
+                "unknown" => axum::Json(serde_json::json!({"State":{}})).into_response(),
+                "timeout" => { tokio::time::sleep(Duration::from_secs(30)).await; StatusCode::OK.into_response() }
+                _ => axum::Json(serde_json::json!({"State":{"Running":mode == "running"}})).into_response(),
+            }
+          }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let docker = bollard::Docker::connect_with_http(&format!("http://{}", listener.local_addr().unwrap()),
+            120, bollard::API_DEFAULT_VERSION).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into(); cfg.ui_port = 0; cfg.dev_mode = true;
+        cfg.managed_vm = true; cfg.vm_profile = "vpnmgr-watchdog-test".into();
+        cfg.mihomo_host_port = port.to_string();
+        let (_ui, state) = crate::app::bootstrap(cfg).await.unwrap();
+        state.set_docker(Some(docker.clone()));
+        for (mode, expected) in [("error", GatewayHealth::TransportDegraded), ("unknown", GatewayHealth::TransportDegraded),
+            ("stopped", GatewayHealth::ContainerDown), ("missing", GatewayHealth::ContainerDown),
+            ("running", GatewayHealth::Healthy), ("timeout", GatewayHealth::TransportDegraded)] {
+            *scenario.lock().unwrap() = mode;
+            let (result, _) = tokio::time::timeout(Duration::from_secs(7), async {
+                tokio::join!(check(&state), docker::container_ip(&docker, "mihomo"))
+            }).await.expect("inspect and IP lookup must finish before the 120 second client timeout");
+            assert_eq!(result, (expected, ProxyProbe::Ok), "{mode}: unknown is not stopped");
+        }
+        server.abort(); responder.abort();
+        let _ = tokio::join!(server, responder);
+    }
+
+    #[tokio::test]
+    async fn background_repair_keeps_runtime_and_excludes_manual_restarts_without_blocking_checks() {
+        use axum::{http::StatusCode, response::IntoResponse, Router};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let finish = Arc::new(tokio::sync::Semaphore::new(0));
+        let posts = Arc::new(AtomicUsize::new(0));
+        let (entry, gate, writes) = (entered.clone(), finish.clone(), posts.clone());
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let (entry, gate, writes) = (entry.clone(), gate.clone(), writes.clone());
+            async move {
+                let path = request.uri().path();
+                if path.ends_with("/_ping") { return StatusCode::OK.into_response(); }
+                if path.ends_with("/restart") {
+                    writes.fetch_add(1, Ordering::SeqCst);
+                    entry.add_permits(1);
+                    gate.acquire().await.unwrap().forget();
+                    return StatusCode::NO_CONTENT.into_response();
+                }
+                axum::Json(serde_json::json!({"Id":"owned-mihomo", "State":{"Running":true,
+                    "StartedAt":if writes.load(Ordering::SeqCst) > 0 { "2026-09-11T00:01:00Z" } else { "2026-09-11T00:00:00Z" }}})).into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let docker = bollard::Docker::connect_with_http(&format!("http://{}", listener.local_addr().unwrap()), 120, bollard::API_DEFAULT_VERSION).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        let proxy_posts = posts.clone();
+        let responder = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = proxy.accept().await.unwrap();
+                let mut request = [0; 3];
+                socket.read_exact(&mut request).await.unwrap();
+                socket.write_all(if proxy_posts.load(Ordering::SeqCst) > 0 { &[5, 0] } else { b"HT" }).await.unwrap();
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into(); cfg.ui_port = 0; cfg.dev_mode = true;
+        cfg.managed_vm = true; cfg.vm_profile = "vpnmgr-watchdog-test".into();
+        cfg.mihomo_host_port = port.to_string();
+        let (_ui, state) = crate::app::bootstrap(cfg).await.unwrap();
+        state.set_docker(Some(docker));
+        let runtime = state.lifecycle.runtime();
+        runtime.ensure(|| async { Ok(()) }).await.unwrap();
+        let repair = state.lifecycle.try_gateway_repair().unwrap();
+        let job = spawn_repair(state.clone(), repair, Action::Restart, 5, false).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered.acquire()).await.unwrap().unwrap().forget();
+        assert_eq!(runtime.snapshot().active_tasks, 1);
+        let manual = crate::routes::heal_proxy(axum::extract::State(state.clone())).await.0;
+        assert_eq!(manual["pending"], true);
+        assert_eq!(manual["ok"], false);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), check(&state)).await.unwrap(), (GatewayHealth::Healthy, ProxyProbe::Ok));
+        assert!(!runtime.release_if_idle(Duration::ZERO, || async { panic!("repair still owns runtime") }, || async { Ok(()) }).await.unwrap());
+        finish.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(2), job).await.unwrap().unwrap();
+        assert_eq!(runtime.snapshot().active_tasks, 0);
+        assert!(state.lifecycle.try_gateway_repair().is_some());
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+        // 暂停自动修复，或故障在执行前已恢复，都不能再重启。
+        for enabled in [false, true] {
+            state.set_self_heal_enabled(enabled);
+            let repair = state.lifecycle.try_gateway_repair().unwrap();
+            let job = spawn_repair(state.clone(), repair, Action::Restart, 5, false).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), job).await.unwrap().unwrap();
+            assert_eq!(posts.load(Ordering::SeqCst), 1);
+            assert_eq!(runtime.snapshot().active_tasks, 0);
+        }
+        server.abort(); responder.abort(); let _ = tokio::join!(server, responder);
+    }
 
     #[test]
     fn healthy_resets_and_clears_giveup() {

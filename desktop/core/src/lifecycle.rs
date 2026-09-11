@@ -14,6 +14,7 @@ pub struct Lifecycle {
     closing: AtomicBool,
     slots: Mutex<HashMap<String, Arc<Slot>>>,
     runtime: Arc<crate::runtime_lifecycle::Coordinator>,
+    gateway_repair: Arc<AsyncMutex<()>>,
 }
 
 /// 通道锁先释放，再结束底座活动；排队中的通道操作同样阻止底座释放。
@@ -38,6 +39,12 @@ pub struct Slot {
 
 impl Lifecycle {
     pub fn runtime(&self) -> &Arc<crate::runtime_lifecycle::Coordinator> { &self.runtime }
+
+    /// 手动与自动修复共用占用，不把重复点击排成一串后续重启。
+    pub fn try_gateway_repair(&self) -> Option<OwnedMutexGuard<()>> {
+        if self.closing.load(Ordering::SeqCst) { return None; }
+        self.gateway_repair.clone().try_lock_owned().ok()
+    }
 
     pub fn slot(&self, cid: &str) -> Arc<Slot> {
         self.slots.lock().unwrap().entry(cid.into()).or_default().clone()

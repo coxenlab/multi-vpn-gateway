@@ -193,23 +193,50 @@ pub async fn start(docker: &Docker, name: &str) -> Result<()> {
 /// 原地重启容器(保留配置)。看门狗据此重启 mihomo，再由 app 按新容器 IP 重建 SSH 转发。
 /// 仅 mihomo 这类可重启基础设施使用；EC/aTrust/oss 走重建。
 pub async fn restart(docker: &Docker, name: &str) -> Result<()> {
-    docker
-        .restart_container(name, None::<RestartContainerOptions>)
-        .await
-        .map_err(|e| anyhow!("restart {name}: {e}"))
+    restart_with_budget(docker, name, std::time::Duration::from_secs(5), std::time::Duration::from_secs(20)).await
+}
+
+async fn restart_with_budget(docker: &Docker, name: &str, read_budget: std::time::Duration, restart_budget: std::time::Duration) -> Result<()> {
+    let before = tokio::time::timeout(read_budget, docker.inspect_container(name, None)).await
+        .map_err(|_| anyhow!("读取重启目标超时，未发送重启"))??;
+    let id = before.id.filter(|id| !id.is_empty()).ok_or_else(|| anyhow!("重启目标缺少 ID"))?;
+    let previous_start = before.state.and_then(|state| state.started_at).filter(|at| !at.is_empty());
+    // 固定本次读取的 ID；名称在请求期间被换绑时不会重启新实例。
+    let action = tokio::time::timeout(restart_budget,
+        docker.restart_container(&id, Some(RestartContainerOptions { t: 10 }))).await
+        .map_err(|_| anyhow!("重启请求超时，结果待确认"))
+        .and_then(|result| result.map_err(anyhow::Error::from));
+    let after = tokio::time::timeout(read_budget, docker.inspect_container(&id, None)).await;
+    if let Ok(Ok(info)) = &after {
+        let running = info.id.as_deref() == Some(&id) && info.state.as_ref().and_then(|state| state.running) == Some(true);
+        let current_start = info.state.as_ref().and_then(|state| state.started_at.as_ref()).filter(|at| !at.is_empty());
+        let changed = previous_start.as_ref().zip(current_start).is_some_and(|(old, new)| old != new);
+        if running && (action.is_ok() || changed) { return Ok(()); }
+    }
+    // 超时/丢失 ACK 后只读回，不再发送第二次 restart；健康检查会继续核实链路。
+    Err(anyhow!("restart {name}: {}；尚未确认同一实例重启并运行，未重复发送重启",
+        action.err().map(|error| error.to_string()).unwrap_or_else(|| "请求已返回，运行状态未确认".into())))
 }
 
 /// 容器在 docker 网络里的 IP(多网络时取第一个有 IP 的)。缺失/未运行 → None。
 /// app 自持的 SSH 转发据此直连容器(mihomo#1 不再 publish 端口,见 [`crate::tunnel`])。
 pub async fn container_ip(docker: &Docker, name: &str) -> Option<String> {
-    docker
-        .inspect_container(name, None)
-        .await
-        .ok()?
+    tokio::time::timeout(std::time::Duration::from_secs(5), docker.inspect_container(name, None))
+        .await.ok()?.ok()?
         .network_settings?
         .networks?
         .into_values()
         .find_map(|n| n.ip_address.filter(|ip| !ip.is_empty()))
+}
+
+/// 健康判断保留未知状态；只有 404 或明确 running=false 才是未运行。
+pub async fn running_state(docker: &Docker, name: &str) -> Result<bool> {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), docker.inspect_container(name, None)).await {
+        Ok(Ok(info)) => info.state.and_then(|state| state.running).ok_or_else(|| anyhow!("容器运行状态缺失")),
+        Ok(Err(error)) if is_not_found(&error) => Ok(false),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Err(anyhow!("读取容器运行状态超时")),
+    }
 }
 
 /// 容器是否在运行(缺失/任何错误 → false)。
@@ -603,6 +630,49 @@ async fn run_tun_probe_with_budget(docker: &Docker, image: &str, budget: std::ti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn restart_has_deadlines_reads_back_lost_ack_and_never_replays() {
+        use axum::{http::{Method, StatusCode}, response::IntoResponse, Router};
+        use serde_json::json;
+        use std::{sync::{Arc, Mutex}, time::Duration};
+        for mode in ["ok", "lost_ack", "timeout_applied", "timeout_unchanged", "error_unchanged", "stopped", "foreign", "inspect_timeout", "missing"] {
+            let calls = Arc::new(Mutex::new(Vec::<(Method, String)>::new()));
+            let fixture = calls.clone();
+            let app = Router::new().fallback(move |request: axum::extract::Request| {
+                let calls = fixture.clone();
+                async move {
+                    let path = request.uri().to_string();
+                    let method = request.method().clone();
+                    calls.lock().unwrap().push((method.clone(), path));
+                    if method == Method::POST {
+                        if mode.starts_with("timeout_") { tokio::time::sleep(Duration::from_secs(3)).await; }
+                        return if mode == "lost_ack" || mode == "error_unchanged" { StatusCode::INTERNAL_SERVER_ERROR }
+                            else { StatusCode::NO_CONTENT }.into_response();
+                    }
+                    if mode == "inspect_timeout" { tokio::time::sleep(Duration::from_secs(3)).await; }
+                    if mode == "missing" { return StatusCode::NOT_FOUND.into_response(); }
+                    let after = calls.lock().unwrap().iter().any(|(method, _)| *method == Method::POST);
+                    let changed = after && !mode.ends_with("unchanged");
+                    axum::Json(json!({"Id":if after && mode == "foreign" { "foreign-id" } else { "owned-id" },
+                        "State":{"Running":!(after && mode == "stopped"),
+                        "StartedAt":if changed { "2026-09-11T00:01:00Z" } else { "2026-09-11T00:00:00Z" }}})).into_response()
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let docker = Docker::connect_with_http(&format!("http://{}", listener.local_addr().unwrap()), 120, bollard::API_DEFAULT_VERSION).unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+            let result = tokio::time::timeout(Duration::from_secs(1),
+                restart_with_budget(&docker, "mihomo", Duration::from_millis(100), Duration::from_millis(100))).await.unwrap();
+            server.abort(); let _ = server.await;
+            assert_eq!(result.is_ok(), matches!(mode, "ok" | "lost_ack" | "timeout_applied"), "{mode}: {result:?}");
+            let calls = calls.lock().unwrap();
+            let writes: Vec<_> = calls.iter().filter(|(method, _)| *method == Method::POST).collect();
+            assert_eq!(writes.len(), usize::from(!matches!(mode, "inspect_timeout" | "missing")), "{mode}");
+            assert!(writes.iter().all(|(_, path)| path.contains("/containers/owned-id/restart?t=10")));
+            if !writes.is_empty() { assert!(calls.last().unwrap().1.ends_with("/containers/owned-id/json")); }
+        }
+    }
 
     #[tokio::test]
     async fn tun_probe_errors_do_not_pass_or_delete_unowned_containers() {

@@ -640,7 +640,7 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border: 
 /* 富 toast —— 在现有 .toast 基础上加图标位/操作按钮/变体色,过渡复用 toast-in */
 .toast { transition: opacity var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-standard); }
 .toast-ic { display: inline-grid; place-items: center; flex: none; }
-.toast-ic svg { width: 16px; height: 16px; }
+.toast-ic svg { width: 16px; height: 16px; color: inherit; }
 .toast-msg { flex: 1; }
 .toast-success .toast-ic { color: var(--success); }
 .toast-danger  .toast-ic { color: var(--danger); }
