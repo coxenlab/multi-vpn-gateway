@@ -12,6 +12,8 @@ import SwiftUI
     @Published var busy = Set<String>()
     @Published var ready = false
     @Published var imageProgress: [String: String] = [:]
+    @Published var importTicket: ImageImportTicket?
+    @Published var importError: String?
     @Published var visible = true
     private(set) var api: LocalAPI?
     private var child: Process?
@@ -135,6 +137,44 @@ import SwiftUI
                 try await Task.sleep(for: .seconds(2))
             }
         } catch { self.error = error.localizedDescription; imageProgress[image.id] = "下载状态待确认，请刷新核对" }
+    }
+    func previewImage(_ file: URL) async {
+        guard let api, importTicket == nil, !busy.contains("__image-import") else { return }
+        busy.insert("__image-import"); importError = nil
+        let scoped = file.startAccessingSecurityScopedResource()
+        defer { busy.remove("__image-import"); if scoped { file.stopAccessingSecurityScopedResource() } }
+        do { importTicket = try await api.previewImage(file: file) }
+        catch { importError = error.localizedDescription }
+    }
+    func confirmImageImport() async {
+        guard let api, let ticket = importTicket, ticket.status == "preview", !busy.contains("__image-import") else { return }
+        busy.insert("__image-import"); importError = nil; defer { busy.remove("__image-import") }
+        do {
+            _ = try await api.write("/api/images/imports/\(ticket.id)/confirm")
+            await refreshImageImport()
+            while !quitting && !Task.isCancelled && importTicket?.id == ticket.id && importTicket?.status == "loading" {
+                try await Task.sleep(for: .seconds(2))
+                if visible { await refreshImageImport(); if importError != nil { return } }
+            }
+        } catch { importError = "\(error.localizedDescription) 请先刷新此任务状态，确认结果后再操作。" }
+    }
+    func refreshImageImport() async {
+        guard let api, let ticket = importTicket, !busy.contains("__image-refresh") else { return }
+        busy.insert("__image-refresh"); defer { busy.remove("__image-refresh") }
+        do {
+            let updated = try await api.get("/api/images/imports/\(ticket.id)", as: ImageImportTicket.self)
+            if importTicket?.id == updated.id { importTicket = updated; importError = nil }
+        } catch let error as APIError where error.statusCode == 404 {
+            importTicket = nil; importError = "此导入记录已失效。请先刷新镜像清单核对结果，需要时再重新选择文件。"
+        } catch { importError = error.localizedDescription }
+    }
+    func discardImageImport() async {
+        guard let api, let ticket = importTicket, ticket.status != "loading", !busy.contains("__image-import") else { return }
+        busy.insert("__image-import"); defer { busy.remove("__image-import") }
+        do {
+            _ = try await api.write("/api/images/imports/\(ticket.id)", method: "DELETE")
+            importTicket = nil; importError = nil
+        } catch { importError = error.localizedDescription }
     }
     func quit() -> NSApplication.TerminateReply {
         guard let child, child.isRunning else { return .terminateNow }

@@ -77,6 +77,9 @@ pub fn build_router(state: AppState) -> Router {
         // 同段 :x:GET→拉取任务状态(x=task_id),POST→修复(x=action),对照 main.py 同 path 不同方法
         .route("/api/preflight/fix/:x", get(api::preflight_fix_status).post(api::preflight_fix))
         .route("/api/images", get(api::images_inventory))
+        .route("/api/images/imports", axum::routing::post(crate::image_import::preview))
+        .route("/api/images/imports/:id", get(crate::image_import::status).delete(crate::image_import::discard))
+        .route("/api/images/imports/:id/confirm", axum::routing::post(crate::image_import::confirm))
         .route("/api/mirrors", get(api::mirrors_list).post(api::mirrors_add))
         .route("/api/mirrors/:mid", axum::routing::patch(api::mirrors_patch).delete(api::mirrors_del))
         .route("/api/mirrors/test", axum::routing::post(api::mirrors_test))

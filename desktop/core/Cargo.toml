@@ -24,9 +24,10 @@ chrono = "0.4"
 rand = "0.8"
 ipnet = "2"
 sha2 = "=0.10.9"
+flate2 = "=1.1.9"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"

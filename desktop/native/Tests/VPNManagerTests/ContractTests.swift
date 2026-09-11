@@ -3,6 +3,13 @@ import SwiftUI
 @testable import VPNManager
 
 final class ContractTests: XCTestCase {
+    func testDecodesActualImagePreview() throws {
+        let ticket = try JSONDecoder().decode(ImageImportTicket.self, from: fixture("native-image-import.json"))
+        XCTAssertEqual(ticket.status, "preview")
+        XCTAssertEqual(ticket.preview.images.first?.tags, ["vpnmgr/oss-vpn:latest"])
+        XCTAssertEqual(ticket.preview.images.first?.architecture, "arm64")
+        XCTAssertEqual(ticket.preview.sha256.count, 64)
+    }
     private func fixture(_ name: String) throws -> Data {
         guard let directory = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_FIXTURE_DIR"] else {
             throw XCTSkip("真实 core API 合同验证需要隔离夹具输出目录")

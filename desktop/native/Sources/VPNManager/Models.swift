@@ -47,6 +47,7 @@ struct InputField: Decodable, Identifiable {
 }
 struct APIError: LocalizedError {
     let message: String
+    var statusCode: Int? = nil
     var errorDescription: String? { message }
 }
 
@@ -73,7 +74,7 @@ actor LocalAPI {
         guard let http = response as? HTTPURLResponse else { throw APIError(message: "本地服务响应无法识别") }
         guard (200..<300).contains(http.statusCode) else {
             let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            throw APIError(message: error?["error"] as? String ?? error?["detail"] as? String ?? "操作未完成（\(http.statusCode)）")
+            throw APIError(message: error?["error"] as? String ?? error?["detail"] as? String ?? "操作未完成（\(http.statusCode)）", statusCode: http.statusCode)
         }
         return data
     }
@@ -91,6 +92,18 @@ actor LocalAPI {
         }
     }
     func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T { try JSONDecoder().decode(type, from: await data(path)) }
+    func previewImage(file: URL) async throws -> ImageImportTicket {
+        let size = try file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard size.isRegularFile == true, let bytes = size.fileSize, bytes > 0, Int64(bytes) <= 12 * 1024 * 1024 * 1024 else { throw APIError(message: "请选择不超过 12 GiB 的镜像归档文件") }
+        var request = URLRequest(url: url("/api/images/imports")); request.httpMethod = "POST"; request.timeoutInterval = 1200
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await session.upload(for: request, fromFile: file)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            throw APIError(message: value?["error"] as? String ?? value?["detail"] as? String ?? "镜像校验未完成，请重新选择文件")
+        }
+        return try JSONDecoder().decode(ImageImportTicket.self, from: data)
+    }
     func write(_ path: String, method: String = "POST", body: [String: Any]? = nil) async throws -> [String: Any] {
         let bytes = try await data(path, method: method, body: body, long: true)
         return (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] ?? [:]

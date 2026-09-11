@@ -49,6 +49,7 @@ struct ImagesView: View {
     var body: some View {
         VStack(alignment: .leading) {
             HStack { Text("镜像与资源").font(.title2.bold()); Spacer(); Button("刷新") { Task { await load() } } }.padding()
+            ScrollView { ImageImportView() }.frame(maxHeight: model.importTicket == nil ? 150 : 280).padding(.horizontal)
             if let error { Text(error).foregroundStyle(.red).padding() }
             List(images) { item in
                 HStack {
@@ -62,7 +63,7 @@ struct ImagesView: View {
                     else if item.kind == "pull", item.present != true { Button("下载") { Task { await model.downloadImage(item); await load() } }.disabled(model.system?.runtime?.ready != true) }
                 }.padding(.vertical, 8)
             }
-        }.task { await load() }
+        }.task { await load() }.onChange(of: model.importTicket?.status) { _, status in if status == "done" { Task { await load() } } }
     }
     private func load() async {
         guard let api = model.api else { return }

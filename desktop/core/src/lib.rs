@@ -34,6 +34,8 @@ pub mod runtime_lifecycle;
 pub mod runtime;
 pub mod stop_intents;
 pub mod upgrade;
+pub mod image_archive;
+pub mod image_import;
 
 use std::sync::Arc;
 

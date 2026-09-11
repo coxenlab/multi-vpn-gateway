@@ -162,3 +162,16 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 桌面 runtime 构建使用 `desktop/app/runtime-sources.lock.json` 固定 Lima 源码提交、Colima/Docker 官方资源 SHA256 和 Go 1.26.1。开发机需该 Go 版本及 Xcode；最终用户无需安装。`stage-runtime.sh` 默认构建 baseline，`VPNMGR_RUNTIME_VARIANT=gvisor698 ./build-dmg.sh` 显式选择候选。候选只回移 [上游 #698](https://github.com/containers/gvisor-tap-vsock/pull/698) 的三个库文件，校验改前/改后哈希，不更新 Lima 的 go.mod/go.sum；整版本替换另有 UDP API 不兼容及依赖升级，未采用。源码/构建缓存默认在 `~/Library/Caches/vpnmgr-build/runtime/`，缓存损坏则停止；暂存前验证所有产物、签名及配套 guestagent，附 manifest 和 Go 构建信息，下一次打包不会再用 Homebrew 文件静默覆盖候选。当前仅支持 macOS arm64；真实网络切换/Clash/睡醒和长时间验收通过前，候选不作为默认安装版本。
 
 `/api/system` 只读缓存，设置的环境页可展开时间、SYN_SENT 总数、最多 16 个目标及最近守卫结果。共享 usernet 的连接无法唯一反查通道；多网卡配置也不证明 usernet 是默认出口。诊断只提供候选证据，不改变登录态、不触发自动重启，权限/超时/配置不明确时报告未知，历史采样保留时间标记。
+
+
+### macOS 原生镜像模板导入
+
+开发入口见 `desktop/native/README.md`，仍未替换正式 Tauri 分发。桌面 core 提供：
+
+- `POST /api/images/imports`：原始归档请求体，支持 Docker save `.tar`/`.tar.gz`，返回任务 ID、镜像/适配器/架构、原始归档字节数与 SHA256。校验不连接或启动 VM。
+- `GET /api/images/imports/:id`：读取预览/导入进度与结果；`DELETE` 取消预览或清理终态记录，导入中拒绝取消。
+- `POST /api/images/imports/:id/confirm`：仅已就绪运行环境可用，后台流式载入；重复确认只回同一任务状态。相同标签/镜像 ID/架构已存在则跳过；成功必须实际 inspect 一致，流应答丢失后也先核对结果。
+
+只接收注册表支持的 VPN 模板标签、Linux 与当前主机架构，逐层核对配置的 diff_ids；外层路径/链接/重复项、损坏 gzip、未知标签/架构均拒绝。归档上限 12 GiB，展开/镜像层总量分别不超过 32 GiB，最多 4096 外层文件、16 镜像，元数据合计最多 16 MiB。只把已校验 manifest/config/layers 重组后送 Docker，防止 OCI 索引或额外仓库信息导入未预览资源。输入与规范化副本使用权限受限匿名暂存文件，失败/取消/进程结束由文件句柄回收；大镜像可能同时需要两份暂存空间。每个数据目录最多 4 条任务，预览和结果 30 分钟过期。
+
+导入只增加/更新模板标签，不创建通道、不重建现有容器或覆盖通道数据。它不处理 VM 磁盘、安装器或用户运行数据恢复，也不认证模板来源。运行环境实际载入、厂商模板的多架构/多 GB 包、拖拽/焦点及创建登录仍须隔离实机验收；HTTP 替身成功不能替代这些验收。
