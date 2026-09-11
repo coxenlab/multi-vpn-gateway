@@ -27,7 +27,7 @@ struct ContainersView: View {
                         Spacer()
                         if let id = item.channel_id { Button("查看通道") { model.createdChannelID = id; dismiss() } }
                         if item.role == "orphan" { Button("清理残留…", role: .destructive) { removing = item }.disabled(report?.docker_available != true || model.busy.contains("container-" + item.id)) }
-                        if item.name == "mihomo" { Button("修复入口…") { repairing = true }.disabled(report?.docker_available != true || model.busy.contains("__heal")) }
+                        if item.name == "mihomo" { Button("修复入口…") { repairing = true }.disabled(report?.docker_available != true || model.busy.contains("__heal") || model.system?.healing == true) }
                         Button("日志") { logs = Inspection(path: "/api/containers/\(item.name)/logs?tail=300", title: item.label + "日志") }.disabled(report?.docker_available != true)
                     }
                     if item.role == "replacement" { Text("此资源参与通道恢复，请在通道详情处理。").font(.caption).foregroundStyle(.secondary) }

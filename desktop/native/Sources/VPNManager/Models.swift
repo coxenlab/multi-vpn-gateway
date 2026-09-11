@@ -47,6 +47,9 @@ struct SystemStatus: Decodable {
     let runtime: Runtime?; let routing_off: Bool?; let self_heal_enabled: Bool?
     let mihomo_status: String?; let config_application: ConfigApplication?
     let host_integrations_available: Bool?
+    let gateway_health: String?; let gateway_checked_at_ms: Int64?
+    let proxy_port_reachable: Bool?; let healing: Bool?; let gave_up: Bool?
+    let vm_egress_dead: Bool?; let egress_guard_applied: Bool?
 }
 struct Adapter: Decodable, Identifiable {
     var id: String { key }

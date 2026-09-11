@@ -17,6 +17,7 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "ui_port": st.cfg.ui_port,
         "bound_ip": "127.0.0.1", // 命门 #4
         "gateway_health": h.gateway_health,
+        "gateway_checked_at_ms": h.gateway_checked_at_ms,
         "proxy_port_reachable": h.proxy_port_reachable,
         "healing": h.healing,
         "gave_up": h.gave_up,
@@ -88,9 +89,10 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
         reachable = crate::health::proxy_serves(&st.cfg.mihomo_host_port).await;
     }
     if reachable {
-        // 立即回写快照:横幅/芯片不用再等看门狗下一拍(≤20s)才消失;看门狗下拍会复核。
+        // 入口握手已经恢复；完整健康态仍须等待看门狗下一次采样。
         if let Ok(mut snap) = st.health.lock() {
-            snap.gateway_health = crate::health::GatewayHealth::Healthy;
+            // 这里只确认入口握手；完整网关状态仍由下一次看门狗采样核对。
+            snap.gateway_checked_at_ms = None;
             snap.proxy_port_reachable = true;
             snap.healing = false;
             snap.gave_up = false;

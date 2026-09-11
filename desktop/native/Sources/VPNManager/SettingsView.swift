@@ -26,7 +26,7 @@ struct SettingsView: View {
                 Button("检查环境") { inspecting = Inspection(path: "/api/preflight", title: "环境检查") }
                 if model.system?.self_heal_enabled != nil {
                     Toggle("自动修复连接", isOn: Binding(get: { model.system?.self_heal_enabled == true }, set: { value in Task { await model.perform("/api/system/self-heal", key: "__self-heal", body: ["enabled": value], success: value ? "自动修复已开启" : "自动修复已暂停") } })).disabled(model.busy.contains("__self-heal"))
-                    Text("基础网络防护持续生效，不受此开关影响。").font(.caption).foregroundStyle(.secondary)
+                    Text("暂停自动修复不会关闭基础网络防护；防护状态可在运行诊断中核对。").font(.caption).foregroundStyle(.secondary)
                 }
                 Button("查看运行诊断") { inspecting = Inspection(path: "/api/diag", title: "运行诊断") }
             }

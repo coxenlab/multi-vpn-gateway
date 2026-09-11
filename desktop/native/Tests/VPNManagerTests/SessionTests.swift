@@ -187,12 +187,72 @@ final class SessionTests: XCTestCase {
         [{"id":"\(id)","name":"\(id)","vpn_type":"easyconnect","server":"fixture.example","username":"fixture","status":"logged_in","configured_status":"running","login_method":"interactive","probe_url":"","routing_enabled":true,"domains":[],"ips":[]}]
         """
     }
-    private func completeRefresh(_ server: DelayedHTTP, channel: String) async throws {
+    private func completeRefresh(_ server: DelayedHTTP, channel: String,
+        system: String = #"{"runtime":{"phase":"ready"},"mihomo_status":"running"}"#,
+        channelStatus: Int = 200, systemStatus: Int = 200) async throws {
         await wait(server, "/api/channels"); await wait(server, "/api/system")
-        try await server.respond("/api/channels", json: channels(channel))
-        try await server.respond("/api/system", json: #"{"runtime":{"phase":"ready"},"mihomo_status":"running"}"#)
-        await wait(server, "/api/vpn-types")
-        try await server.respond("/api/vpn-types", json: "[]")
+        try await server.respond("/api/channels", json: channels(channel), status: channelStatus)
+        try await server.respond("/api/system", json: system, status: systemStatus)
+        if channelStatus == 200 {
+            await wait(server, "/api/vpn-types")
+            try await server.respond("/api/vpn-types", json: "[]")
+        }
+    }
+
+    @MainActor func testSystemFailureDoesNotPreserveHealthyStateOrDiscardValidChannelRefresh() async throws {
+        let server = DelayedHTTP(), model = AppModel()
+        model.connect(to: api(server))
+        defer { model.disconnect(); Task { await server.finish() } }
+        let initial = Task { await model.refresh() }
+        try await completeRefresh(server, channel: "initial")
+        await initial.value
+        XCTAssertNotNil(model.system); XCTAssertNil(model.systemReadError)
+        let failed = Task { await model.refresh() }
+        try await completeRefresh(server, channel: "new", system: #"{"detail":"fixture unavailable"}"#, systemStatus: 503)
+        await failed.value
+        XCTAssertNil(model.system); XCTAssertNotNil(model.systemReadError)
+        XCTAssertEqual(model.channels.map(\.id), ["new"])
+        XCTAssertEqual(GatewayFeedback.read(model.system, error: model.systemReadError).title, "运行状态待确认")
+        let recovered = Task { await model.refresh() }
+        try await completeRefresh(server, channel: "unused", channelStatus: 503)
+        await recovered.value
+        XCTAssertNil(model.systemReadError); XCTAssertEqual(model.system?.runtime?.phase, "ready")
+        XCTAssertEqual(model.channels.map(\.id), ["new"])
+        XCTAssertTrue(model.error?.hasPrefix("刷新失败：") == true)
+    }
+
+    @MainActor func testGatewayRepairRejectsDuplicatesAndShowsPendingWithoutClaimingSuccess() async throws {
+        let server = DelayedHTTP(), model = AppModel()
+        model.connect(to: api(server))
+        defer { model.disconnect(); Task { await server.finish() } }
+        let stamp = Int64(Date.now.timeIntervalSince1970 * 1_000)
+        func status(healing: Bool = false) -> String {
+            """
+            {"runtime":{"phase":"ready"},"gateway_health":"forward_dead","gateway_checked_at_ms":\(stamp),"healing":\(healing),"gave_up":true}
+            """
+        }
+        model.system = try JSONDecoder().decode(SystemStatus.self, from: Data(status().utf8))
+        let repair = Task { await model.repairGateway() }
+        await wait(server, "/api/system/heal-proxy")
+        let duplicate = await model.repairGateway()
+        XCTAssertFalse(duplicate)
+        try await server.respond("/api/system/heal-proxy", json: #"{"ok":false,"pending":true,"error":"in progress"}"#)
+        try await completeRefresh(server, channel: "one", system: status(healing: true))
+        let result = await repair.value
+        XCTAssertFalse(result); XCTAssertNil(model.error)
+        XCTAssertEqual(model.message, "入口修复正在进行，请稍后刷新状态核对结果。")
+        let stillRunning = await model.repairGateway()
+        XCTAssertFalse(stillRunning)
+        let requests = await server.count
+        XCTAssertEqual(requests, 4, "One POST plus snapshot; pending must not retry the write")
+        model.system = try JSONDecoder().decode(SystemStatus.self, from: Data(status().utf8))
+        let failed = Task { await model.repairGateway() }
+        await wait(server, "/api/system/heal-proxy")
+        try await server.respond("/api/system/heal-proxy", json: #"{"ok":false,"error":"入口仍未通过检测"}"#)
+        try await completeRefresh(server, channel: "one", system: status())
+        let failedResult = await failed.value
+        XCTAssertFalse(failedResult); XCTAssertNil(model.message)
+        XCTAssertTrue(model.error?.contains("入口仍未通过检测") == true)
     }
 
     @MainActor func testRuntimeStartKeepsProgressAndRetriesOnlyAfterExplicitAction() async throws {

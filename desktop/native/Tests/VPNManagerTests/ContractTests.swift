@@ -3,6 +3,61 @@ import SwiftUI
 @testable import VPNManager
 
 final class ContractTests: XCTestCase {
+    func testGatewayFeedbackRequiresFreshChecksAndRespectsRuntimeLifecycle() throws {
+        let now = Date(timeIntervalSince1970: 1_000)
+        func feedback(_ patch: [String: Any] = [:]) throws -> GatewayFeedback {
+            var object: [String: Any] = ["runtime": ["phase": "ready"], "gateway_health": "healthy", "gateway_checked_at_ms": 1_000_000,
+                "proxy_port_reachable": true, "mihomo_status": "running"]
+            object.merge(patch) { _, new in new }
+            let system = try JSONDecoder().decode(SystemStatus.self, from: JSONSerialization.data(withJSONObject: object))
+            return GatewayFeedback.read(system, error: nil, now: now)
+        }
+        XCTAssertEqual(try feedback().title, "入口检测通过")
+        for stamp: Any in [NSNull(), 939_999, 1_000_001] {
+            let value = try feedback(["gateway_checked_at_ms": stamp])
+            XCTAssertEqual(value.title, "入口状态待确认"); XCTAssertEqual(value.action, .refresh)
+            XCTAssertNotEqual(value.tone, .good)
+        }
+        for patch: [String: Any] in [["proxy_port_reachable": false], ["gateway_health": "new_unknown_state"], ["mihomo_status": "down"]] {
+            XCTAssertNotEqual(try feedback(patch).tone, .good)
+        }
+        for phase in ["dormant", "starting", "releasing", "closing", "failed"] {
+            let value = try feedback(["runtime": ["phase": phase], "gateway_health": "forward_dead", "gave_up": true])
+            XCTAssertNil(value.detail, "Old gateway failures must not leak into \(phase)")
+            XCTAssertNotEqual(value.action, .repair)
+        }
+        let unavailable = GatewayFeedback.read(nil, error: "HTTP 503", now: now)
+        XCTAssertEqual(unavailable.title, "运行状态待确认"); XCTAssertEqual(unavailable.action, .refresh)
+    }
+
+    func testGatewayFeedbackSeparatesRecoveryManagementAndRuleFailures() throws {
+        let now = Date(timeIntervalSince1970: 1_000)
+        func feedback(_ patch: [String: Any]) throws -> GatewayFeedback {
+            var object: [String: Any] = ["runtime": ["phase": "ready"], "gateway_health": "healthy", "gateway_checked_at_ms": 1_000_000,
+                "proxy_port_reachable": true, "mihomo_status": "running"]
+            object.merge(patch) { _, new in new }
+            return GatewayFeedback.read(try JSONDecoder().decode(SystemStatus.self, from: JSONSerialization.data(withJSONObject: object)), error: nil, now: now)
+        }
+        for health in ["forward_dead", "transport_dead"] {
+            let healing = try feedback(["gateway_health": health, "healing": true, "gave_up": true])
+            XCTAssertEqual(healing.title, "正在修复分流连接"); XCTAssertNotEqual(healing.action, .repair)
+            XCTAssertEqual(try feedback(["gateway_health": health, "gave_up": true]).action, .repair)
+            XCTAssertEqual(try feedback(["gateway_health": health, "self_heal_enabled": false]).action, .repair)
+            XCTAssertNotEqual(try feedback(["gateway_health": health, "self_heal_enabled": true]).action, .repair)
+            XCTAssertNotEqual(try feedback(["gateway_health": health]).action, .repair)
+        }
+        for health in ["transport_degraded", "vm_down"] {
+            let value = try feedback(["gateway_health": health])
+            XCTAssertNotEqual(value.action, .repair); XCTAssertNotEqual(value.tone, .good)
+        }
+        XCTAssertEqual(try feedback(["gateway_health": "container_down"]).action, .repair)
+        XCTAssertNotEqual(try feedback(["healing": true]).tone, .good)
+        XCTAssertEqual(try feedback(["vm_egress_dead": true]).title, "运行环境出站检测失败")
+        XCTAssertEqual(try feedback(["egress_guard_applied": false]).title, "基础网络防护待确认")
+        XCTAssertEqual(try feedback(["routing_off": true]).action, .settings)
+        XCTAssertEqual(try feedback(["config_application": ["available": true, "pending": true]]).action, .rules)
+    }
+
     func testRuntimeFeedbackKeepsFailureAndDoesNotTreatSlowPreparationAsFailure() throws {
         func runtime(_ json: String) throws -> Runtime { try JSONDecoder().decode(Runtime.self, from: Data(json.utf8)) }
         let slow = try runtime(#"{"phase":"starting","detail":"正在下载运行环境文件…","progress_age_seconds":90}"#)
@@ -190,6 +245,16 @@ final class ContractTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(image.pixelsWide, Int(view.bounds.width))
         if let directory = ProcessInfo.processInfo.environment["VPNMGR_NATIVE_FIXTURE_DIR"] {
             try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: directory).appendingPathComponent("native-workspace.png"))
+            let stamp = Int64(Date.now.timeIntervalSince1970 * 1_000)
+            model.system = try JSONDecoder().decode(SystemStatus.self, from: Data("""
+                {"runtime":{"phase":"ready"},"gateway_health":"forward_dead","gateway_checked_at_ms":\(stamp),"healing":false,"gave_up":true}
+                """.utf8))
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+            view.layoutSubtreeIfNeeded()
+            XCTAssertFalse(window.isVisible)
+            let warning = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: warning)
+            try XCTUnwrap(warning.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: directory).appendingPathComponent("native-workspace-gateway.png"))
         }
         window.contentView = nil
     }

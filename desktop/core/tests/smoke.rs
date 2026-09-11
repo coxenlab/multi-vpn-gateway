@@ -35,13 +35,26 @@ async fn boots_and_serves_system_and_index() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     assert_eq!(addr.ip().to_string(), "127.0.0.1");
-    let app = server::build_router(state);
+    let app = server::build_router(state.clone());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
 
     let base = format!("http://{addr}");
     let c = reqwest::Client::new();
     let sys: serde_json::Value = c.get(format!("{base}/api/system")).send().await.unwrap().json().await.unwrap();
     assert_eq!(sys["bound_ip"], "127.0.0.1");
+    assert!(sys.get("gateway_checked_at_ms").unwrap().is_null(), "initial optimistic state has not been checked");
+    {
+        let mut health = state.health.lock().unwrap();
+        health.gateway_health = vpnmgr_core::health::GatewayHealth::ForwardDead;
+        health.gateway_checked_at_ms = Some(1_789_100_000_123);
+        health.proxy_port_reachable = false;
+        health.healing = true;
+    }
+    let checked: serde_json::Value = c.get(format!("{base}/api/system")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(checked["gateway_checked_at_ms"].as_i64(), Some(1_789_100_000_123));
+    assert_eq!(checked["gateway_health"], "forward_dead");
+    assert_eq!(checked["proxy_port_reachable"], false);
+    assert_eq!(checked["healing"], true);
     let html = c.get(format!("{base}/")).send().await.unwrap().text().await.unwrap();
     assert!(html.contains("<html"));
 

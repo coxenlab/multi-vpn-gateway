@@ -21,9 +21,10 @@ struct MenuContent: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.openWindow) var openWindow
     var body: some View {
-        Text(model.system?.runtime?.label ?? "管理界面准备中")
+        GatewayStatusSummary().task { await model.refresh() }
         ForEach(model.channels) { ch in Text("\(ch.name) · \(ch.statusLabel(runtime: model.system?.runtime))") }
         Divider()
+        Button("刷新状态") { Task { await model.refresh() } }.disabled(!model.ready)
         Button("显示管理窗口") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Button("断开并退出") { NSApp.terminate(nil) }.keyboardShortcut("q")
     }
@@ -62,7 +63,9 @@ struct WorkspaceView: View {
         NavigationSplitView {
             List(Page.allCases, selection: $page) { item in Label(item.rawValue, systemImage: item.icon).tag(item) }
                 .navigationSplitViewColumnWidth(min: 170, ideal: 190)
-                .safeAreaInset(edge: .bottom) { Label(model.system?.runtime?.label ?? "准备中", systemImage: "circle.fill").font(.caption).foregroundStyle(.secondary).padding() }
+                .safeAreaInset(edge: .bottom) {
+                    if model.visible { GatewayStatusSummary().font(.caption).padding() }
+                }
         } detail: {
             VStack(spacing: 0) {
                 if let error = model.error {
@@ -71,6 +74,7 @@ struct WorkspaceView: View {
                 } else if let message = model.message {
                     HStack { Text(message); Spacer(); Button("关闭") { model.message = nil }.buttonStyle(.plain) }.font(.callout).padding(12).background(.quaternary)
                 }
+                if model.ready && model.visible { GatewayStatusView { page = $0 } }
                 if !model.ready {
                     ContentUnavailableView {
                         Label(model.quitting ? "正在断开并退出" : model.starting ? "正在准备管理界面" : "本地服务尚未就绪", systemImage: "network")

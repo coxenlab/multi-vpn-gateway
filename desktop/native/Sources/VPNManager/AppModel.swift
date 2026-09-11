@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor final class AppModel: ObservableObject {
     @Published var channels: [Channel] = []
     @Published var system: SystemStatus?
+    @Published private(set) var systemReadError: String?
     @Published var adapters: [Adapter] = []
     @Published var message: String?
     @Published var error: String?
@@ -62,7 +63,7 @@ import SwiftUI
         if let api { Task { await api.invalidate() } }
         refreshJob?.task.cancel(); refreshJob = nil
         api = nil; ready = false; refreshTask?.cancel(); refreshTask = nil
-        channels = []; system = nil; adapters = []; createdChannelID = nil
+        channels = []; system = nil; systemReadError = nil; adapters = []; createdChannelID = nil
         busy.removeAll(); message = nil; imageProgress = [:]; imageTasks = [:]
         if importTicket != nil { importError = "本地服务连接已结束，上次导入结果待确认。请刷新镜像清单核对。" }
         importTicket = nil
@@ -155,18 +156,30 @@ import SwiftUI
         if refreshJob?.id == id { refreshJob = nil }
     }
     private func loadSnapshot(from api: LocalAPI) async {
-        do {
-            async let list = api.get("/api/channels", as: [Channel].self)
-            async let status = try? api.get("/api/system", as: SystemStatus.self)
-            let nextChannels = try await list, nextSystem = await status
-            guard isCurrent(api), !Task.isCancelled else { return }
-            channels = nextChannels; system = nextSystem
+        async let list: Result<[Channel], Error> = {
+            do { return .success(try await api.get("/api/channels", as: [Channel].self)) }
+            catch { return .failure(error) }
+        }()
+        async let status: Result<SystemStatus, Error> = {
+            do { return .success(try await api.get("/api/system", as: SystemStatus.self)) }
+            catch { return .failure(error) }
+        }()
+        let (nextChannels, nextSystem) = await (list, status)
+        guard isCurrent(api), !Task.isCancelled else { return }
+        switch nextSystem {
+        case .success(let value): system = value; systemReadError = nil
+        case .failure(let error): system = nil; systemReadError = error.localizedDescription
+        }
+        switch nextChannels {
+        case .success(let value):
+            channels = value
             if error?.hasPrefix("刷新失败：") == true { error = nil }
             if adapters.isEmpty {
                 let nextAdapters = (try? await api.get("/api/vpn-types", as: [Adapter].self)) ?? []
                 if isCurrent(api), !Task.isCancelled { adapters = nextAdapters }
             }
-        } catch { if isCurrent(api), !Task.isCancelled { self.error = "刷新失败：\(error.localizedDescription)" } }
+        case .failure(let error): self.error = "刷新失败：\(error.localizedDescription)"
+        }
     }
     private func beginRefresh() {
         refreshTask?.cancel()
@@ -178,13 +191,21 @@ import SwiftUI
             }
         }
     }
+    @discardableResult func repairGateway() async -> Bool {
+        guard GatewayFeedback.read(system, error: systemReadError).action == .repair else { return false }
+        return await perform("/api/system/heal-proxy", key: "__heal", success: "入口握手已恢复，请核对通道和业务连接")
+    }
     @discardableResult func perform(_ path: String, key: String, method: String = "POST", body: [String: Any]? = nil, success: String = "已完成") async -> Bool {
         guard let api, isCurrent(api), !busy.contains(key) else { return false }
         busy.insert(key); defer { if isCurrent(api) { busy.remove(key) } }
-        error = nil
+        error = nil; message = nil
         do {
             let value = try await api.write(path, method: method, body: body)
             guard isCurrent(api) else { return false }
+            if path == "/api/system/heal-proxy", value["pending"] as? Bool == true {
+                message = "入口修复正在进行，请稍后刷新状态核对结果。"
+                await refresh(); return false
+            }
             message = try operationMessage(value, fallback: success)
             await refresh()
             guard isCurrent(api) else { return false }

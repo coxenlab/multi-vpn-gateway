@@ -68,6 +68,8 @@ impl GatewayHealth {
 #[derive(Debug, Clone, Serialize)]
 pub struct HealthSnapshot {
     pub gateway_health: GatewayHealth,
+    /// 最后一次实际采样的时间；尚未采样或运行环境休眠时为空。
+    pub gateway_checked_at_ms: Option<i64>,
     /// 分流口端到端可用(真握手,不是「能 connect」;见 [`proxy_serves`])。
     pub proxy_port_reachable: bool,
     /// 正在尝试自愈(已确认 forward_dead、未放弃)。
@@ -86,6 +88,7 @@ impl Default for HealthSnapshot {
         // 首次 tick 前的乐观默认;看门狗启动即跑首检覆盖它。
         Self {
             gateway_health: GatewayHealth::Healthy,
+            gateway_checked_at_ms: None,
             proxy_port_reachable: true,
             healing: false,
             gave_up: false,
@@ -643,6 +646,7 @@ pub fn spawn(state: AppState) {
                 wd = Watchdog::default();
                 last_wall = std::time::SystemTime::now();
                 last_health = None;
+                if let Ok(mut snap) = state.health.lock() { snap.gateway_checked_at_ms = None; }
                 continue;
             }
             let Some(_activity) = state.lifecycle.runtime().maintenance() else { continue; };
@@ -686,6 +690,11 @@ pub fn spawn(state: AppState) {
             let now_ms = started.elapsed().as_millis() as u64;
             let probe_started = std::time::Instant::now();
             let (health, probe) = check(&state).await;
+            if let Ok(mut snap) = state.health.lock() {
+                snap.gateway_health = health;
+                snap.gateway_checked_at_ms = Some(chrono::Utc::now().timestamp_millis());
+                snap.proxy_port_reachable = matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded);
+            }
             let probe_ms = probe_started.elapsed().as_millis() as u64;
             crate::ev!(debug, "watchdog", "health_tick", "分流链路体检完成", { "health": health.as_str(), "probe": probe.as_str(), "probe_ms": probe_ms });
             if last_health.is_some_and(|previous| previous != health) {

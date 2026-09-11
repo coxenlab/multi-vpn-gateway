@@ -108,6 +108,8 @@ pub async fn start_route(axum::extract::State(state): axum::extract::State<AppSt
 }
 
 async fn start(state: &AppState) -> Result<()> {
+    // A new runtime attempt cannot inherit a recently sampled result from the previous instance.
+    if let Ok(mut health) = state.health.lock() { health.gateway_checked_at_ms = None; }
     let cfg = &state.cfg;
     cfg.validate()?;
     let progress = |detail: &str| state.lifecycle.runtime().progress(detail);
