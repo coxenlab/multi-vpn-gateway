@@ -64,7 +64,10 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
 
 /// 在已绑定 listener 上跑 axum 直到关闭。起头 spawn 分流口健康看门狗(bin 与 Tauri 壳共用此入口)。
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> anyhow::Result<()> {
-    if !state.cfg.managed_vm { crate::replacement::recover_all(&state).await; }
+    if !state.cfg.managed_vm {
+        crate::stop_intents::recover_all(&state).await?;
+        crate::replacement::recover_all(&state).await;
+    }
     crate::health::spawn(state.clone());
     crate::runtime::spawn_idle(state.clone());
     let app = crate::server::build_router(state);

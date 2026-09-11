@@ -50,6 +50,7 @@ def clean_db():
     with store._c() as c:
         c.execute("DELETE FROM channel_replacements")
         c.execute("DELETE FROM channel_runtime")
+        c.execute("DELETE FROM channel_stop_intents")
         c.execute("DELETE FROM channels")
         c.execute("DELETE FROM rules")
         c.execute("DELETE FROM domains")
@@ -134,7 +135,25 @@ def client(monkeypatch):
         assert not ch.get('container_id'), 'existing replacement requires its own fixture'
         store.set_container(ch['id'], 'cid_fake', 18080, 'running')
     monkeypatch.setattr(replacement, 'replace', provision)
-    monkeypatch.setattr(manager, "stop", lambda cid: None)
+    from types import SimpleNamespace
+    instances = {}
+    class Container:
+        def __init__(self, cid):
+            self.id = 'cid_fake'
+            self.attrs = {'Name': '/vpn-' + cid, 'State': {'Running': True}}
+        def stop(self): self.attrs['State']['Running'] = False
+    def get(identity):
+        if identity.startswith('vpn-'):
+            cid = identity[4:]
+            ch = store.get_channel(cid)
+            if ch and ch.get('container_id') == 'cid_fake':
+                instances.setdefault(cid, Container(cid))
+                return instances[cid]
+        else:
+            for instance in instances.values():
+                if instance.id == identity: return instance
+        raise docker.errors.NotFound('missing fixture container')
+    monkeypatch.setattr(manager, 'dc', SimpleNamespace(containers=SimpleNamespace(get=get)))
     monkeypatch.setattr(manager, "novnc_port", lambda cid: 18080)        # 不碰真 docker:登录 url 用此端口
     monkeypatch.setattr(manager, "ensure_novnc_bridge", lambda cid: None)
     monkeypatch.setattr(manager, "probe", lambda ch: (True, 42))

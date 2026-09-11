@@ -138,6 +138,13 @@ pub async fn channels(State(st): State<AppState>) -> axum::response::Response {
     let mut response = build_channels_response(chans, &rules_map, &uptime_map);
     for channel in &mut response {
         let cid = channel["id"].as_str().unwrap_or_default().to_string();
+        match crate::stop_intents::pending(&db, &cid) {
+            Ok(value) => {
+                channel["stop_pending"] = json!(value);
+                if value { channel["status"] = json!("stopped"); channel["configured_status"] = json!("stopped"); channel["latency_ms"] = serde_json::Value::Null; }
+            },
+            Err(error) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+        }
         match (crate::replacement_store::public_status(&db, &cid), crate::replacement_store::data_volume(&db, &cid)) {
             (Ok(pending), Ok(volume)) => {
                 channel["replacement"] = json!(pending); channel["volume_name"] = json!(volume);

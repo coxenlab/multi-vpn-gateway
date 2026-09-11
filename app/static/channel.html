@@ -42,6 +42,7 @@
 
       <div class="content stack-6">
         <div id="ch-feedback"></div>
+        <p id="ch-stop-pending" class="note" role="status" hidden>已保存停用，环境恢复后会确认停止。此通道已从待应用的分流规则中移除。</p>
         <div id="ch-replacement" hidden>
           <div class="banner info">
             <div>
@@ -67,6 +68,7 @@
             <button class="btn btn-primary" id="act-relogin">重新登录</button>
             <button class="btn btn-secondary" id="act-probe">检测连通</button>
             <button class="btn btn-secondary" id="act-power">停止</button>
+            <button class="btn btn-secondary" id="act-stop" hidden>停用</button>
             <button class="btn btn-secondary" id="act-routing" type="button" role="switch" aria-checked="true" hidden>参与分流 · 开</button>
             <span class="spacer"></span>
             <button class="btn btn-danger" data-open="del-modal">删除</button>

@@ -49,6 +49,8 @@ def init():
               priority INTEGER, enabled INTEGER DEFAULT 1);
             CREATE TABLE IF NOT EXISTS channel_runtime(
               channel_id TEXT PRIMARY KEY, data_volume TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS channel_stop_intents(
+              channel_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS channel_replacements(
               channel_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, phase TEXT NOT NULL,
               payload_enc TEXT NOT NULL, created_at INTEGER NOT NULL);
@@ -271,6 +273,7 @@ def del_channel(cid):
         c.execute("DELETE FROM domains WHERE channel_id=?", (cid,))
         c.execute("DELETE FROM rules WHERE channel_id=?", (cid,))
         c.execute("DELETE FROM channel_runtime WHERE channel_id=?", (cid,))
+        c.execute("DELETE FROM channel_stop_intents WHERE channel_id=?", (cid,))
 
 
 def _insert_rule(c, cid, kind, pattern):
@@ -317,7 +320,7 @@ def _effective_rules(c, routing_off):
         "SELECT id,channel_id,kind,pattern,enabled FROM rules ORDER BY id")]
     dead = {r["id"] for r in c.execute(
         "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 "
-        "OR status IN ('stopped','error')")}
+        "OR status IN ('stopped','error') OR id IN (SELECT channel_id FROM channel_stop_intents)")}
     for r in rules:
         if routing_off or r["channel_id"] in dead:
             r["enabled"] = 0

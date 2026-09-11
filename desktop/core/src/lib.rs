@@ -32,6 +32,7 @@ pub mod shutdown;
 pub mod lifecycle;
 pub mod runtime_lifecycle;
 pub mod runtime;
+pub mod stop_intents;
 
 use std::sync::Arc;
 

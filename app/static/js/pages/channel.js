@@ -10,12 +10,14 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     let ch, sys;
     let restoring = false;
     let deletionRuntimeRequired = false;
-    const needsStart = () => ch && (ch.replacement?.phase === "queued" || ["stopped", "error", "down"].includes(ch.status));
+    const needsStart = () => ch && (ch.stop_pending || ch.replacement?.phase === "queued" || ["stopped", "error", "down"].includes(ch.status));
     let k, kindLabel, containerId, hostName, methodLabel;
     const routingControlsSupported = () => sys && typeof sys.routing_off === "boolean";
     const routingOn = () => ch && (!routingControlsSupported() || (ch.routing_enabled !== false && ch.routing_enabled !== 0));
     const deleteNeedsRuntime = () => deletionRuntimeRequired || !!(sys?.runtime && !["ready", "waiting"].includes(sys.runtime.phase) && (ch?.container_id || ch?.replacement));
     const channelBadge = () => {
+      if (ch.stop_pending) return '<span class="badge is-stopped"><i class="bdot"></i>停用待确认</span>';
+      if (sys?.runtime && !["ready", "waiting"].includes(sys.runtime.phase) && ch.configured_status !== "stopped") return '<span class="badge is-stopped"><i class="bdot"></i>待连接</span>';
       if (!routingOn() && ch.status === "logged_in")
         return `<span class="badge is-logged_in"><i class="bdot"></i>已连接 · 不分流</span>`;
       return badgeHTML(ch.status) + (!routingOn() ? `<span class="badge is-stopped">不分流</span>` : "");
@@ -34,7 +36,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         if (!ch) {
           vncView.pause();
           closeOverlay("del-modal");
-          $$("#ch-replacement, [data-od-id='ch-head'], [data-od-id='ch-actions'], [data-od-id='ch-tabs']").forEach(el => { el.style.display = "none"; });
+          $$("#ch-stop-pending, #ch-replacement, [data-od-id='ch-head'], [data-od-id='ch-actions'], [data-od-id='ch-tabs']").forEach(el => { el.style.display = "none"; });
           $("#cfg-list").innerHTML = "";
           fb.errorBanner("#ch-feedback", {
             title: "通道不存在", message: "没找到对应的通道，可能已被删除。",
@@ -50,7 +52,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         }
         throw e;
       }
-      $$("#ch-replacement, [data-od-id='ch-head'], [data-od-id='ch-actions'], [data-od-id='ch-tabs']").forEach(el => { el.style.display = ""; });
+      $$("#ch-stop-pending, #ch-replacement, [data-od-id='ch-head'], [data-od-id='ch-actions'], [data-od-id='ch-tabs']").forEach(el => { el.style.display = ""; });
       $("#ch-feedback").innerHTML = "";
       $("#nav-count").textContent = list.length;
       k = kindMeta(ch.vpn_type);
@@ -99,7 +101,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         : pending.phase === "deleting" ? "正在清理关联的通道实例，完成后会移除通道。" : "正在清理本次操作保留的旧资源。";
       const button = $("#replacement-restore");
       button.hidden = !pending.can_restore;
-      button.disabled = restoring;
+      button.disabled = restoring || (ch.stop_pending && pending.phase !== "queued");
       button.textContent = restoring ? "处理中…" : pending.phase === "queued" ? "撤销待应用修改" : "恢复上一次设置";
     }
 
@@ -124,7 +126,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       const bar = $("#h-lat-bar"), cls = latClass(lat);
       bar.className = "lat-bar" + (cls ? " " + cls : "");
       bar.querySelector("i").style.width = lat != null ? Math.min(100, Math.round(lat / 1.8)) + "%" : "0";
-      $("#h-status").innerHTML = badgeHTML(ch.status);
+      $("#h-status").innerHTML = channelBadge();
       $("#h-uptime").textContent = ch.uptime != null ? ch.uptime : "—";
     }
     function setLastProbe(when = Date.now()) { $("#h-last").textContent = new Date(when).toLocaleTimeString("zh-CN", { hour12: false }); }
@@ -243,8 +245,11 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       const stopped = needsStart();
       const headless = ch.login_method === "headless";
       $("#top-badge").innerHTML = channelBadge();
-      $("#h-status").innerHTML = badgeHTML(ch.status);
+      $("#h-status").innerHTML = channelBadge();
       $("#act-power").textContent = ch.replacement?.phase === "queued" ? "应用并启动" : stopped ? "启动" : "停止";
+      $("#ch-stop-pending").hidden = !ch.stop_pending;
+      $("#act-stop").hidden = ch.stop_pending ? !!sys?.runtime && !["ready", "waiting"].includes(sys.runtime.phase) : !stopped || ch.configured_status === "stopped";
+      $("#act-stop").textContent = ch.stop_pending ? "重试停用" : "停用";
       $("#del-runtime-note").hidden = !deleteNeedsRuntime();
       if (!$("#del-confirm").disabled) $("#del-confirm").textContent = deleteNeedsRuntime() ? "启动环境并删除" : "确认删除";
       // 容器已停:登录窗口与检测都无意义 → 只留「启动」+「删除」
@@ -340,8 +345,8 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     }
     $("#cfg-edit-form").addEventListener("submit", (e) => { e.preventDefault(); submitEdit(); });
 
-    async function doPower() {
-      const btn = $("#act-power"), starting = needsStart(), orig = btn.textContent;
+    async function doPower(stopOnly = false) {
+      const btn = $(stopOnly ? "#act-stop" : "#act-power"), starting = !stopOnly && needsStart(), orig = btn.textContent;
       btn.disabled = true; btn.textContent = starting ? "启动中…" : "停止中…";
       try {
         if (starting) {
@@ -351,13 +356,14 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
           $("#vnc-sendbar")?.remove();
           toast("已启动，请登录后检测连通", { variant: "success" });
         }
-        else { await api.stop(ch.id); await boot(); toast("已停止", { variant: "success" }); }
+        else { const result = await api.stop(ch.id); await boot(); toast(result.stop_pending ? "已保存停用，实际停止尚待确认" : "已停止", { variant: result.stop_pending ? "info" : "success" }); }
       } catch (err) {
-        toast((starting ? "启动失败：" : "停止失败：") + fb.friendlyError(err).title, { variant: "danger", action: { label: "重试", onClick: doPower } });
+        toast((starting ? "启动失败：" : "停止失败：") + fb.friendlyError(err).title, { variant: "danger", action: { label: "重试", onClick: () => doPower(stopOnly) } });
         btn.textContent = orig;
       } finally { btn.disabled = false; }
     }
-    $("#act-power").addEventListener("click", doPower);
+    $("#act-power").addEventListener("click", () => doPower());
+    $("#act-stop").addEventListener("click", () => doPower(true));
     $("#act-routing").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
       const next = !routingOn();

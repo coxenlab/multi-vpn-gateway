@@ -103,13 +103,16 @@ where
     let slot = state.lifecycle.slot(&cid);
     loop {
         if state.lifecycle.closing.load(Ordering::SeqCst) { return Err("应用正在退出".into()); }
-        let (ch, generation, pending) = {
+        let (ch, generation, pending, stop_pending) = {
             let _guard = slot.operation.lock().await;
             let ch = store::get_channel(&state.cfg.db_path(), &cid).map_err(|e| e.to_string())?
                 .ok_or_else(|| "not found".to_string())?;
             let pending = crate::replacement_store::public_status(&state.cfg.db_path(), &cid).map_err(|e| e.to_string())?;
-            (ch, slot.generation.load(Ordering::SeqCst), pending)
+            (ch, slot.generation.load(Ordering::SeqCst), pending, crate::stop_intents::pending(&state.cfg.db_path(), &cid).map_err(|e|e.to_string())?)
         };
+        if stop_pending {
+            return Ok(json!({"status":"stopped","connected":false,"latency_ms":null,"checked_at":null,"stale":false,"replacement":pending,"stop_pending":true}));
+        }
         if pending.as_ref().is_some_and(|p| !matches!(p["phase"].as_str(), Some("awaiting_login" | "committed" | "rolled_back"))) {
             return Ok(json!({"status":"error","connected":false,"latency_ms":null,"checked_at":null,"stale":true,"replacement":pending}));
         }

@@ -417,8 +417,11 @@ pub(crate) fn channel_json(db: &std::path::Path, cid: &str) -> axum::response::R
     match store::get_channel(db, cid) {
         Ok(Some(c)) => {
             let mut value = serde_json::to_value(&c).unwrap();
+            let stop_pending = match crate::stop_intents::pending(db, cid) { Ok(value) => value, Err(e) => return err500(&e.to_string()) };
+            value["stop_pending"] = json!(stop_pending);
+            if stop_pending { value["status"] = json!("stopped"); value["latency_ms"] = Value::Null; }
             value["config_application"] = config_application(db);
-            let mut deferred = value["config_application"]["last_error"] == "runtime_idle";
+            let mut deferred = stop_pending || value["config_application"]["last_error"] == "runtime_idle";
             value["saved"] = json!(true);
             value["deferred"] = json!(deferred);
             match crate::replacement_store::public_status(db, cid) {
@@ -504,6 +507,11 @@ pub async fn restore_channel(State(st): State<AppState>, Path(cid): Path<String>
             Ok(Some(pending)) if pending["can_restore"] == true => {},
             Ok(_) => return err_detail(StatusCode::CONFLICT, "没有可恢复的上一次设置"),
             Err(e) => return err500(&e.to_string()),
+        }
+        match crate::stop_intents::pending(&db, &cid) {
+            Ok(true) => return err_detail(StatusCode::CONFLICT, "停用尚待确认，请先完成停用再恢复设置"),
+            Err(e) => return err500(&e.to_string()),
+            _ => {},
         }
         let before = channel_snapshot_of(&db, &cid);
         if let Err(e) = crate::replacement::recover(&st, &cid).await { return err500(&format!("恢复未完成: {e}")); }
@@ -718,7 +726,8 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         rollback_fields.insert("routing_enabled".into(), json!(ch.routing_enabled));
         store::update_channel(&db, &key, &cid, &rollback_fields, &sk)
     };
-    let save_for_later = queued || (st.cfg.managed_vm && st.docker().is_none() && touched && ch.container_id.is_some());
+    let stop_pending = match crate::stop_intents::pending(&db, &cid) { Ok(value) => value, Err(e) => return err500(&e.to_string()) };
+    let save_for_later = queued || ((stop_pending || (st.cfg.managed_vm && st.docker().is_none())) && touched && ch.container_id.is_some());
     if save_for_later && registry::get(&ch.vpn_type).is_ok_and(|spec| spec.runtime == "byo") {
         return err_detail(StatusCode::CONFLICT, "自装客户端的连接信息请在登录窗口中修改");
     }
@@ -990,6 +999,7 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
         Err(e) => return err503(&e.to_string()),
     };
     let db = st.cfg.db_path();
+    if let Err(e) = crate::stop_intents::apply(&st, &cid).await { return err503(&format!("停用尚未确认: {e}")); }
     let ch = match store::get_channel(&db, &cid) {
         Ok(Some(c)) => c,
         Ok(None) => return err404("not found"),
@@ -1094,56 +1104,21 @@ async fn stop_inner(st: AppState, cid: String) -> axum::response::Response {
             "result": result, "duration_ms": started.elapsed().as_millis() as u64,
         })
     };
-    let docker = match st.docker() {
-        Some(d) => d,
-        None => {
-            if st.cfg.managed_vm && ch.container_id.is_none() {
-                match crate::replacement_store::public_status(&db, &cid) {
-                    Ok(None) => {
-                        if let Err(e) = store::set_status(&db, &cid, "stopped") { return err500(&e.to_string()); }
-                        let reload = manager::rebuild(&st.cfg, None, &db).await;
-                        crate::events::audit("channel_stop", "未启动的通道已停用", audit_detail("ok", channel_snapshot_of(&db, &cid)));
-                        return config_reply(&db, &reload, json!({"ok":true}));
-                    }
-                    Err(e) => return err500(&e.to_string()),
-                    _ => {},
-                }
-            }
-            let mut detail = audit_detail("failed", Value::Null);
-            detail["error"] = json!("docker unavailable");
-            crate::events::audit_failed("channel_stop", "通道停止失败", detail);
-            return err503("docker unavailable");
-        }
-    };
-    if let Err(e) = crate::replacement::before_stop(&st, &cid).await {
-        return err500(&format!("停止前恢复未完成: {e}"));
-    }
-    if let Err(e) = manager::stop(&docker, &cid).await {
-        let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
-        detail["error"] = json!(e.to_string());
-        crate::events::audit_failed("channel_stop", "通道停止失败", detail);
-        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("stop: {e}"));
-    }
+    if let Err(e) = crate::stop_intents::request(&db, &cid) { return err_detail(StatusCode::CONFLICT, &e.to_string()); }
+    let docker = st.docker();
+    let outcome = if docker.is_some() { crate::stop_intents::apply(&st, &cid).await } else { Ok(()) };
     crate::novnc::drop_for(&st, &cid).await;
-    if let Err(e) = store::set_status(&db, &cid, "stopped") {
-        let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
+    let reload = manager::rebuild(&st.cfg, docker.as_ref(), &db).await;
+    let pending = match crate::stop_intents::pending(&db, &cid) { Ok(value) => value, Err(e) => return err500(&e.to_string()) };
+    if let Err(e) = outcome {
+        let mut detail = audit_detail("pending", channel_snapshot_of(&db, &cid));
         detail["error"] = json!(e.to_string());
-        crate::events::audit_failed("channel_stop", "通道已停止但状态落库失败", detail);
-        return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set_status: {e}"));
+        crate::events::audit_failed("channel_stop", "停用已保存，实际停止尚待确认", detail);
+        return (StatusCode::ACCEPTED, Json(json!({"ok":true,"saved":true,"deferred":true,"stop_pending":true,
+            "message":"已保存停用，实际停止尚待确认","config_application":config_application(&db)}))).into_response();
     }
-    // 状态联动:停止的通道其规则在 effective_rules 里自动失效,rebuild 一次把分流面
-    // (mihomo/provider/PAC/TUN 路由)同步收掉,避免黑洞规则;重载未达成仅记日志。
-    let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
-    if !reload_ok(&reload) {
-        crate::ev!(error, "api", "mihomo_reload_failed", "停止通道后 mihomo 重载未达成",
-            { "operation": "stop", "cid": cid.as_str(), "error": reload.as_str() });
-    }
-    crate::events::audit(
-        "channel_stop",
-        "通道已停止",
-        audit_detail("ok", channel_snapshot_of(&db, &cid)),
-    );
-    operation_done(&db)
+    crate::events::audit("channel_stop", if pending { "停用已保存，等待运行环境恢复后确认" } else { "通道已停止" }, audit_detail("ok", channel_snapshot_of(&db, &cid)));
+    config_reply(&db, if pending { crate::config_apply::DEFERRED } else { &reload }, json!({"ok":true,"stop_pending":pending}))
 }
 
 #[derive(Deserialize, Default)]

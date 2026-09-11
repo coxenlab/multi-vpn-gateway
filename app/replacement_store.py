@@ -217,5 +217,5 @@ def deleted(record):
     with store._c() as c:
         c.execute("BEGIN IMMEDIATE")
         _check(c, record.channel_id, record.operation_id, 'deleting')
-        for table, column in (("channels", "id"), ("domains", "channel_id"), ("rules", "channel_id"), ("channel_runtime", "channel_id"), ("channel_replacements", "channel_id")):
+        for table, column in (("channels", "id"), ("domains", "channel_id"), ("rules", "channel_id"), ("channel_runtime", "channel_id"), ("channel_stop_intents", "channel_id"), ("channel_replacements", "channel_id")):
             c.execute(f"DELETE FROM {table} WHERE {column}=?", (record.channel_id,))

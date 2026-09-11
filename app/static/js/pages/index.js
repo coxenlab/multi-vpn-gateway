@@ -10,6 +10,7 @@ import { loadWithSystem } from "../page-data.js";
     const routingControlsSupported = () => typeof sys.routing_off === "boolean";
     const routingOn = (c) => !routingControlsSupported() || (c.routing_enabled !== false && c.routing_enabled !== 0);
     const channelBadge = (c) => {
+      if (c.stop_pending) return '<span class="badge is-stopped"><i class="bdot"></i>停用待确认</span>';
       if (sys.runtime && !["ready", "waiting"].includes(sys.runtime.phase) && c.configured_status !== "stopped")
         return '<span class="badge is-stopped"><i class="bdot"></i>待连接</span>';
       if (!routingOn(c) && c.status === "logged_in")
@@ -46,14 +47,16 @@ import { loadWithSystem } from "../page-data.js";
 
     function actionsFor(c) {
       const detail = `<a class="btn btn-sm btn-secondary spacer" href="channel.html?id=${fb.esc(c.id)}">详情</a>`;
+      const stop = !c.stop_pending && c.configured_status !== "stopped" ? `<button class="btn btn-sm btn-secondary" data-action="stop" data-id="${fb.esc(c.id)}">停用</button>` : "";
+      if (c.stop_pending) return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">启动</button>${detail}`;
       if (c.replacement?.phase === "queued")
-        return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">应用并启动</button>${detail}`;
+        return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">应用并启动</button>${stop}${detail}`;
       if (sys.runtime && !["ready", "waiting"].includes(sys.runtime.phase)) {
         const action = ["running", "logged_in"].includes(c.configured_status) ? "connect" : "start";
-        return `<button class="btn btn-sm btn-primary" data-action="${action}" data-id="${fb.esc(c.id)}">连接</button>${detail}`;
+        return `<button class="btn btn-sm btn-primary" data-action="${action}" data-id="${fb.esc(c.id)}">连接</button>${stop}${detail}`;
       }
       if (sys.runtime && c.status === "down")
-        return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">连接</button>${detail}`;
+        return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">连接</button>${stop}${detail}`;
       if (c.status === "stopped")
         return `<button class="btn btn-sm btn-primary" data-action="start" data-id="${fb.esc(c.id)}">启动</button>${detail}`;
       const headless = c.login_method === "headless";
@@ -127,9 +130,9 @@ import { loadWithSystem } from "../page-data.js";
       btn.disabled = true;
       btn.replaceChildren(fb.spinner(label + "中…"));
       try {
-        await (action === "connect" ? api.startRuntime() : action === "start" ? api.start(id) : api.stop(id));
+        const result = await (action === "connect" ? api.startRuntime() : action === "start" ? api.start(id) : api.stop(id));
         await load();
-        toast(action === "connect" ? "运行环境已连接，请检测通道连通" : action === "start" ? "已启动，请登录后检测连通" : "已停止", { variant: "success" });
+        toast(action === "connect" ? "运行环境已连接，请检测通道连通" : action === "start" ? "已启动，请登录后检测连通" : result.stop_pending ? "已保存停用，实际停止尚待确认" : "已停止", { variant: result.stop_pending ? "info" : "success" });
       } catch (e) {
         toast(label + "失败：" + fb.friendlyError(e).title, {
           variant: "danger", action: { label: "重试", onClick: () => power(id, action, btn) },

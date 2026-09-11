@@ -35,6 +35,7 @@ pub async fn can_release(state: &AppState) -> Result<bool> {
     let db = state.cfg.db_path();
     if crate::store::list_channels(&db)?.iter().any(|channel| channel.status != "stopped")
         || crate::replacement_store::has_active_replacements(&db)?
+        || crate::stop_intents::any(&db)?
         || crate::config_apply_store::status(&db, crate::store::routing_off(&state.cfg.data_dir))?.pending
         || crate::novnc::has_viewers(state).await {
         return Ok(false);
@@ -137,6 +138,8 @@ async fn start(state: &AppState) -> Result<()> {
     if !crate::health::ensure_egress_guard(state.clone(), true).await {
         return Err(anyhow!("基础网络防护尚未就绪，请重试"));
     }
+    progress("确认已停用的通道…");
+    crate::stop_intents::recover_all(state).await?;
     if let Some(images) = cfg.bundled_images_dir.as_ref().filter(|path| path.is_dir()) {
         progress("检查内置 VPN 镜像…");
         if let Err(error) = infra::ensure_bundled_images(&connection, images).await {
@@ -245,6 +248,9 @@ mod tests {
         db.execute("INSERT INTO channel_replacements VALUES('c1','fixture','awaiting_login','unread-fixture',0)", []).unwrap();
         assert!(!can_release(&state).await.unwrap());
         db.execute("DELETE FROM channel_replacements", []).unwrap();
+        db.execute("INSERT INTO channel_stop_intents VALUES('c1','pending')", []).unwrap();
+        assert!(!can_release(&state).await.unwrap());
+        db.execute("DELETE FROM channel_stop_intents", []).unwrap();
         for inventory in [json!([{"Names":["/mihomo"]},{"Names":["/unrelated"]}]),
             json!([{"Names":["/vpn-c1"]}]), json!([{}])] {
             *contents.lock().unwrap() = inventory;

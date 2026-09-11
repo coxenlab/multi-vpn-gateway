@@ -317,7 +317,7 @@ pub fn deleted(db: &Path, record: &Record) -> Result<()> {
     let mut conn = Connection::open(db)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     check_operation(&tx, &record.channel_id, &record.operation_id, "deleting")?;
-    for (table, column) in [("channels", "id"), ("domains", "channel_id"), ("rules", "channel_id"), ("channel_runtime", "channel_id"), ("channel_replacements", "channel_id")] {
+    for (table, column) in [("channels", "id"), ("domains", "channel_id"), ("rules", "channel_id"), ("channel_runtime", "channel_id"), ("channel_stop_intents", "channel_id"), ("channel_replacements", "channel_id")] {
         tx.execute(&format!("DELETE FROM {table} WHERE {column}=?1"), [&record.channel_id])?;
     }
     tx.commit()?;

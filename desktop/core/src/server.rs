@@ -633,14 +633,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_without_docker_503s_without_mutating_db() {
+    async fn runtime_actions_without_docker_503_without_mutating_db() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("vpnmgr.db");
         crate::store::init(&db).unwrap();
         rusqlite::Connection::open(&db).unwrap().execute(
             "INSERT INTO channels(id,name,vpn_type,login_method,status) VALUES('c1','c','easyconnect','interactive','running')", []).unwrap();
         let app = build_router(state_with_db(dir.path()));
-        for (method, uri) in [("POST", "/api/channels/c1/start"), ("POST", "/api/channels/c1/stop"),
+        for (method, uri) in [("POST", "/api/channels/c1/start"),
                               ("DELETE", "/api/channels/c1")] {
             let resp = app.clone().oneshot(Request::builder().method(method).uri(uri)
                 .body(Body::empty()).unwrap()).await.unwrap();

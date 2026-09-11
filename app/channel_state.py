@@ -101,7 +101,7 @@ def _execute(current, generation, ch):
 
 
 def sample(cid, fresh=True):
-    import replacement_store
+    import replacement_store, stop_intents
     current = slot(cid)
     while True:
         with current.operation:
@@ -111,6 +111,8 @@ def sample(cid, fresh=True):
             if ch is None:
                 return None
             pending = replacement_store.public_status(cid)
+            if stop_intents.pending(cid):
+                return dict(status="stopped", connected=False, latency_ms=None, checked_at=None, stale=False, replacement=pending, stop_pending=True)
             if pending and pending['phase'] not in ('awaiting_login', 'committed', 'rolled_back'):
                 return dict(status='error', connected=False, latency_ms=None, checked_at=None, stale=True, replacement=pending)
             generation = current.generation

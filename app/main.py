@@ -24,6 +24,7 @@ import manager
 import channel_state
 import replacement
 import replacement_store
+import stop_intents
 import config_apply_store
 import registry
 import dockerhub
@@ -37,6 +38,7 @@ MIHOMO_HOST_PORT = os.environ.get("MIHOMO_HOST_PORT", "?")
 @asynccontextmanager
 async def lifespan(app):
     channel_state.startup()
+    await asyncio.to_thread(stop_intents.recover_all)
     await asyncio.to_thread(replacement.recover_all)
     try:
         yield
@@ -53,7 +55,9 @@ def _channel_result(cid):
     if value:
         value['config_application'] = config_apply_store.public_status()
         value['replacement'] = replacement_store.public_status(cid)
+        value['stop_pending'] = stop_intents.pending(cid)
         replacement_store.overlay_queued(cid, value)
+        if value['stop_pending']: value.update(deferred=True, status='stopped', latency_ms=None)
     return value
 
 
@@ -109,6 +113,8 @@ def channels():
         c["ips"] = [r for r in rs if r["kind"] == "ip"]
         c["volume_name"] = replacement_store.data_volume(c['id'])
         c["replacement"] = replacement_store.public_status(c['id'])
+        c['stop_pending'] = stop_intents.pending(c['id'])
+        if c['stop_pending']: c.update(status='stopped', configured_status='stopped', latency_ms=None)
         replacement_store.overlay_queued(c['id'], c)
         c["socks_proxy"] = f"ch-{c['id']}"
         c["socks_endpoint"] = f"vpn-{c['id']}:1080"
@@ -190,7 +196,7 @@ def update(cid: str, b: dict = Body(...)):
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
     except KeyError:
         secret_keys = []
-    if pending and pending['phase'] == 'queued':
+    if (pending and pending['phase'] == 'queued') or (stop_intents.pending(cid) and touched and ch.get('container_id')):
         replacement_store.queue_settings(ch, b, secret_keys)
         result = _channel_result(cid)
         return JSONResponse(result, status_code=202 if result.get('deferred') else 200)
@@ -222,6 +228,8 @@ def restore_channel(cid):
     if pending['phase'] == 'queued':
         replacement_store.cancel_queued(replacement_store.get(cid))
         return _channel_result(cid)
+    if stop_intents.pending(cid):
+        return JSONResponse({'error': '停用尚待确认，请先完成停用再恢复设置'}, status_code=409)
     try:
         replacement.recover(cid)
     except Exception as e:
@@ -450,6 +458,8 @@ def start(cid):
     if not ch:
         return JSONResponse({"error": "not found"}, status_code=404)
     try:
+        stop_intents.apply(cid)
+        ch = store.get_channel(cid)
         if replacement.resume(cid):
             manager.rebuild()
             return _operation_done()
@@ -484,13 +494,16 @@ def start(cid):
 @app.post("/api/channels/{cid}/stop")
 @channel_state.serialized
 def stop(cid):
-    replacement.before_stop(cid)
-    manager.stop(cid)
-    store.set_status(cid, "stopped")
-    # 关容器即关分流:订阅面(provider/PAC)现算会立刻显示折叠,但真正在跑的 mihomo
-    # 只有 rebuild 才重写——不重建就是「显示已收掉、实际黑洞照旧」的半生效(红队 H2)。
+    if not store.get_channel(cid): return JSONResponse({'error': 'not found'}, status_code=404)
+    try: stop_intents.request(cid)
+    except Exception as e: return JSONResponse({'error': str(e)}, status_code=409)
+    try: stop_intents.apply(cid)
+    except Exception:
+        manager.rebuild()
+        return JSONResponse(dict(_operation_done(), saved=True, deferred=True, stop_pending=True,
+                                 message='已保存停用，实际停止尚待确认'), status_code=202)
     manager.rebuild()
-    return _operation_done()
+    return dict(_operation_done(), stop_pending=False)
 
 
 @app.delete("/api/channels/{cid}")

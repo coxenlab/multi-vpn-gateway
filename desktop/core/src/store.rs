@@ -27,6 +27,8 @@ pub fn init(db: &Path) -> anyhow::Result<()> {
           enabled INTEGER DEFAULT 1);
         CREATE TABLE IF NOT EXISTS channel_runtime(
           channel_id TEXT PRIMARY KEY, data_volume TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS channel_stop_intents(
+          channel_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS channel_replacements(
           channel_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, phase TEXT NOT NULL,
           payload_enc TEXT NOT NULL, created_at INTEGER NOT NULL);
@@ -307,7 +309,7 @@ pub(crate) fn effective_rules_with(conn: &Connection, off: bool) -> anyhow::Resu
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 OR status IN ('stopped','error') ORDER BY id",
+        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 OR status IN ('stopped','error') OR id IN (SELECT channel_id FROM channel_stop_intents) ORDER BY id",
     )?;
     let disabled = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -822,6 +824,7 @@ pub fn del_channel(db: &Path, cid: &str) -> anyhow::Result<()> {
     tx.execute("DELETE FROM domains WHERE channel_id=?1", [cid])?;
     tx.execute("DELETE FROM rules WHERE channel_id=?1", [cid])?;
     tx.execute("DELETE FROM channel_runtime WHERE channel_id=?1", [cid])?;
+    tx.execute("DELETE FROM channel_stop_intents WHERE channel_id=?1", [cid])?;
     tx.commit()?;
     Ok(())
 }
