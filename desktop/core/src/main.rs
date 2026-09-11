@@ -2,6 +2,13 @@ use vpnmgr_core::{app, config::Config};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "--prepare-upgrade") {
+        anyhow::ensure!(args.len() == 4, "用法: vpnmgr-core --prepare-upgrade 原数据目录 新副本目录");
+        let report = vpnmgr_core::upgrade::prepare(std::path::Path::new(&args[2]), std::path::Path::new(&args[3]))?;
+        println!("{}", serde_json::to_string(&report)?);
+        return Ok(());
+    }
     let mut cfg = Config::load();
     if cfg.managed_vm {
         cfg.validate()?;

@@ -63,6 +63,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.data_dir.join(crate::upgrade::PENDING).try_exists()?, "这是升级核对副本，尚未完成实例与切换验收，不能启动运行环境");
         anyhow::ensure!(!self.vm_profile.is_empty() && self.vm_profile.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "无效 VM profile");
         anyhow::ensure!(!self.managed_vm || self.vm_profile != "default", "桌面底座不能管理 default profile");
