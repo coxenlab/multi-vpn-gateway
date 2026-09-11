@@ -169,23 +169,30 @@ def _forti_cert_digest(c, host):
     return m.group(1) if m else None
 
 
-def put_file(cid, dest_dir, filename, blob):
-    """把一个二进制文件塞进运行中容器的 dest_dir(byo 安装器上传用,命门 #5)。
-
-    blob 为原始 bytes(绝不读成文本)。in-memory 打成单成员 tar,经 container.put_archive
-    解到 dest_dir(dest_dir 须已存在,byo 镜像 mkdir 之)。返回容器内落点路径引用。
-    """
+def put_file(cid, dest_dir, filename, source, size=None):
+    """二进制文件经匿名暂存 tar 分块投递；小配置仍兼容 bytes 调用。"""
+    if not valid_upload_filename(filename):
+        raise ValueError("安装包文件名无效，请重命名后上传")
+    if isinstance(source, bytes):
+        size, source = len(source), io.BytesIO(source)
+    if size is None or size < 0: raise ValueError("缺少文件大小")
     c = dc.containers.get(f"vpn-{cid}")
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        ti = tarfile.TarInfo(name=filename)   # name = 相对 dest_dir 的文件名,绝不带 dest 前缀
-        ti.size = len(blob)
-        ti.mode = 0o755                        # 可执行,便于用户在桌面里直接跑安装器
-        tar.addfile(ti, io.BytesIO(blob))
-    buf.seek(0)
-    if not c.put_archive(dest_dir, buf.getvalue()):
-        raise RuntimeError("put_archive failed")
+    with tempfile.TemporaryFile(dir=store.DATA_DIR) as archive:
+        with tarfile.open(fileobj=archive, mode="w", copybufsize=65536) as tar:
+            ti = tarfile.TarInfo(name=filename)
+            ti.size = size
+            ti.mode = 0o755
+            tar.addfile(ti, source)
+        archive.seek(0)
+        if not c.put_archive(dest_dir, archive):
+            raise RuntimeError("安装包投递未确认")
     return f"{dest_dir.rstrip('/')}/{filename}"
+
+
+def valid_upload_filename(name):
+    return (isinstance(name, str) and bool(name) and name not in ('.', '..')
+            and len(name.encode('utf-8')) <= 255
+            and not any(ord(c) < 32 or 127 <= ord(c) <= 159 or c in '/\\"' for c in name))
 
 
 def ensure_novnc_bridge(cid):

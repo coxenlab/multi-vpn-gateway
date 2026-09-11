@@ -852,46 +852,59 @@ pub async fn release_login_viewer(State(st): State<AppState>, Path((cid, viewer)
 }
 
 pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp: Multipart) -> axum::response::Response {
+    let _slot = match crate::installer_upload::SLOT.try_acquire() {
+        Ok(slot) => slot,
+        Err(_) => return err_detail(StatusCode::TOO_MANY_REQUESTS, "已有安装包正在上传，请稍后重试"),
+    };
     let db = st.cfg.db_path();
     let key = match store::master_key(&st.cfg.data_dir) {
         Ok(k) => k,
         Err(e) => return err500(&format!("master_key: {e}")),
     };
-    if matches!(store::get_channel(&db, &cid), Ok(None)) {
-        return err404("not found");
-    }
-    // 取第一个文件字段(对照 UploadFile = File(...) 的单文件语义)
-    let (filename, blob) = match mp.next_field().await {
-        Ok(Some(field)) => {
-            let fname = field.file_name().map(String::from).unwrap_or_default();
-            match field.bytes().await {
-                Ok(b) => (fname, b),
-                Err(e) => return err500(&format!("read upload: {e}")),
-            }
-        }
-        Ok(None) => return err500("no file field"),
-        Err(e) => return err500(&format!("multipart: {e}")),
+    let original = match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) => ch,
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&e.to_string()),
     };
+    let upload = match tokio::time::timeout(std::time::Duration::from_secs(1200),
+        crate::installer_upload::receive(&mut mp, &st.cfg.data_dir, crate::installer_upload::MAX_BYTES)).await {
+        Ok(Ok(upload)) => upload,
+        Ok(Err((status, message))) => return err_detail(status, &message),
+        Err(_) => return err_detail(StatusCode::REQUEST_TIMEOUT, "安装包上传超时"),
+    };
+    // 等文件接收完再锁通道，避免慢上传长时间挡住停止；锁内重新核对目标实例。
+    let _guard = match st.lifecycle.access(&cid).await { Ok(guard) => guard, Err(e) => return err503(&e.to_string()) };
+    let current = match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) => ch,
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&e.to_string()),
+    };
+    if current.container_id != original.container_id || !matches!(current.status.as_str(), "running" | "logged_in")
+        || !crate::runtime::serving(&st) || crate::stop_intents::pending(&db, &cid).unwrap_or(true) {
+        return err_detail(StatusCode::CONFLICT, "通道状态已改变或尚未连接，请核对后重新上传");
+    }
     let docker = match st.docker() {
         Some(d) => d,
-        None => return err500("docker unavailable"),
+        None => return err_detail(StatusCode::CONFLICT, "请先连接通道，再上传安装包"),
     };
-    // 命门 #5:二进制经 put_archive 落数据卷,绝不入 SQLite/回传
-    // 审计只记文件名与大小:安装器内容既不入库也不进日志(命门 #5)。
+    let filename = upload.filename.clone(); let size = upload.size;
     let audit_base = || {
         json!({
             "target_kind": "channel", "target_id": cid.as_str(),
-            "filename": filename.as_str(), "size_bytes": blob.len() as u64,
+            "filename": filename.as_str(), "size_bytes": size,
         })
     };
-    if let Err(e) = crate::docker::put_file(&docker, &format!("vpn-{cid}"), "/root", &filename, blob.as_ref()).await {
+    if let Err(e) = upload.deliver(&docker, &format!("vpn-{cid}"), &st.cfg.data_dir).await {
         let mut detail = audit_base();
         detail["result"] = json!("failed");
         detail["error"] = json!(e.to_string());
         crate::events::audit_failed("channel_upload", "通道安装文件投递失败", detail);
-        return err500(&format!("{e}"));
+        return err500(&format!("安装包投递结果未确认，请在通道内核对后再决定是否重试：{e}"));
     }
-    let _ = store::set_config_field(&db, &key, &cid, "package", &filename, false);
+    if store::set_config_field(&db, &key, &cid, "package", &filename, false).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok":false,"uploaded":true,
+            "error":"安装包已投递，但文件名记录失败；请在通道内核对，无需重复上传"}))).into_response();
+    }
     let mut detail = audit_base();
     detail["result"] = json!("ok");
     crate::events::audit("channel_upload", "安装包已投递到通道数据卷", detail);

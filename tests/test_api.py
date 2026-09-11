@@ -209,8 +209,8 @@ def test_upload_puts_file_and_stores_ref_not_bytes(client, monkeypatch):
     import manager, store
     puts = {}
     monkeypatch.setattr(manager, "put_file",
-                        lambda cid, d, name, blob: puts.update(
-                            cid=cid, dest=d, name=name, blob=blob) or f"{d}/{name}")
+                        lambda cid, d, name, source, size: puts.update(
+                            cid=cid, dest=d, name=name, blob=source.read(size), size=size) or f"{d}/{name}")
 
     r = client.post("/api/channels", json={
         "name": "兜底X", "vpn_type": "custom", "login_method": "byo",
@@ -221,7 +221,7 @@ def test_upload_puts_file_and_stores_ref_not_bytes(client, monkeypatch):
     up = client.post(f"/api/channels/{cid}/upload",
                      files={"file": ("client.run", blob, "application/octet-stream")})
     assert up.status_code == 200
-    # 二进制原样落到容器 /root,经 put_file(blob 是 bytes,绝不读成文本)
+    # 二进制原样落到容器 /root,经有界文件流读取，绝不读成文本
     assert puts["cid"] == cid and puts["name"] == "client.run" and puts["blob"] == blob
     # config_json 只存非密文件名引用;响应/get_channel 都不含二进制
     assert store.get_channel(cid)["config"]["package"] == "client.run"
@@ -229,6 +229,27 @@ def test_upload_puts_file_and_stores_ref_not_bytes(client, monkeypatch):
     assert "package" in body or body.get("ok") is True
     assert "\x7fELF" not in (up.text)        # 命门 #5:二进制绝不回传前端
     assert b"\x7fELF" not in up.content
+
+
+def test_upload_rejects_bad_input_and_does_not_repeat_partial_delivery(client, monkeypatch):
+    import main, manager, store
+    cid = _create(client, vpn_type='custom', login_method='byo')['id']
+    deliveries = []
+    monkeypatch.setattr(manager, 'put_file', lambda *args, **kwargs: deliveries.append(kwargs['size']))
+    monkeypatch.setattr(main, 'UPLOAD_MAX', 1024)
+    for name, content, status in [('client.run', b'', 400), ('client.run', b'x' * 1025, 413), ('../x', b'x', 400)]:
+        response = client.post(f'/api/channels/{cid}/upload', files={'file': (name, content)})
+        assert response.status_code == status
+    assert deliveries == []
+    main._upload_slot.acquire()
+    try:
+        assert client.post(f'/api/channels/{cid}/upload', files={'file': ('x.run', b'x')}).status_code == 429
+    finally: main._upload_slot.release()
+    def fail_record(*args, **kwargs): raise RuntimeError('synthetic db failure')
+    monkeypatch.setattr(store, 'set_config_field', fail_record)
+    response = client.post(f'/api/channels/{cid}/upload', files={'file': ('client.run', b'payload')})
+    assert response.status_code == 500 and response.json()['uploaded'] is True
+    assert deliveries == [7]
 
 
 def test_login_note_roundtrip_encrypted_not_in_channel_row(client):

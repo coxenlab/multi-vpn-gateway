@@ -186,7 +186,7 @@ def test_put_file_tars_blob_into_running_container(monkeypatch):
     class FakeContainer:
         def put_archive(self, path, data):
             captured["path"] = path
-            captured["data"] = data
+            captured["data"] = data.read()
             return True
 
     class FakeContainers:
@@ -204,7 +204,7 @@ def test_put_file_tars_blob_into_running_container(monkeypatch):
 
     # 取的是 vpn-{cid} 运行中容器
     assert captured["name"] == "vpn-byo1"
-    # put_archive 收到 (dest_dir, tar_bytes)
+    # put_archive 收到 (dest_dir, file stream)
     assert captured["path"] == "/root"
     # 收到的是合法 tar,解出来的成员名是相对文件名、内容逐字节等于原二进制(绝不读成文本)
     tf = tarfile.open(fileobj=_io.BytesIO(captured["data"]))
@@ -214,3 +214,23 @@ def test_put_file_tars_blob_into_running_container(monkeypatch):
     assert tf.extractfile(member).read() == blob
     # 返回容器内落点路径引用(供 config_json 存)
     assert ref == "/root/installer.run"
+
+
+def test_put_file_reads_in_chunks_and_closes_failed_archive(monkeypatch):
+    import manager, io, pytest
+    from types import SimpleNamespace
+    class BoundedFile(io.BytesIO):
+        def read(self, n=-1):
+            assert 0 <= n <= 65536
+            return super().read(n)
+    captured = []
+    class Container:
+        def put_archive(self, path, stream):
+            captured.append(stream)
+            while stream.read(65536): pass
+            return False
+    monkeypatch.setattr(manager, 'dc', SimpleNamespace(containers=SimpleNamespace(get=lambda name: Container())))
+    data = b'\xff' * (3 * 1024 * 1024)
+    with pytest.raises(RuntimeError):
+        manager.put_file('fixture', '/root', 'client.run', BoundedFile(data), len(data))
+    assert captured[0].closed

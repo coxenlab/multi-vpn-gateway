@@ -89,6 +89,7 @@ struct ChannelView: View {
     }
     private func uploadInstaller() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.message = "选择不超过 1 GiB 的客户端安装包，上传后在通道桌面中运行。"
         guard panel.runModal() == .OK, let file = panel.url else { return }
         Task { await model.uploadInstaller(file, channelID: channel.id) }
     }

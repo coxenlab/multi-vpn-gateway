@@ -90,16 +90,14 @@ actor LocalAPI {
         return data
     }
     func upload(_ path: String, file: URL) async throws {
-        let boundary = UUID().uuidString
-        let filename = file.lastPathComponent.replacingOccurrences(of: "\"", with: "_").replacingOccurrences(of: "\r", with: "_").replacingOccurrences(of: "\n", with: "_")
-        var bytes = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: application/octet-stream\r\n\r\n".utf8)
-        bytes.append(try Data(contentsOf: file)); bytes.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        let staged = try await InstallerUpload.prepare(file)
+        defer { staged.remove() }
         var request = URLRequest(url: url(path)); request.httpMethod = "POST"; request.timeoutInterval = 1200
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await session.upload(for: request, from: bytes)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            throw APIError(message: value?["error"] as? String ?? value?["detail"] as? String ?? "上传未完成，请刷新核对。")
+        request.setValue("multipart/form-data; boundary=\(staged.boundary)", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await session.upload(for: request, fromFile: staged.file)
+        let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), value?["ok"] as? Bool == true else {
+            throw APIError(message: value?["error"] as? String ?? value?["detail"] as? String ?? "上传结果未确认，请刷新核对。")
         }
     }
     func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T { try JSONDecoder().decode(type, from: await data(path)) }

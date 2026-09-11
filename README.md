@@ -154,7 +154,7 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | PATCH | `/api/channels/{cid}` | update channel fields; changed connection parameters recreate the target container, while metadata does not; desktop also accepts `routing_enabled` |
 | GET | `/api/channels/{cid}/login` | `{url}` (noVNC) — or `{login_mode:"headless"}` for headless adapters |
 | PUT / DELETE | `/api/channels/{cid}/login/viewers/{viewer}` | desktop only: renew / release a view acquired by `login?viewer=<UUID>`; response includes `viewer_id` and a 60-second lease; no-viewer clients retain legacy lifetime |
-| POST | `/api/channels/{cid}/upload` | multipart upload → `{ok, package}` (BYO installer streamed into the data volume via `put_archive`) |
+| POST | `/api/channels/{cid}/upload` | Nonempty multipart installer, ≤1 GiB → `{ok, package}`; disk-spooled and streamed to the data volume. Partial metadata failure returns `uploaded:true`; check the channel before retrying. |
 | GET | `/api/channels/{cid}/status` | **runs a SOCKS5 probe** → `{status, connected, latency_ms}` |
 | GET | `/api/channels/{cid}/health` | shared probe cache for automatic refresh, with `checked_at` / `stale`; stale results refresh in the background; manual checks still use `/status` |
 | POST | `/api/channels/{cid}/rules` | add routing rules (`patterns[]` or `pattern`, optional `kind: domain\|ip`; bare IPs auto-get `/32` or `/128`) → `{reload_status, domains, ips, added, rejected}` |

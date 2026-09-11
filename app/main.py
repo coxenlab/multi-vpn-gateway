@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import ipaddress
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 
 import requests
@@ -264,19 +265,41 @@ def login(cid):
     return {"url": url}
 
 
+UPLOAD_MAX = 1024 * 1024 * 1024
+_upload_slot = threading.Lock()
+
+
 @app.post("/api/channels/{cid}/upload")
-async def upload(cid, file: UploadFile = File(...)):
-    ch = store.get_channel(cid)
-    if not ch:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    blob = await file.read()              # bytes,绝不读成文本、绝不入 SQLite(命门 #5)
+def upload(cid, file: UploadFile = File(...)):
+    # FastAPI 已将大文件暂存到磁盘；同步端点在线程池中分块打包，不能阻塞事件循环。
+    if not _upload_slot.acquire(blocking=False):
+        return JSONResponse({"error": "已有安装包正在上传，请稍后重试"}, status_code=429)
     try:
-        manager.put_file(cid, "/root", file.filename, blob)
-    except Exception as e:
-        return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
-    # config_json 只存非密文件名引用(供前端展示已装包名);二进制留在数据卷
-    store.set_config_field(cid, "package", file.filename, secret=False)
-    return {"ok": True, "package": file.filename}
+        if not manager.valid_upload_filename(file.filename):
+            return JSONResponse({"error": "安装包文件名无效，请重命名后上传"}, status_code=400)
+        file.file.seek(0, os.SEEK_END)
+        size = file.file.tell(); file.file.seek(0)
+        if size == 0: return JSONResponse({"error": "安装包不能为空"}, status_code=400)
+        if size > UPLOAD_MAX: return JSONResponse({"error": "安装包超过 1 GiB"}, status_code=413)
+        with channel_state.slot(cid).operation:
+            ch = store.get_channel(cid)
+            if not ch: return JSONResponse({"error": "not found"}, status_code=404)
+            if ch['status'] not in ('running', 'logged_in') or stop_intents.pending(cid):
+                return JSONResponse({"error": "请先连接通道，再上传安装包"}, status_code=409)
+            with channel_state.mutation(cid):
+                try:
+                    manager.put_file(cid, "/root", file.filename, file.file, size=size)
+                except Exception as e:
+                    return JSONResponse({"error": f"安装包投递结果未确认，请在通道内核对后再决定是否重试：{e}"}, status_code=500)
+                try:
+                    store.set_config_field(cid, "package", file.filename, secret=False)
+                except Exception:
+                    return JSONResponse({"ok": False, "uploaded": True, "error": "安装包已投递，但文件名记录失败；请在通道内核对，无需重复上传"}, status_code=500)
+        return {"ok": True, "package": file.filename}
+    except RuntimeError:
+        return JSONResponse({"error": "服务正在退出"}, status_code=503)
+    finally:
+        _upload_slot.release()
 
 
 NOTE_MAX = 20000   # 登录备注长度上限(字符)

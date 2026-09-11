@@ -36,6 +36,7 @@ pub mod stop_intents;
 pub mod upgrade;
 pub mod image_archive;
 pub mod image_import;
+pub mod installer_upload;
 
 use std::sync::Arc;
 

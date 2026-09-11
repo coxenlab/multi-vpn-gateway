@@ -107,12 +107,14 @@
     renewLoginViewer: (id, viewer) => req("PUT", `/api/channels/${id}/login/viewers/${encodeURIComponent(viewer)}`),
     releaseLoginViewer: (id, viewer) => req("DELETE", `/api/channels/${id}/login/viewers/${encodeURIComponent(viewer)}`, undefined, { keepalive: true }),
     upload: async (id, file) => {
+      if (!file || !file.size || file.size > 1024 * 1024 * 1024) throw new Error("请选择非空且不超过 1 GiB 的安装包");
       const fd = new FormData();
       fd.append("file", file, file.name);
       const r = await fetch(`/api/channels/${id}/upload`, { method: "POST", body: fd });
       if (!r.ok) throw apiError(r.status, await r.text().catch(() => ""), r.headers.get("content-type"));
-      const ct = r.headers.get("content-type") || "";
-      return ct.includes("application/json") ? r.json() : r.text();
+      const result = await r.json().catch(() => null);
+      if (result?.ok !== true) throw new Error(result?.error || "上传结果未确认，请在通道内核对");
+      return result;
     },
     status: (id) => req("GET", `/api/channels/${id}/status`, undefined, { timeout: 45000 }),
     channelHealth: async (id) => {

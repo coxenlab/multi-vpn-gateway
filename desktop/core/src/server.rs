@@ -34,7 +34,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/channels/:cid/logs", get(api::logs))
         .route("/api/channels/:cid/login", get(api::login))
         .route("/api/channels/:cid/login/viewers/:viewer", axum::routing::put(api::renew_login_viewer).delete(api::release_login_viewer))
-        .route("/api/channels/:cid/upload", axum::routing::post(api::upload))
+        .route("/api/channels/:cid/upload", axum::routing::post(api::upload)
+            .layer(axum::extract::DefaultBodyLimit::max(crate::installer_upload::BODY_LIMIT)))
         .route("/api/channels/:cid/note", get(api::note_get).put(api::note_put))
         .route("/api/channels/:cid/status", get(api::status))
         .route("/api/channels/:cid/health", get(api::channel_health))
@@ -137,6 +138,74 @@ mod tests {
             socket.to_str().unwrap(), 5, bollard::API_DEFAULT_VERSION).unwrap();
         state.set_docker(Some(docker));
         state
+    }
+
+    #[tokio::test]
+    async fn installer_larger_than_default_limit_streams_to_docker_and_reports_partial_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let docker = Router::new().fallback(axum::routing::put(move |request: Request<Body>| {
+            let seen = seen.clone();
+            async move {
+                assert!(request.uri().path().ends_with("/containers/vpn-upload/archive"));
+                assert!(request.uri().query().unwrap_or_default().split('&').any(|part| part == "path=%2Froot"));
+                let body = axum::body::to_bytes(request.into_body(), 4 * 1024 * 1024).await.unwrap();
+                let mut archive = tar::Archive::new(std::io::Cursor::new(body));
+                let mut entries = archive.entries().unwrap();
+                let mut item = entries.next().unwrap().unwrap();
+                assert_eq!(item.path().unwrap().to_str(), Some("客户端.run"));
+                assert_eq!(item.size(), 3 * 1024 * 1024);
+                assert_eq!(item.header().mode().unwrap(), 0o755);
+                let mut chunk = [0u8; 65536]; let mut size = 0;
+                loop { let n = std::io::Read::read(&mut item, &mut chunk).unwrap(); if n == 0 { break; } assert!(chunk[..n].iter().all(|b| *b == 255)); size += n; }
+                assert_eq!(size, 3 * 1024 * 1024); assert!(entries.next().is_none());
+                if seen.fetch_add(1, Ordering::SeqCst) == 2 { StatusCode::INTERNAL_SERVER_ERROR } else { StatusCode::OK }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, docker).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,status,container_id) VALUES('upload','fixture','running','original')", []).unwrap();
+        let state = state_with_db(dir.path());
+        state.set_docker(Some(bollard::Docker::connect_with_http(&format!("http://{address}"),5,bollard::API_DEFAULT_VERSION).unwrap()));
+        let app = build_router(state);
+        let request = || {
+            let mut body = "--test\r\nContent-Disposition: form-data; name=\"file\"; filename=\"客户端.run\"\r\n\r\n".as_bytes().to_vec();
+            body.extend(vec![255; 3 * 1024 * 1024]); body.extend(b"\r\n--test--\r\n");
+            Request::post("/api/channels/upload/upload").header("Content-Type","multipart/form-data; boundary=test").body(Body::from(body)).unwrap()
+        };
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let key = crate::store::master_key(dir.path()).unwrap();
+        assert_eq!(crate::store::get_config(&db,&key,"upload").unwrap()["package"],"客户端.run");
+        conn.execute_batch("CREATE TRIGGER reject_package BEFORE UPDATE ON channels BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::INTERNAL_SERVER_ERROR);
+        let value: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(),4096).await.unwrap()).unwrap();
+        assert_eq!(value["uploaded"],true); assert_eq!(value["ok"],false);
+        conn.execute_batch("DROP TRIGGER reject_package;").unwrap();
+        crate::store::set_config_field(&db,&key,"upload","package","previous.run",false).unwrap();
+        let response = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(crate::store::get_config(&db,&key,"upload").unwrap()["package"],"previous.run");
+        // The body arrives after the original instance was captured. Replacing it during
+        // transfer must never send the installer to the newly selected container.
+        let (parts, body) = request().into_parts();
+        let db_for_change = db.clone();
+        let changed = Body::from_stream(futures_util::stream::once(async move {
+            rusqlite::Connection::open(db_for_change).unwrap().execute("UPDATE channels SET container_id='changed' WHERE id='upload'", []).unwrap();
+            axum::body::to_bytes(body, 4 * 1024 * 1024).await
+        }));
+        assert_eq!(app.clone().oneshot(Request::from_parts(parts,changed)).await.unwrap().status(),StatusCode::CONFLICT);
+        conn.execute("UPDATE channels SET status='stopped' WHERE id='upload'", []).unwrap();
+        assert_eq!(app.oneshot(request()).await.unwrap().status(),StatusCode::CONFLICT);
+        assert_eq!(calls.load(Ordering::SeqCst),3);
+        assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".tmp")));
+        server.abort(); let _ = server.await;
     }
 
     #[tokio::test]

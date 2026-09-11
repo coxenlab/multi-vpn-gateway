@@ -135,6 +135,8 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     /* ── 创建:校验 → 环境检查(静默,只在失败时露出) → 建容器 → 进登录 ── */
     function validate() {
       if (!model.name) return "请填写客户名称";
+      const pkg = model.fields.package;
+      if (pkg instanceof File && (!pkg.size || pkg.size > 1024 * 1024 * 1024)) return "请选择非空且不超过 1 GiB 的安装包";
       const serverInp = (spec().inputs || []).find(i => i.key === "server");
       if (serverInp && serverInp.type === "url") {
         const sv = model.fields.server || "";
@@ -164,15 +166,18 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     $("#pf-recheck").addEventListener("click", () => runCreate());
     $("#pf-skip").addEventListener("click", () => { pfSkipped = true; runCreate(); });
 
-    let creating = false;
+    let creating = false, uploadedPackage = null;
     async function runCreate() {
       if (creating) return;
+      const pkgFile = (model.fields.package instanceof File) ? model.fields.package : null;
+      if (createdId && uploadedPackage && uploadedPackage === pkgFile) return enterLogin();
       const err = validate();
       if (err) return toast(err, false);
       creating = true;
       const btn = $("#create-btn");
       btn.disabled = true; btn.replaceChildren(fb.spinner("正在创建…"));
       $("#create-err").innerHTML = "";
+      let progress = null;
       try {
         if (!createdId) {
           btn.replaceChildren(fb.spinner("准备运行环境…"));
@@ -182,10 +187,10 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
           toast("环境检查未通过，请先修复", { variant: "danger" });
           return;
         }
-        const pkgFile = (model.fields.package instanceof File) ? model.fields.package : null;
         const steps = [{ key: "create", label: "创建容器" }];
         if (pkgFile) steps.push({ key: "upload", label: "上传安装包" });
         const sp = fb.stepper($("#create-steps"), steps);
+        progress = sp;
         if (!createdId) {   // 重试 upload 失败时跳过 create,避免重复建容器
           sp.setStep("create", "active", "正在启动…");
           const cfg = {};
@@ -209,11 +214,19 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         if (pkgFile) {
           sp.setStep("upload", "active", "上传 " + pkgFile.name + " …");
           await api.upload(createdId, pkgFile);
+          uploadedPackage = pkgFile;
           sp.setStep("upload", "done", "已上传");
         }
         $("#create-steps").innerHTML = "";
         enterLogin();
       } catch (e) {
+        if (e.body?.uploaded === true) {
+          uploadedPackage = pkgFile;
+          progress?.setStep("upload", "done", "已投递，文件名记录未完成");
+          fb.errorBanner("#create-err", { fromError: e, retryLabel: "继续登录", onRetry: enterLogin });
+          return;
+        }
+        progress?.setStep(createdId && pkgFile ? "upload" : "create", "error", "操作未完成");
         fb.errorBanner("#create-err", { fromError: e, retryLabel: "重试", onRetry: runCreate });
         // 起容器失败:把环境检查面板露出来帮定位
         $("#pf-wrap").style.display = "";
@@ -221,7 +234,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         pfPanel.run();
       } finally {
         creating = false;
-        btn.disabled = false; btn.textContent = createdId ? "重试" : "创建通道";
+        btn.disabled = false; btn.textContent = uploadedPackage === pkgFile && pkgFile ? "继续登录" : createdId ? "重试" : "创建通道";
       }
     }
     $("#create-btn").addEventListener("click", runCreate);

@@ -96,7 +96,7 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 5. **凭据安全**:密码 Fernet 加密落库(`store.py`),`_row()` 永不把 `password_enc` 与任何 secret 字段回传前端;`master.key` 权限 0600,存在数据卷里。
    - **oss**:`config_json` 列承载 per-adapter 参数,`secret:true` 字段(密码 / `.ovpn` / wg `.conf` 含私钥)字段级 Fernet 加密;凭据 / 私钥经 `manager.oss_connect` 的 `exec_run(stdin=True, socket=True)` 注入,**绝不进命令行**(`ps` 不可见)。
-   - **byo**:上传安装器经 `POST /api/channels/{cid}/upload`(multipart)→ `manager.put_file` in-memory tar → `container.put_archive` 落数据卷,**绝不进 SQLite、绝不回传前端**;`config_json` 只存非密文件名引用(供前端展示已装包名)。
+   - **byo**:上传安装器经 `POST /api/channels/{cid}/upload`(multipart)，非空且不超过 1 GiB。Python 使用框架暂存文件、匿名 tar 和文件流；Rust 匿名暂存、tar 打包后按 64 KiB 传给 Docker；原生端同样分块暂存 multipart 后通过文件上传，避免整包占内存。二进制只投递到数据卷，**绝不进 SQLite、绝不回传前端**；`config_json` 只存非密文件名。拒绝路径文件名、停止状态与并发上传；投递成功但文件名保存失败时返回 `uploaded:true`，界面允许继续安装，不能暗示需要重复上传。上传期间可能暂用约文件大小两倍的服务端磁盘空间。
 
 6. **容器细节**:SOCKS5(1080)只在 Docker 内网暴露。桌面栈 noVNC(8080)不 publish，由 app SSH 转发提供 127.0.0.1 随机高位入口；Web 栈仍用 Docker loopback 映射。aTrust 容器需 `sysctl net.ipv4.conf.default.route_localnet=1`;`DISABLE_PKG_VERSION_XML=1` 两种 hagb 类型均需。EasyConnect 镜像 tag 由 `dockerhub.py` 实时拉取(非硬编码),`ec_ver` 存用户选定的 tag。
 

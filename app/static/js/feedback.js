@@ -120,6 +120,10 @@ import "./app.js";
     const detail = e.raw || e.message || (reason || "未知错误");
 
     const has = (kw) => rawLow.includes(kw);
+    if (e.body && e.body.uploaded === true) {
+      return F("安装包已投递，记录未完成", reason || "文件名记录未能保存。",
+        "可以继续登录，在通道桌面中核对并安装，无需重复上传。", detail);
+    }
     if (e.body && e.body.saved === true) {
       return F("设置已保存，规则同步尚未完成", "当前运行规则可能仍是上次配置。",
         "到分流规则页重试同步，无需重复添加。", detail);
