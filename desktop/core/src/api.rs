@@ -52,10 +52,8 @@ pub async fn add_rules(
         Ok(None) => return err404("channel not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
     };
-    let docker = match st.docker() {
-        Some(d) => d,
-        None => return err503("docker unavailable"),
-    };
+    let docker = st.docker();
+    if docker.is_none() && !st.cfg.managed_vm { return err503("docker unavailable"); }
     let patterns: Vec<String> = b
         .get("patterns")
         .and_then(|v| v.as_array())
@@ -88,7 +86,7 @@ pub async fn add_rules(
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("add_rule: {e}"));
         }
     }
-    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    let code = manager::rebuild(&st.cfg, docker.as_ref(), &db).await;
     if !reload_ok(&code) {
         let mut detail = audit_base();
         detail["result"] = json!("failed");
@@ -116,13 +114,13 @@ pub async fn add_rules(
         crate::events::audit("rules_add", "分流规则已绑定", detail);
     }
     let (domains, ips) = crate::routes::split_rules(rs);
-    Json(json!({
+    config_reply(&db, &code, json!({
         "reload_status": code,
         "domains": domains,
         "ips": ips,
         "added": plan.added,
         "rejected": plan.rejected,
-    })).into_response()
+    }))
 }
 
 pub async fn del_rule(State(st): State<AppState>, Path((cid, rid)): Path<(String, i64)>) -> axum::response::Response {
@@ -132,10 +130,8 @@ pub async fn del_rule(State(st): State<AppState>, Path((cid, rid)): Path<(String
         Ok(None) => return err404("channel not found"),
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("get_channel: {e}")),
     };
-    let docker = match st.docker() {
-        Some(d) => d,
-        None => return err503("docker unavailable"),
-    };
+    let docker = st.docker();
+    if docker.is_none() && !st.cfg.managed_vm { return err503("docker unavailable"); }
     // 改前快照必须在删之前取——删完就再也读不回「删掉的是哪条」了。
     let before = match store::get_rule(&db, rid) {
         Ok(Some(rule)) => rule_snapshot(&rule),
@@ -158,7 +154,7 @@ pub async fn del_rule(State(st): State<AppState>, Path((cid, rid)): Path<(String
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("del_rule: {e}"));
         }
     }
-    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    let code = manager::rebuild(&st.cfg, docker.as_ref(), &db).await;
     let mut detail = audit_base();
     detail["reload_status"] = json!(code.as_str());
     if !reload_ok(&code) {
@@ -169,7 +165,7 @@ pub async fn del_rule(State(st): State<AppState>, Path((cid, rid)): Path<(String
     }
     detail["result"] = json!("ok");
     crate::events::audit("rule_delete", "分流规则已删除", detail);
-    Json(json!({ "ok": true, "reload_status": code })).into_response()
+    config_reply(&db, &code, json!({ "ok": true, "reload_status": code }))
 }
 
 pub async fn patch_rule(
@@ -201,14 +197,8 @@ pub async fn patch_rule(
     if enabled.is_none() && note.is_none() && locked.is_none() {
         return err_detail(StatusCode::BAD_REQUEST, "one of enabled, note or locked is required");
     }
-    let docker = if enabled.is_some() {
-        match st.docker() {
-            Some(d) => Some(d),
-            None => return err503("docker unavailable"),
-        }
-    } else {
-        None
-    };
+    let docker = st.docker();
+    if enabled.is_some() && docker.is_none() && !st.cfg.managed_vm { return err503("docker unavailable"); }
     let before = match store::get_rule(&db, rid) {
         Ok(Some(rule)) => rule_snapshot(&rule),
         _ => Value::Null,
@@ -236,8 +226,8 @@ pub async fn patch_rule(
         _ => Value::Null,
     };
     let mut response = json!({ "ok": true });
-    if let Some(docker) = docker.as_ref() {
-        let code = manager::rebuild(&st.cfg, Some(docker), &db).await;
+    if enabled.is_some() {
+        let code = manager::rebuild(&st.cfg, docker.as_ref(), &db).await;
         if !reload_ok(&code) {
             let mut detail = audit_base(after);
             detail["result"] = json!("failed");
@@ -254,7 +244,10 @@ pub async fn patch_rule(
     if let Ok(Some(rule)) = store::get_rule(&db, rid) {
         response["rule"] = json!(rule);
     }
-    Json(response).into_response()
+    if enabled.is_some() {
+        let code = response["reload_status"].as_str().unwrap_or_default().to_string();
+        config_reply(&db, &code, response)
+    } else { Json(response).into_response() }
 }
 
 pub async fn patch_rules(
@@ -277,10 +270,8 @@ pub async fn patch_rules(
         }
     }
     let ids: Vec<i64> = ids.into_iter().collect();
-    let docker = match st.docker() {
-        Some(d) => d,
-        None => return err503("docker unavailable"),
-    };
+    let docker = st.docker();
+    if docker.is_none() && !st.cfg.managed_vm { return err503("docker unavailable"); }
     let db = st.cfg.db_path();
     let before = store::rules_by_ids(&db, &ids).unwrap_or_default();
     let audit_base = |after: Value| {
@@ -301,7 +292,7 @@ pub async fn patch_rules(
         }
     };
     let after = rule_snapshots(&store::rules_by_ids(&db, &ids).unwrap_or_default());
-    let code = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+    let code = manager::rebuild(&st.cfg, docker.as_ref(), &db).await;
     let mut detail = audit_base(after);
     detail["updated"] = json!(result.updated);
     detail["skipped_locked"] = json!(result.skipped_locked);
@@ -314,12 +305,12 @@ pub async fn patch_rules(
     }
     detail["result"] = json!("ok");
     crate::events::audit("rules_batch_update", "分流规则已批量启停", detail);
-    Json(json!({
+    config_reply(&db, &code, json!({
         "ok": true,
         "updated": result.updated,
         "skipped_locked": result.skipped_locked,
         "reload_status": code,
-    })).into_response()
+    }))
 }
 
 // ── 通道创建/编辑(命门 #5:oss 凭据经 replacement→oss_connect 注入) ──────
@@ -414,8 +405,7 @@ pub(crate) fn err503(msg: &str) -> axum::response::Response {
 pub(crate) fn err_detail(status: StatusCode, msg: &str) -> axum::response::Response {
     (status, Json(json!({ "detail": msg }))).into_response()
 }
-/// rebuild() 回的 reload_status:成功只能是完整的 2xx HTTP 状态码串,失败是错误串。
-/// create/update/start/delete 仍只记录失败；规则变更端点据此返回非 2xx。
+/// rebuild 的 2xx 表示设置已接受；202 为休眠期间保存，实际应用另看 journal。
 fn reload_ok(status: &str) -> bool {
     status
         .parse::<u16>()
@@ -428,11 +418,14 @@ pub(crate) fn channel_json(db: &std::path::Path, cid: &str) -> axum::response::R
         Ok(Some(c)) => {
             let mut value = serde_json::to_value(&c).unwrap();
             value["config_application"] = config_application(db);
+            let deferred = value["config_application"]["last_error"] == "runtime_idle";
+            value["saved"] = json!(true);
+            value["deferred"] = json!(deferred);
             match crate::replacement_store::public_status(db, cid) {
                 Ok(pending) => value["replacement"] = json!(pending),
                 Err(e) => return err500(&format!("replacement status: {e}")),
             }
-            Json(value).into_response()
+            (if deferred { StatusCode::ACCEPTED } else { StatusCode::OK }, Json(value)).into_response()
         }
         _ => err404("not found"),
     }
@@ -447,6 +440,17 @@ fn config_apply_failure(db: &std::path::Path, code: &str) -> axum::response::Res
         "reload_status":code,"config_application":config_application(db)}))).into_response()
 }
 
+fn config_reply(db: &std::path::Path, code: &str, mut value: Value) -> axum::response::Response {
+    let application = config_application(db);
+    let deferred = code == crate::config_apply::DEFERRED;
+    value["saved"] = json!(true);
+    value["deferred"] = json!(deferred);
+    value["rules_applied"] = json!(!deferred && application["pending"] == false);
+    value["config_application"] = application;
+    if deferred { value["message"] = json!("已保存，连接后生效"); }
+    (if deferred { StatusCode::ACCEPTED } else { StatusCode::OK }, Json(value)).into_response()
+}
+
 fn operation_done(db: &std::path::Path) -> axum::response::Response {
     let application = config_application(db);
     Json(json!({"ok":true,"rules_applied":application["pending"] == false,"config_application":application})).into_response()
@@ -454,6 +458,7 @@ fn operation_done(db: &std::path::Path) -> axum::response::Response {
 
 pub async fn config_retry(State(st): State<AppState>) -> axum::response::Response {
     detached("config_retry", async move {
+        if let Err(error) = crate::runtime::ensure(&st).await { return err503(&error.to_string()); }
         let _operation = match st.lifecycle.access("__config_apply").await {
             Ok(guard) => guard,
             Err(e) => return err503(&e.to_string()),
@@ -1183,8 +1188,8 @@ pub async fn routing_set(
         return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("set routing flag: {e}"));
     }
     let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &st.cfg.db_path()).await;
-    let applied = reload_ok(&reload);
-    if !applied {
+    let applied = reload_ok(&reload) && reload != crate::config_apply::DEFERRED;
+    if !reload_ok(&reload) {
         if let Err(error) = store::set_routing_off(&st.cfg.data_dir, previous) {
             crate::events::audit_failed("routing_toggle", "全局分流切换失败且标记回滚失败", json!({
                 "target_kind": "system", "target_name": "routing",
@@ -1206,9 +1211,9 @@ pub async fn routing_set(
     crate::events::audit("routing_toggle", "全局分流状态已切换", json!({
         "target_kind": "system", "target_name": "routing",
         "before": { "off": previous }, "after": { "off": off },
-        "applied": true, "reload_status": reload.as_str(), "result": "ok"
+        "applied": applied, "reload_status": reload.as_str(), "result": "ok"
     }));
-    Json(json!({ "off": off, "applied": true, "reload_status": reload })).into_response()
+    config_reply(&st.cfg.db_path(), &reload, json!({ "off": off, "applied": applied, "reload_status": reload }))
 }
 
 pub async fn self_heal_set(
@@ -1900,13 +1905,12 @@ pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> 
         "imported_count": imported.len(), "skipped": skipped.clone(),
         "reload_status": reload.as_str(), "result": "ok"
     }));
-    Json(json!({
+    config_reply(&db, &reload, json!({
         "ok": true,
         "reload_status": reload,
         "imported": imported,
         "skipped": skipped,
     }))
-    .into_response()
 }
 
 #[cfg(test)]

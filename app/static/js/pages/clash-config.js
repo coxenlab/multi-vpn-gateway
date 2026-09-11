@@ -424,6 +424,7 @@ import { setupUsernetStatus } from "../usernet-status.js";
       try {
         const r = await api.importConfig(doc);
         const parts = [`已导入 ${r.imported.length} 条通道`];
+        if (r.deferred) parts.push("已保存，连接后生效");
         if (r.skipped.length) parts.push(`跳过 ${r.skipped.length} 条：` + r.skipped.map(s => `${s.name}（${s.reason}）`).join("、"));
         toast(parts.join("，"), { variant: r.imported.length ? "success" : "info" });
       } catch (e) {

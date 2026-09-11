@@ -111,7 +111,7 @@ fn record_readback(db: &Path, ticket: &Ticket, error: Option<&str>) -> Result<()
 
 pub fn failed(db: &Path, ticket: &Ticket, code: &str) -> Result<()> {
     // 只持久化原因码，避免控制器错误正文中的凭据流入公开状态。
-    ensure!(matches!(code, "write_failed" | "delivery_failed" | "reload_failed" | "readback_failed" | "readback_mismatch" | "dns_flush_failed"), "配置错误码无效");
+    ensure!(matches!(code, "write_failed" | "delivery_failed" | "reload_failed" | "readback_failed" | "readback_mismatch" | "dns_flush_failed" | "runtime_idle"), "配置错误码无效");
     let conn = Connection::open(db)?;
     let changed = conn.execute("UPDATE config_apply_state SET last_error=?1 WHERE id=1 \
         AND desired_revision=?2 AND desired_routing_off=?3 AND desired_generation=?4 AND desired_hash=?5 AND attempt=?6",

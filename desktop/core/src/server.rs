@@ -137,6 +137,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dormant_config_writes_persist_without_starting_or_claiming_application() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,status,routing_enabled) VALUES('c1','offline fixture','stopped',1)", []).unwrap();
+        let rid = crate::store::add_rule(&db, "c1", "domain", "old.example").unwrap();
+        let mut state = state_with_db(dir.path());
+        Arc::make_mut(&mut state.cfg).managed_vm = true;
+        let runtime = state.lifecycle.runtime().clone();
+        let app = build_router(state);
+        let initial = crate::config_apply_store::status(&db, false).unwrap();
+        for (method, uri, body) in [
+            ("POST", "/api/channels/c1/rules".to_string(), serde_json::json!({"patterns":["new.example"]})),
+            ("PATCH", format!("/api/channels/c1/rules/{rid}"), serde_json::json!({"enabled":false,"note":"offline note"})),
+            ("PATCH", "/api/rules".to_string(), serde_json::json!({"ids":[rid],"enabled":true})),
+            ("PATCH", "/api/channels/c1".to_string(), serde_json::json!({"routing_enabled":false})),
+            ("POST", "/api/routing".to_string(), serde_json::json!({"off":true})),
+            ("POST", "/api/routing".to_string(), serde_json::json!({"off":false})),
+            ("DELETE", format!("/api/channels/c1/rules/{rid}"), serde_json::json!({})),
+        ] {
+            let response = app.clone().oneshot(Request::builder().method(method).uri(&uri)
+                .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED, "{method} {uri}");
+            let value: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+            assert_eq!(value["saved"], true); assert_eq!(value["deferred"], true);
+            assert_eq!(value["config_application"]["pending"], true);
+            assert_eq!(value["config_application"]["last_error"], "runtime_idle");
+            if uri == "/api/routing" { assert_eq!(value["applied"], false); assert_eq!(crate::store::routing_off(dir.path()), body["off"].as_bool().unwrap()); }
+            assert_eq!(runtime.snapshot().phase, crate::runtime_lifecycle::Phase::Dormant);
+            assert_eq!(runtime.snapshot().start_attempt, 0);
+        }
+        assert!(!crate::store::get_channel(&db, "c1").unwrap().unwrap().routing_enabled);
+        let rules = crate::store::list_rules(&db, "c1").unwrap();
+        assert_eq!(rules.len(), 1); assert_eq!(rules[0].pattern, "new.example");
+        let pending = crate::config_apply_store::status(&db, false).unwrap();
+        assert!(pending.pending && pending.verified_at.is_none());
+        assert_eq!(pending.applied_generation, initial.applied_generation);
+        assert_eq!(pending.applied_hash, initial.applied_hash);
+    }
+
+    #[tokio::test]
     async fn system_route_shape() {
         let dir = tempfile::tempdir().unwrap();
         crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();

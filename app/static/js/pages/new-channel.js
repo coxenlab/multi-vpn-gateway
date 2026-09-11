@@ -331,7 +331,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         $("#f-domain").value = "";
         const all = [...r.domains.map(d => ({ pattern: d.pattern, ip: false })), ...r.ips.map(d => ({ pattern: d.pattern, ip: true }))];
         $("#bound-list").innerHTML = all.map(b => `<span class="tag mono${b.ip ? " ip" : ""}">${fb.esc(b.pattern)}</span>`).join("");
-        if (r.added.domain || r.added.ip) toast(`已绑定 ${r.added.domain + r.added.ip} 条，立即生效`, { variant: "success" });
+        if (r.added.domain || r.added.ip) toast(`已绑定 ${r.added.domain + r.added.ip} 条${r.deferred ? "，连接后生效" : ""}`, { variant: r.deferred ? "info" : "success" });
         else if (r.rejected.length) toast("无法识别：" + r.rejected.join(", "), { variant: "danger" });
         else toast("这些规则已存在", { variant: "info" });
       } catch (e) {

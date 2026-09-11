@@ -231,6 +231,7 @@ import { loadWithSystem } from "../page-data.js";
       panel.style.display = state ? "" : "none";
       if (!state) return;
       const offline = sys.mihomo_status !== "running";
+      const dormant = sys.runtime && sys.runtime.phase === "dormant";
       const reasons = {
         unconfirmed: "同步尚未完成。",
         reload_failed: "重载响应未确认。",
@@ -240,14 +241,15 @@ import { loadWithSystem } from "../page-data.js";
         write_failed: "运行规则已读回，启动配置保存失败。",
         delivery_failed: "运行规则已读回，启动配置投递尚未确认。",
         state_unavailable: "暂时无法读取同步记录。",
+        runtime_idle: "连接运行环境后会同步这些设置。",
       };
-      const title = offline ? "分流内核离线，规则同步待确认" : state.pending ? "设置已保存，规则同步尚未完成" : "规则已确认同步";
-      const checked = state.verified_at ? `最近核对 ${new Date(state.verified_at * 1000).toLocaleTimeString("zh-CN", { hour12: false })}。` : "尚无成功核对记录。";
+      const title = dormant ? (state.pending ? "设置已保存，连接后生效" : "运行环境按需启用") : offline ? "分流内核离线，规则同步待确认" : state.pending ? "设置已保存，规则同步尚未完成" : "规则已确认同步";
+      const checked = state.verified_at ? `上次确认同步 ${new Date(state.verified_at * 1000).toLocaleTimeString("zh-CN", { hour12: false })}。` : "尚无成功同步记录。";
       $("#config-application-title").textContent = title;
       $("#config-application-detail").textContent = `${reasons[state.last_error] || ""}${checked}本页数量按已保存设置计算。`;
-      panel.classList.toggle("warn", !!state.pending || offline);
-      $("#config-retry").disabled = busy;
-      $("#config-retry").textContent = busy ? "处理中…" : state.pending ? "重试同步" : "重新核对";
+      panel.classList.toggle("warn", !dormant && (!!state.pending || offline));
+      $("#config-retry").disabled = busy || !!(sys.runtime && ["starting", "releasing"].includes(sys.runtime.phase));
+      $("#config-retry").textContent = busy ? "处理中…" : dormant ? "连接并同步" : state.pending ? "重试同步" : "重新核对";
     }
 
     function paint() {
@@ -439,8 +441,8 @@ import { loadWithSystem } from "../page-data.js";
       btn.disabled = true;
       const enabled = btn.dataset.enabled !== "1";
       try {
-        await api.toggleRule(btn.dataset.cid, Number(btn.dataset.ruleToggle), enabled);
-        toast(`规则已${enabled ? "启用" : "停用"}`, { variant: "success" });
+        const result = await api.toggleRule(btn.dataset.cid, Number(btn.dataset.ruleToggle), enabled);
+        toast(result.deferred ? "已保存，连接后生效" : `规则已${enabled ? "启用" : "停用"}`, { variant: result.deferred ? "info" : "success" });
         await load(false);
       } catch (err) {
         const f = fb.friendlyError(err);
@@ -463,7 +465,7 @@ import { loadWithSystem } from "../page-data.js";
         const result = await api.toggleRules(ids, enabled);
         selectedRules.clear();
         const skipped = Number(result.skipped_locked || 0);
-        toast(`已${enabled ? "启用" : "停用"} ${result.updated || 0} 条规则${skipped ? `，${skipped} 条已跳过（锁定）` : ""}`, { variant: "success" });
+        toast(`已${enabled ? "启用" : "停用"} ${result.updated || 0} 条规则${skipped ? `，${skipped} 条已跳过（锁定）` : ""}${result.deferred ? "，连接后生效" : ""}`, { variant: result.deferred ? "info" : "success" });
         await load(false);
       } catch (err) {
         const f = fb.friendlyError(err);
@@ -490,7 +492,7 @@ import { loadWithSystem } from "../page-data.js";
         const result = await api.setRouting(turningOff);
         sys.routing_off = !!result.off;
         await load(false);
-        toast(turningOff ? "分流已关闭，流量全部直连" : "分流已恢复", { variant: "success" });
+        toast(result.deferred ? "已保存，连接后生效" : turningOff ? "分流已关闭，流量全部直连" : "分流已恢复", { variant: result.deferred ? "info" : "success" });
       } catch (err) {
         const f = fb.friendlyError(err);
         toast("切换分流总开关失败：" + f.title, { variant: "danger" });

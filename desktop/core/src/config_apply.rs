@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use crate::{config::Config, config_apply_store as journal};
 
 const PREFIX: &str = "__vpnmgr_cfg_";
+/// 设置已接受，等待用户连接；不能解释为内核已应用。
+pub const DEFERRED: &str = "202";
 
 /// 与 Python 的有类型/长度编码一致；浮点用 IEEE bytes，避免 JSON 指数格式差异。
 pub fn fingerprint(value: &Yaml) -> Result<String> {
@@ -162,6 +164,10 @@ pub async fn apply(cfg: &Config, docker: Option<&bollard::Docker>, db: &Path) ->
         if let Ok(ticket) = journal::prepare(db, snapshot.revision, off, &digest) { prepared = Some((config, ticket)); break; }
     }
     let (config, ticket) = prepared.ok_or_else(|| anyhow!("配置持续变化，已保存但尚未同步，请重试"))?;
+    if cfg.managed_vm && docker.is_none() {
+        journal::failed(db, &ticket, "runtime_idle")?;
+        return Ok(DEFERRED.into());
+    }
     let stamped = stamp(&config, &ticket)?;
     let yaml = serde_yaml::to_string(&stamped)?;
     let mut verified = readback(&config, &ticket, cfg).await.unwrap_or(false);

@@ -317,8 +317,8 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       const btn = $("#e-save");
       btn.disabled = true; btn.textContent = connChanged ? "保存并重新连接…" : "保存中…";
       try {
-        await api.update(ch.id, body);
-        toast(connChanged ? "已保存，正在重新连接" : "已保存", { variant: "success" });
+        const result = await api.update(ch.id, body);
+        toast(result.deferred ? "已保存，连接后生效" : connChanged ? "已保存，正在重新连接" : "已保存", { variant: result.deferred ? "info" : "success" });
         location.reload();
       } catch (err) {
         toast("保存失败：" + fb.friendlyError(err).title, { variant: "danger", action: { label: "重试", onClick: submitEdit } });
@@ -350,9 +350,9 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       const next = !routingOn();
       btn.disabled = true;
       try {
-        await api.update(ch.id, { routing_enabled: next });
+        const result = await api.update(ch.id, { routing_enabled: next });
         await boot();
-        toast(next ? "已恢复分流" : "已暂停分流，连接保持", { variant: "success" });
+        toast(result.deferred ? "已保存，连接后生效" : next ? "已恢复分流" : "已暂停分流，连接保持", { variant: result.deferred ? "info" : "success" });
       } catch (err) {
         toast("切换失败：" + fb.friendlyError(err).title, { variant: "danger" });
         syncStatus();
@@ -394,10 +394,10 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         if (!d) return;
         if (d.locked && !await fb.confirm(`「${d.pattern}」已锁定。仍要${d.enabled ? "停用" : "启用"}吗？`, { title: "修改锁定规则", confirmLabel: d.enabled ? "仍然停用" : "仍然启用" })) return;
         try {
-          await api.toggleRule(ch.id, d.id, !d.enabled);
+          const result = await api.toggleRule(ch.id, d.id, !d.enabled);
           d.enabled = d.enabled ? 0 : 1;
           sw.classList.toggle("on", !!d.enabled); sw.setAttribute("aria-checked", String(!!d.enabled));
-          toast(`${d.pattern} 已${d.enabled ? "启用" : "停用"}`, { variant: "success" });
+          toast(result.deferred ? "已保存，连接后生效" : `${d.pattern} 已${d.enabled ? "启用" : "停用"}`, { variant: result.deferred ? "info" : "success" });
         } catch (e) {
           toast("操作失败：" + fb.friendlyError(e).title, { variant: "danger", action: { label: "重试", onClick: onToggle } });
         }
@@ -408,10 +408,10 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         if (d.locked && !await fb.confirm(`「${d.pattern}」已锁定。仍要删除吗？`, { title: "删除锁定规则", confirmLabel: "仍然删除", danger: true })) return;
         b.disabled = true;
         try {
-          await api.delRule(ch.id, d.id);
+          const result = await api.delRule(ch.id, d.id);
           if (d.kind === "ip") ch.ips = ch.ips.filter(x => x.id !== d.id); else ch.domains = ch.domains.filter(x => x.id !== d.id);
           renderRuleTable();
-          toast(`已删除 ${d.pattern}`, { variant: "success" });
+          toast(`已删除 ${d.pattern}${result.deferred ? "，连接后生效" : ""}`, { variant: result.deferred ? "info" : "success" });
         } catch (e) {
           b.disabled = false;
           toast("删除失败：" + fb.friendlyError(e).title, { variant: "danger", action: { label: "重试", onClick: onDel } });
@@ -428,7 +428,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         ch.domains = r.domains; ch.ips = r.ips;
         renderRuleTable();
         const n = r.added.domain + r.added.ip;
-        if (n) toast(`已绑定 ${n} 条，立即生效`, { variant: "success" });
+        if (n) toast(`已绑定 ${n} 条${r.deferred ? "，连接后生效" : ""}`, { variant: r.deferred ? "info" : "success" });
         else if (r.rejected.length) toast(`无法识别：${r.rejected.join("，")}`, { variant: "danger" });
         else toast("这些规则已存在", { variant: "info" });
       } catch (err) {
