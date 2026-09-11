@@ -60,9 +60,18 @@ final class SessionTests: XCTestCase {
         model.launch(); try await waitForReady(model, true)
         ownedPID = try readPID()
         let initialAPI = try XCTUnwrap(model.api)
-        _ = try await initialAPI.write("/api/config/import", body: ["kind":"vpnmgr-export", "version":1, "channels":[[
-            "name":"native-session-fixture", "vpn_type":"easyconnect", "login_method":"interactive", "ec_ver":"7.6.3", "server":"fixture.invalid", "username":"fixture", "probe_url":"https://probe.invalid", "config":[:], "rules":[]
+        let config = ["public_config": String(repeating: "x", count: 3 * 1024 * 1024)]
+        let backup = try JSONSerialization.data(withJSONObject: ["kind":"vpnmgr-export", "version":1, "channels":[[
+            "name":"native-session-fixture", "vpn_type":"easyconnect", "login_method":"interactive", "ec_ver":"7.6.3", "server":"fixture.invalid", "username":"fixture", "probe_url":"https://probe.invalid", "config":config,
+            "routing_enabled":false, "rules":[["kind":"domain","pattern":"backup.example","enabled":false,"note":"restore note","locked":true]]
         ] as [String: Any]]])
+        let report = try await initialAPI.importConfig(backup)
+        XCTAssertEqual(report.imported, ["native-session-fixture"]); XCTAssertEqual(report.deferred, true)
+        let exported = try JSONSerialization.jsonObject(with: await initialAPI.data("/api/config/export")) as? [String: Any]
+        let restored = try XCTUnwrap((exported?["channels"] as? [[String: Any]])?.first)
+        XCTAssertEqual(restored["config"] as? [String: String], config)
+        XCTAssertEqual(restored["routing_enabled"] as? Bool, false)
+        XCTAssertEqual((restored["rules"] as? [[String: Any]])?.first?["note"] as? String, "restore note")
         await model.refresh()
         let channelID = try XCTUnwrap(model.channels.first?.id)
         XCTAssertEqual(model.system?.runtime?.phase, "dormant")

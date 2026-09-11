@@ -175,9 +175,6 @@ import SwiftUI
                 error = "部分规则未添加：" + rejected.joined(separator: "、")
                 return false
             }
-            if let imported = value["imported"] as? [Any], let skipped = value["skipped"] as? [Any] {
-                message = "已导入 \(imported.count) 条通道，跳过 \(skipped.count) 条。"
-            }
             return true
         } catch let failure as APIError where failure.saved {
             guard isCurrent(api) else { return false }

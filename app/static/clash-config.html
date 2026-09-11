@@ -29,6 +29,8 @@
     .setting-row:first-child { border-top: 0; }
     .setting-row .sr-t { font-weight: 600; }
     .setting-row .sr-d { font-size: var(--text-xs); color: var(--muted); margin-top: 3px; }
+    #backup-import-result { padding-top: var(--space-3); overflow-wrap: anywhere; }
+    .backup-import-items { max-height: 18rem; overflow: auto; padding-left: 1.5rem; }
     /* 运行日志 */
     .runtime-summary { display: grid; grid-template-columns: 1.2fr 1.6fr 1fr; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); overflow: hidden; }
     .runtime-summary > div { padding: var(--space-4) var(--space-5); min-width: 0; }
@@ -309,10 +311,11 @@
                 <button class="btn btn-secondary btn-sm" id="btn-export">导出</button>
               </div>
               <div class="setting-row">
-                <div><div class="sr-t">导入配置</div><div class="sr-d">导入后通道处于停止状态，按需逐个启动；同名通道会跳过。</div></div>
+                <div><div class="sr-t">导入配置</div><div class="sr-d">支持不超过 16 MiB 的 JSON 备份。确认后新增通道与规则，同名通道跳过；导入的通道保持停止。</div></div>
                 <button class="btn btn-secondary btn-sm" id="btn-import">导入</button>
                 <input type="file" id="import-file" accept="application/json,.json" hidden />
               </div>
+              <div id="backup-import-result" role="status" aria-live="polite" hidden></div>
             </div>
           </div>
 

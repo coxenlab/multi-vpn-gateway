@@ -1711,6 +1711,8 @@ pub async fn mirrors_test(Json(b): Json<Value>) -> axum::response::Response {
 
 // ── 配置导出 / 导入(整站通道 + 规则的备份/迁移) ──────────────────────────────
 
+pub const CONFIG_IMPORT_LIMIT: usize = 16 * 1024 * 1024;
+
 /// GET /api/config/export:把全部通道(公开字段 + 解密后的 config + 规则)导出为一份 JSON 文档。
 /// ⚠️ 命门 #5 的**有意例外**:headless 通道的 config 含 CLI 注入凭据(密码/私钥),随导出一并带出
 /// ——否则导入到新机器后无法重连(用户明确要求)。交互登录密码不导出(导入后重新登录)。
@@ -1756,9 +1758,11 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
         // 登录备注一律不导出:「键入到容器」自动留档默认开,备注里大概率就是上面刚剥掉的
         // 交互登录密码(红队 D5),导出明文会绕过剥密;备注留在本机加密库。
         config.remove("login_note");
-        let rules: Vec<Value> = store::list_rules(&db, &ch.id)
-            .unwrap_or_default()
-            .into_iter()
+        let stored_rules = match store::list_rules(&db, &ch.id) {
+            Ok(rules) => rules,
+            Err(error) => return err500(&format!("读取备份规则失败: {error}")),
+        };
+        let rules: Vec<Value> = stored_rules.into_iter()
             .map(|r| json!({
                 "kind": r.kind,
                 "pattern": r.pattern,
@@ -1808,7 +1812,12 @@ fn import_text(entry: &Value, key: &'static str, default: &str) -> Result<String
     }
 }
 
-pub async fn config_import(State(st): State<AppState>, Json(b): Json<Value>) -> axum::response::Response {
+pub async fn config_import(State(st): State<AppState>, body: Result<Json<Value>, axum::extract::rejection::JsonRejection>) -> axum::response::Response {
+    let b = match body {
+        Ok(Json(value)) => value,
+        Err(error) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => return err_detail(StatusCode::PAYLOAD_TOO_LARGE, "配置备份不能超过 16 MiB"),
+        Err(_) => return err_detail(StatusCode::BAD_REQUEST, "不是有效的 JSON 配置备份"),
+    };
     let db = st.cfg.db_path();
     let entries = match (
         b.get("kind").and_then(|v| v.as_str()),

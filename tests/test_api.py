@@ -574,6 +574,27 @@ def test_config_import_rejects_bad_doc(client):
     assert client.post("/api/config/import", json={"kind": "nope"}).status_code == 400
 
 
+def test_large_config_backup_preserves_metadata_and_enforces_size(client):
+    import store
+    document = {"kind": "vpnmgr-export", "version": 1, "channels": [{
+        "name": "large-backup", "vpn_type": "easyconnect", "routing_enabled": False,
+        "config": {"public_config": "x" * (3 * 1024 * 1024)},
+        "rules": [{"kind": "domain", "pattern": "backup.example", "enabled": False,
+                   "note": "restore note", "locked": True}],
+    }]}
+    imported = client.post('/api/config/import', json=document)
+    assert imported.status_code == 200 and imported.json()['imported'] == ['large-backup']
+    exported = client.get('/api/config/export').json()['channels'][0]
+    assert exported['config'] == document['channels'][0]['config']
+    assert exported['routing_enabled'] is False
+    assert exported['rules'] == document['channels'][0]['rules']
+    assert store.list_channels()[0]['status'] == 'stopped'
+    rejected = client.post('/api/config/import', content=b' ' * (16 * 1024 * 1024 + 1),
+                           headers={'content-type': 'application/json'})
+    assert rejected.status_code == 413 and '16 MiB' in rejected.json()['error']
+    assert len(store.list_channels()) == 1
+
+
 def test_failed_replacement_keeps_saved_configuration(client, monkeypatch):
     import replacement, store
     cid = _create(client, password='old-fixture')['id']

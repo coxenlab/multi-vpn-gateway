@@ -312,7 +312,7 @@ def list_rules(cid):
     with _c() as c:
         # ORDER BY id:输出面(rebuild/provider/snippet/pac)按插入序稳定,排序逻辑靠它定序
         return [dict(r) for r in c.execute(
-            "SELECT id,channel_id,kind,pattern,enabled FROM rules WHERE channel_id=? ORDER BY id",
+            "SELECT id,channel_id,kind,pattern,enabled,note,locked FROM rules WHERE channel_id=? ORDER BY id",
             (cid,)).fetchall()]
 
 
@@ -390,10 +390,15 @@ def import_channels(plans):
         for plan in plans:
             ch = plan["channel"]
             _insert_channel(c, ch, plan["config"], plan["secret_keys"])
+            c.execute("UPDATE channels SET routing_enabled=? WHERE id=?",
+                      (int(ch.get("routing_enabled", True)), ch["id"]))
             for rule in plan["rules"]:
                 rid = _insert_rule(c, ch["id"], rule["kind"], rule["pattern"])
                 if not rule["enabled"] and _set_rule_enabled(c, ch["id"], rid, False) != 1:
                     raise sqlite3.IntegrityError("imported rule enabled update missed inserted row")
+                if c.execute("UPDATE rules SET note=?,locked=? WHERE id=? AND channel_id=?",
+                             (rule.get("note", ""), int(rule.get("locked", False)), rid, ch["id"])).rowcount != 1:
+                    raise sqlite3.IntegrityError("imported rule metadata update missed inserted row")
 
 
 def set_latency(cid, ms):

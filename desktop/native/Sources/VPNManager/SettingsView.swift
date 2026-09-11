@@ -7,8 +7,7 @@ struct SettingsView: View {
     @StateObject private var entryRequest = PageRequest()
     @StateObject private var backupRequest = PageRequest()
     @State private var importing = false
-    @State private var pendingImport: [String: Any]?
-    @State private var confirmImport = false
+    @State private var selectedBackup: SelectedBackup?
     @State private var systemProxy = false
     @State private var tun = false
     @State private var entryLoaded = false
@@ -91,15 +90,10 @@ struct SettingsView: View {
                 }
             } message: { Text("系统将请求管理员授权。安装更新可能短暂影响 TUN 连接；卸载将结束 TUN 接管。") }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
-                do {
-                    let url = try result.get(); let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    guard let body = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any], body["kind"] as? String == "vpnmgr-export" else { throw APIError(message: "不是有效的配置备份") }
-                    pendingImport = body; confirmImport = true
-                } catch { model.error = error.localizedDescription }
+                do { selectedBackup = SelectedBackup(url: try result.get()) }
+                catch { model.error = error.localizedDescription }
             }
-            .confirmationDialog("导入配置备份？", isPresented: $confirmImport, titleVisibility: .visible) {
-                Button("导入通道与规则") { Task { if let body = pendingImport { await model.perform("/api/config/import", key: "__import", body: body, success: "配置已导入，请按需启动通道") }; pendingImport = nil } }
-            } message: { Text("将添加备份中的通道与规则，同名通道跳过。导入不会启动通道。") }
+            .sheet(item: $selectedBackup) { selected in BackupImportView(file: selected.url) }
     }
     private func setProxy(_ enabled: Bool) { Task { if await model.perform("/api/entry/system-proxy", key: "__entry", body: ["enable": enabled]) { await loadEntry() } } }
     private func loadEntry() async {

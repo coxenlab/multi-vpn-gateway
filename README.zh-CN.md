@@ -139,8 +139,8 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | DELETE | `/api/channels/{cid}` | 删通道 → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | 容器日志 → `{lines}` |
 | GET \| PUT | `/api/channels/{cid}/note` | 登录备注 `{note}`；加密存储，仅此端点读回，通道列表不暴露正文 |
-| GET | `/api/config/export` | 导出通道与规则；含自动登录所需凭据，文件须妥善保管 |
-| POST | `/api/config/import` | 导入后为停止状态，按需启动；返回已导入与跳过项 |
+| GET | `/api/config/export` | 导出通道与规则，保留分流开关、规则启停/备注/锁定状态；含自动登录所需凭据，文件须妥善保管 |
+| POST | `/api/config/import` | 接受不超过 16 MiB 的 JSON 备份，保留规则元数据；导入后为停止状态，返回已导入与跳过项 |
 | POST | `/api/config/retry` | 重试已保存规则的同步，读回托管规则/代理并保存启动配置 |
 | GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址，以及 `config_application` 的待同步状态、确认代次和时间；桌面额外含 `usernet` 低频诊断缓存及最近守卫核对结果 |
 | POST | `/api/system/self-heal` | 桌面版内存态自愈动作开关(`enabled`)；重开 app 自动恢复 |

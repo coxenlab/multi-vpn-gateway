@@ -72,10 +72,13 @@ actor LocalAPI {
     }
     func invalidate() { session.invalidateAndCancel() }
     func url(_ path: String) -> URL { URL(string: path, relativeTo: base)!.absoluteURL }
-    func data(_ path: String, method: String = "GET", body: [String: Any]? = nil, long: Bool = false) async throws -> Data {
+    func data(_ path: String, method: String = "GET", body: [String: Any]? = nil, rawBody: Data? = nil, long: Bool = false) async throws -> Data {
         var request = URLRequest(url: url(path))
         request.httpMethod = method; request.timeoutInterval = long ? 1200 : 25
-        if let body {
+        if let rawBody {
+            request.httpBody = rawBody
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        } else if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
@@ -102,6 +105,12 @@ actor LocalAPI {
         }
     }
     func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T { try JSONDecoder().decode(type, from: await data(path)) }
+    func importConfig(_ document: Data) async throws -> BackupImportReport {
+        let bytes = try await data("/api/config/import", method: "POST", rawBody: document, long: true)
+        let report = try JSONDecoder().decode(BackupImportReport.self, from: bytes)
+        guard report.ok else { throw APIError(message: "导入结果未确认，请刷新通道列表核对后再操作。") }
+        return report
+    }
     func previewImage(file: URL) async throws -> ImageImportTicket {
         let size = try file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
         guard size.isRegularFile == true, let bytes = size.fileSize, bytes > 0, Int64(bytes) <= 12 * 1024 * 1024 * 1024 else { throw APIError(message: "请选择不超过 12 GiB 的镜像归档文件") }

@@ -571,7 +571,9 @@ def config_export():
             "name": c["name"], "vpn_type": c["vpn_type"], "server": c["server"],
             "ec_ver": c["ec_ver"], "login_method": c["login_method"],
             "username": c["username"], "probe_url": c["probe_url"], "config": cfg,
-            "rules": [{"kind": r["kind"], "pattern": r["pattern"], "enabled": r["enabled"]}
+            "routing_enabled": bool(c.get("routing_enabled", 1)),
+            "rules": [{"kind": r["kind"], "pattern": r["pattern"], "enabled": r["enabled"],
+                       "note": r.get("note", ""), "locked": bool(r.get("locked", 0))}
                       for r in store.list_rules(c["id"])],
         })
     return {"kind": "vpnmgr-export", "version": 1,
@@ -584,7 +586,13 @@ async def config_import(req: Request):
     同步起 N 个容器要几分钟且缺镜像会整批失败;「启动」本就是重建原语,导入后按需逐个启动。
     同名通道跳过(重复导入幂等),未知类型跳过;规则按统一存储契约校验并规范化。"""
     try:
-        b = await req.json()
+        # Bound both declared and chunked requests before parsing large JSON documents.
+        raw = bytearray()
+        async for chunk in req.stream():
+            if len(raw) + len(chunk) > 16 * 1024 * 1024:
+                return JSONResponse({"error": "配置备份不能超过 16 MiB"}, status_code=413)
+            raw.extend(chunk)
+        b = json.loads(raw)
     except Exception:
         return JSONResponse({"error": "不是有效的配置导出文件"}, status_code=400)
     if (not isinstance(b, dict) or b.get("kind") != "vpnmgr-export"
@@ -621,13 +629,25 @@ async def config_import(req: Request):
             if not isinstance(raw_enabled, (bool, int)):
                 skipped.append({"name": name, "reason": f"规则 enabled 类型错误 {pattern}"})
                 continue
+            note = rule.get("note")
+            if note is None:
+                note = ""
+            if not isinstance(note, str):
+                skipped.append({"name": name, "reason": f"规则 note 类型错误 {pattern}"})
+                continue
+            locked = rule.get("locked")
+            if locked is None:
+                locked = False
+            if not isinstance(locked, (bool, int)):
+                skipped.append({"name": name, "reason": f"规则 locked 类型错误 {pattern}"})
+                continue
             normalized = normalize_stored_rule(kind, pattern)
             if not normalized:
                 skipped.append({"name": name, "reason": f"非法规则 {pattern}"})
                 continue
             _, pattern = normalized
             planned_rules.append({"kind": kind, "pattern": pattern,
-                                  "enabled": bool(raw_enabled)})
+                                  "enabled": bool(raw_enabled), "note": note, "locked": bool(locked)})
 
         text_fields = {}
         malformed_field = None
@@ -656,6 +676,13 @@ async def config_import(req: Request):
         if not rules_shape_ok:
             continue
 
+        routing_enabled = entry.get("routing_enabled")
+        if routing_enabled is None:
+            routing_enabled = True
+        if not isinstance(routing_enabled, (bool, int)):
+            skipped.append({"name": name, "reason": "字段 routing_enabled 类型错误"})
+            continue
+
         name = text_fields["name"].strip()
         vtype = text_fields["vpn_type"]
         try:
@@ -682,6 +709,7 @@ async def config_import(req: Request):
             "vnc_password": secrets.token_hex(4),
             "mac": "02:" + ":".join(f"{random.randint(0, 255):02x}" for _ in range(5)),
             "probe_url": text_fields["probe_url"], "status": "stopped",
+            "routing_enabled": bool(routing_enabled),
         }
         secret_keys = [i["key"] for i in spec.get("inputs", []) if i.get("secret")]
         secret_keys.append("login_note")   # 登录备注不在 manifest inputs 里,导入时同样加密落库

@@ -166,8 +166,8 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | DELETE | `/api/channels/{cid}` | delete channel → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | container logs → `{lines}` |
 | GET \| PUT | `/api/channels/{cid}/note` | encrypted login notes `{note}`, read back only through this endpoint |
-| GET | `/api/config/export` | export channels and rules, including credentials needed for automatic login; keep the file private |
-| POST | `/api/config/import` | import stopped channels; returns imported and skipped items |
+| GET | `/api/config/export` | export channels and rules, retaining routing switches and rule enabled/note/locked fields; includes automatic-login credentials, so keep the file private |
+| POST | `/api/config/import` | JSON backup up to 16 MiB; import stopped channels, preserving rule metadata; returns imported and skipped items |
 | POST | `/api/config/retry` | retry saved routing configuration; confirm managed rules/proxies and persist the boot config |
 | GET | `/api/system` | mihomo status / ports / controller and `config_application` (pending, confirmed generation/time); desktop also returns cached `usernet` diagnostics and the last egress-guard check |
 | POST | `/api/system/self-heal` | desktop-only in-memory watchdog action toggle (`enabled`); app restart restores it |

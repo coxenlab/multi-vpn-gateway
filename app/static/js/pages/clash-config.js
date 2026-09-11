@@ -413,23 +413,51 @@ import { setupUsernetStatus } from "../usernet-status.js";
         toast("导出失败：" + fb.friendlyError(e).title, { variant: "danger" });
       } finally { btn.disabled = false; btn.textContent = txt; }
     });
-    $("#btn-import").addEventListener("click", () => $("#import-file").click());
+    let backupImportBusy = false;
+    $("#btn-import").addEventListener("click", () => { if (!backupImportBusy) $("#import-file").click(); });
     $("#import-file").addEventListener("change", async (ev) => {
       const file = ev.target.files[0];
       ev.target.value = "";
-      if (!file) return;
-      let doc;
-      try { doc = JSON.parse(await file.text()); }
-      catch { toast("文件不是有效的 JSON", { variant: "danger" }); return; }
+      if (!file || backupImportBusy) return;
+      const button = $("#btn-import"), result = $("#backup-import-result"), maximumBytes = 16 * 1024 * 1024;
+      backupImportBusy = true; button.disabled = true; button.textContent = "读取中…";
+      let submitted = false;
       try {
+        if (!file.size || file.size > maximumBytes) throw new Error("请选择非空且不超过 16 MiB 的配置备份");
+        let doc;
+        try { doc = JSON.parse(await file.text()); } catch { throw new Error("文件不是有效的 JSON"); }
+        if (!doc || doc.kind !== "vpnmgr-export" || !Array.isArray(doc.channels)) throw new Error("不是有效的配置备份");
+        if (new Blob([JSON.stringify(doc)]).size > maximumBytes) throw new Error("配置备份不能超过 16 MiB");
+        if (!doc.channels.length) { result.hidden = false; result.textContent = "这份备份没有通道，无需导入。"; return; }
+        const rules = doc.channels.reduce((count, ch) => count + (Array.isArray(ch?.rules) ? ch.rules.length : 0), 0);
+        button.textContent = "等待确认…";
+        if (!await fb.confirm(`备份包含 ${doc.channels.length} 个通道条目、${rules} 条规则。现有配置保留，同名通道跳过；新增通道保持停止。`, { title: "导入配置备份", confirmLabel: "导入通道与规则" })) return;
+        button.textContent = "导入中…"; submitted = true;
+        result.hidden = false; result.textContent = "正在导入，请稍候…";
         const r = await api.importConfig(doc);
-        const parts = [`已导入 ${r.imported.length} 条通道`];
+        if (r.ok !== true || !Array.isArray(r.imported) || !Array.isArray(r.skipped)) throw new Error("导入结果未确认");
+        const parts = [`已新增 ${r.imported.length} 条通道，${r.skipped.length} 个通道或规则条目未导入。`];
         if (r.deferred) parts.push("已保存，连接后生效");
-        if (r.skipped.length) parts.push(`跳过 ${r.skipped.length} 条：` + r.skipped.map(s => `${s.name}（${s.reason}）`).join("、"));
-        toast(parts.join("，"), { variant: r.imported.length ? "success" : "info" });
+        else if (r.rules_applied === false || r.config_application?.pending) parts.push("配置已导入，规则同步仍待确认。请在分流规则中重试同步，无需重复导入。");
+        result.replaceChildren();
+        const summary = document.createElement("p"); summary.textContent = parts.join(" "); result.append(summary);
+        if (r.skipped.length) {
+          const details = document.createElement("details"), heading = document.createElement("summary"), list = document.createElement("ul"), more = document.createElement("button");
+          list.className = "backup-import-items";
+          heading.textContent = "查看未导入的条目与原因"; details.append(heading, list, more);
+          more.type = "button"; more.className = "btn btn-secondary btn-sm"; more.textContent = "显示更多";
+          let shown = 0;
+          const showMore = () => {
+            for (const item of r.skipped.slice(shown, shown + 100)) {
+              const row = document.createElement("li"); row.textContent = `${item.name || "未命名条目"}：${item.reason}`; list.append(row);
+            }
+            shown += 100; more.hidden = shown >= r.skipped.length;
+          };
+          more.addEventListener("click", showMore); showMore(); result.append(details);
+        }
       } catch (e) {
-        toast("导入失败：" + fb.friendlyError(e).title, { variant: "danger" });
-      }
+        result.hidden = false; result.textContent = (submitted ? "导入结果未确认：" : "无法读取备份：") + (e.reason || e.message) + (submitted ? "。请先刷新通道列表核对结果，不要直接重复导入。" : "");
+      } finally { backupImportBusy = false; button.disabled = false; button.textContent = "导入"; }
     });
 
     // 深链:?tab=diag|mirrors|images|backup;运行日志用 #logs

@@ -86,7 +86,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/mirrors/test", axum::routing::post(api::mirrors_test))
         // 配置导出 / 导入(整站通道 + 规则的备份/迁移)
         .route("/api/config/export", get(api::config_export))
-        .route("/api/config/import", axum::routing::post(api::config_import))
+        .route("/api/config/import", axum::routing::post(api::config_import)
+            .layer(axum::extract::DefaultBodyLimit::max(api::CONFIG_IMPORT_LIMIT)))
         .route("/api/config/retry", axum::routing::post(api::config_retry))
         .route_layer(axum::middleware::from_fn_with_state(state.clone(), crate::runtime::track_request))
         .fallback_service(static_svc)
@@ -1039,6 +1040,50 @@ mod tests {
             .header("content-type", "application/json").body(Body::from("[]")).unwrap())
             .await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn config_backup_large_round_trip_and_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let mut state = state_with_db(dir.path());
+        Arc::make_mut(&mut state.cfg).managed_vm = true;
+        let app = build_router(state);
+        let document = serde_json::json!({"kind":"vpnmgr-export","version":1,"channels":[{
+            "name":"large-backup","vpn_type":"easyconnect","config":{"public_config":"x".repeat(3 * 1024 * 1024)},
+            "rules":[{"kind":"domain","pattern":"backup.example","enabled":false,"note":"restore note","locked":true}],
+            "routing_enabled":false
+        }]});
+        let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/config/import")
+            .header("content-type", "application/json").body(Body::from(document.to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let response = app.clone().oneshot(Request::builder().uri("/api/config/export").body(Body::empty()).unwrap()).await.unwrap();
+        let exported: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), api::CONFIG_IMPORT_LIMIT).await.unwrap()).unwrap();
+        assert_eq!(exported["channels"][0]["config"]["public_config"], document["channels"][0]["config"]["public_config"]);
+        assert_eq!(exported["channels"][0]["routing_enabled"], false);
+        assert_eq!(exported["channels"][0]["rules"], serde_json::json!([
+            {"kind":"domain","pattern":"backup.example","enabled":0,"note":"restore note","locked":1}
+        ]));
+        let too_large = Body::from(vec![b' '; api::CONFIG_IMPORT_LIMIT + 1]);
+        let response = app.oneshot(Request::builder().method("POST").uri("/api/config/import")
+            .header("content-type", "application/json").body(too_large).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let message: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+        assert!(message["detail"].as_str().unwrap().contains("16 MiB"));
+        assert_eq!(crate::store::list_channels(&dir.path().join("vpnmgr.db")).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn config_export_does_not_silently_drop_unreadable_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let key = crate::store::master_key(dir.path()).unwrap();
+        seed_channel(&db, &key, "broken-backup", "Broken", "easyconnect", "interactive", "");
+        rusqlite::Connection::open(&db).unwrap().execute("DROP TABLE rules", []).unwrap();
+        let response = build_router(state_with_db(dir.path())).oneshot(Request::builder().uri("/api/config/export")
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
