@@ -27,15 +27,16 @@ import { toast } from "./app.js";
 
   // A failed progress query must resume the existing task, not start another download.
   const pullTasks = new Map();
+  const taskError = (message, state) => Object.assign(new Error(message), { pullTaskState: state });
   window.pullImageTask = async function (image, onProgress) {
     let id = pullTasks.get(image);
     if (!id) {
       const result = await api.preflightFix("pull_image", { image });
-      if (typeof result.task_id !== "string" || !result.task_id) throw new Error("未收到下载任务，请刷新镜像清单核对");
+      if (typeof result.task_id !== "string" || !result.task_id) throw taskError("未收到下载任务，请刷新镜像清单核对", "unconfirmed");
       id = result.task_id; pullTasks.set(image, id);
     }
     return new Promise(function (resolve, reject) {
-        const pendingError = e => { e.pullTaskPending = true; reject(e); };
+        const pendingError = e => { e.pullTaskPending = true; e.pullTaskState = "pending"; reject(e); };
         let failures = 0;
         const deadline = Date.now() + 20 * 60 * 1000;
         const stop = api.poll(async function () {
@@ -45,13 +46,13 @@ import { toast } from "./app.js";
           catch (e) {
             if (e.status === 404) {
               pullTasks.delete(image); stop();
-              reject(new Error("此下载记录已失效，请刷新镜像清单核对结果后再操作"));
+              reject(taskError("此下载记录已失效，请刷新镜像清单核对结果后再操作", "expired"));
             } else if (++failures >= 5) { stop(); pendingError(e); }
             return;
           }
           if (onProgress) onProgress(st);
           if (st.status === "done") { pullTasks.delete(image); stop(); resolve(st); }
-          else if (st.status === "error") { pullTasks.delete(image); stop(); reject(new Error(st.error || "拉取失败")); }
+          else if (st.status === "error") { pullTasks.delete(image); stop(); reject(taskError(st.error || "拉取失败", "failed")); }
         }, 2000);
     });
   };

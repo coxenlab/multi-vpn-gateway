@@ -120,6 +120,17 @@ import "./app.js";
     const detail = e.raw || e.message || (reason || "未知错误");
 
     const has = (kw) => rawLow.includes(kw);
+    if (e.pullTaskState === "pending") {
+      return F("下载状态待确认", "暂时无法确认进度，下载任务可能仍在进行。",
+        "点击「查看进度」继续查询原任务。", detail);
+    }
+    if (e.pullTaskState === "expired" || e.pullTaskState === "unconfirmed") {
+      return F(e.pullTaskState === "expired" ? "下载记录已失效" : "下载状态待确认", reason,
+        "先刷新镜像清单核对结果，需要时再重新下载。", detail);
+    }
+    if (e.pullTaskState === "failed") {
+      return F("镜像下载未完成", reason, "核对镜像源和可用空间后，可以重试下载。", detail);
+    }
     if (e.body && e.body.uploaded === true) {
       return F("安装包已投递，记录未完成", reason || "文件名记录未能保存。",
         "可以继续登录，在通道桌面中核对并安装，无需重复上传。", detail);
