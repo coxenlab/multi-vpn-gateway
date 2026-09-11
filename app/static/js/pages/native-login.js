@@ -33,9 +33,19 @@ const view = createVncLifecycle({
     } catch (_) { if (current()) state.textContent = "登录窗口打开失败，可以重新打开。"; }
   },
 });
-document.querySelector("#retry").addEventListener("click", () => view.open());
-try {
-  const ch = (await api.channels()).find(ch => ch.id === cid);
-  selected = !!ch && !ch.stop_pending && !["stopped", "error", "down"].includes(ch.status) && ch.replacement?.phase !== "queued";
-  if (selected) view.sync(); else state.textContent = ch ? "请先启动这条通道。" : "通道不存在。";
-} catch (_) { state.textContent = "无法读取通道，请返回后重试。"; }
+const retry = document.querySelector("#retry");
+async function openCurrentChannel() {
+  view.pause(); selected = false; retry.disabled = true;
+  state.textContent = "正在读取通道…";
+  try {
+    const ch = (await api.channels()).find(ch => ch.id === cid);
+    selected = !!ch && !ch.stop_pending && !["stopped", "error", "down"].includes(ch.status) && ch.replacement?.phase !== "queued";
+    if (selected) { retry.disabled = false; view.sync(); }
+    else state.textContent = ch ? "请先启动这条通道。" : "通道不存在。";
+  } catch (_) {
+    state.textContent = "无法读取通道，可以重新打开。";
+    retry.disabled = false;
+  }
+}
+retry.addEventListener("click", openCurrentChannel);
+openCurrentChannel();
