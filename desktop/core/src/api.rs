@@ -1097,6 +1097,18 @@ async fn stop_inner(st: AppState, cid: String) -> axum::response::Response {
     let docker = match st.docker() {
         Some(d) => d,
         None => {
+            if st.cfg.managed_vm && ch.container_id.is_none() {
+                match crate::replacement_store::public_status(&db, &cid) {
+                    Ok(None) => {
+                        if let Err(e) = store::set_status(&db, &cid, "stopped") { return err500(&e.to_string()); }
+                        let reload = manager::rebuild(&st.cfg, None, &db).await;
+                        crate::events::audit("channel_stop", "未启动的通道已停用", audit_detail("ok", channel_snapshot_of(&db, &cid)));
+                        return config_reply(&db, &reload, json!({"ok":true}));
+                    }
+                    Err(e) => return err500(&e.to_string()),
+                    _ => {},
+                }
+            }
             let mut detail = audit_detail("failed", Value::Null);
             detail["error"] = json!("docker unavailable");
             crate::events::audit_failed("channel_stop", "通道停止失败", detail);
@@ -1134,8 +1146,28 @@ async fn stop_inner(st: AppState, cid: String) -> axum::response::Response {
     operation_done(&db)
 }
 
-pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
-    detached("delete", delete_inner(st, cid)).await
+#[derive(Deserialize, Default)]
+pub struct DeleteQuery { #[serde(default)] pub prepare_runtime: bool }
+
+pub async fn delete(State(st): State<AppState>, Path(cid): Path<String>, Query(options): Query<DeleteQuery>) -> axum::response::Response {
+    detached("delete", async move {
+        if options.prepare_runtime {
+            match store::get_channel(&st.cfg.db_path(), &cid) {
+                Ok(Some(_)) => {},
+                Ok(None) => return err404("not found"),
+                Err(e) => return err500(&e.to_string()),
+            }
+            // 确认框明确告知需要启动环境；参数为调用者的显式准备意图。
+            if let Err(e) = crate::runtime::ensure(&st).await { return err503(&e.to_string()); }
+            // 启动恢复可能已完成此前登记的删除；读回不存在就是此次目标已达成。
+            match store::get_channel(&st.cfg.db_path(), &cid) {
+                Ok(None) => return operation_done(&st.cfg.db_path()),
+                Ok(Some(_)) => {},
+                Err(e) => return err500(&e.to_string()),
+            }
+        }
+        delete_inner(st, cid).await
+    }).await
 }
 
 async fn delete_inner(st: AppState, cid: String) -> axum::response::Response {
@@ -1164,6 +1196,19 @@ async fn delete_inner(st: AppState, cid: String) -> axum::response::Response {
     let docker = match st.docker() {
         Some(d) => d,
         None => {
+            if st.cfg.managed_vm {
+                let pending = match crate::replacement_store::public_status(&db, &cid) {
+                    Ok(pending) => pending,
+                    Err(e) => return err500(&e.to_string()),
+                };
+                if ch.container_id.is_none() && pending.is_none() {
+                    if let Err(e) = store::del_channel(&db, &cid) { return err500(&e.to_string()); }
+                    let reload = manager::rebuild(&st.cfg, None, &db).await;
+                    crate::events::audit("channel_delete", "已删除未启动通道及其规则", audit_detail("ok"));
+                    return config_reply(&db, &reload, json!({"ok":true}));
+                }
+                return (StatusCode::CONFLICT, Json(json!({"error":"需要启动运行环境后才能清理这条通道；通道和设置仍保留", "runtime_required":true}))).into_response();
+            }
             let mut detail = audit_detail("failed");
             detail["error"] = json!("docker unavailable");
             crate::events::audit_failed("channel_delete", "通道删除失败", detail);

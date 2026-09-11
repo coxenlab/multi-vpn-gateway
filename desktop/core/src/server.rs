@@ -137,6 +137,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dormant_removal_only_finishes_when_no_runtime_resources_are_recorded() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,status) VALUES('unused','imported','stopped')",[]).unwrap();
+        conn.execute("INSERT INTO channels(id,name,status,container_id) VALUES('existing','existing','stopped','original')",[]).unwrap();
+        conn.execute("INSERT INTO channels(id,name,status) VALUES('partial','partial','error')",[]).unwrap();
+        let key = crate::store::master_key(dir.path()).unwrap();
+        crate::replacement_store::begin(&db,&key,"partial","pending",&serde_json::json!({"kind":"initial"})).unwrap();
+        crate::store::add_rule(&db,"unused","domain","offline.example").unwrap();
+        let mut state = state_with_db(dir.path());
+        Arc::make_mut(&mut state.cfg).managed_vm = true;
+        let runtime = state.lifecycle.runtime().clone(); let app = build_router(state);
+        for cid in ["existing","partial"] {
+            let response = app.clone().oneshot(Request::builder().method("DELETE").uri(format!("/api/channels/{cid}")).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::CONFLICT);
+            let value: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap()).unwrap();
+            assert_eq!(value["runtime_required"],true);
+            assert!(crate::store::get_channel(&db,cid).unwrap().is_some());
+        }
+        for (method,path,status) in [
+            ("POST","/api/channels/unused/stop",StatusCode::ACCEPTED),
+            ("DELETE","/api/channels/unused",StatusCode::ACCEPTED),
+            ("DELETE","/api/channels/unused?prepare_runtime=true",StatusCode::NOT_FOUND),
+        ] {
+            let response = app.clone().oneshot(Request::builder().method(method).uri(path).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),status,"{path}");
+        }
+        assert!(crate::store::get_channel(&db,"unused").unwrap().is_none());
+        assert!(crate::store::list_rules(&db,"unused").unwrap().is_empty());
+        assert!(crate::replacement_store::get(&db,&key,"partial").unwrap().is_some());
+        assert_eq!(runtime.snapshot().start_attempt,0);
+        assert_eq!(runtime.snapshot().phase,crate::runtime_lifecycle::Phase::Dormant);
+    }
+
+    #[tokio::test]
     async fn dormant_connection_settings_are_previewed_and_cancellable_without_vm() {
         let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
         crate::store::init(&db).unwrap();

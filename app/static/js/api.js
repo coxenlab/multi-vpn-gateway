@@ -154,7 +154,7 @@
     toggleRules: (ids, enabled) => req("PATCH", "/api/rules", { ids, enabled }),
     start: (id) => req("POST", `/api/channels/${id}/start`, undefined, { timeout: LONG_TIMEOUT_MS }),
     stop: (id) => req("POST", `/api/channels/${id}/stop`, undefined, { timeout: LONG_TIMEOUT_MS }),
-    remove: (id) => req("DELETE", `/api/channels/${id}`, undefined, { timeout: LONG_TIMEOUT_MS }),
+    remove: (id, prepareRuntime = false) => req("DELETE", `/api/channels/${id}${prepareRuntime ? "?prepare_runtime=true" : ""}`, undefined, { timeout: LONG_TIMEOUT_MS }),
     logs: (id, tail) => req("GET", `/api/channels/${id}/logs?tail=${tail || 200}`),
     connections: () => req("GET", "/api/connections"),
     proxies: () => req("GET", "/api/proxies"),

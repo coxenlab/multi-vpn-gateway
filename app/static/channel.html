@@ -194,6 +194,7 @@
       <div class="card-head"><h3>删除通道</h3><button class="icon-btn" data-close="del-modal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
       <div class="card-body">
         <p class="muted">将删除「<span id="del-name"></span>」及其登录状态和全部分流规则。此操作不可撤销。</p>
+        <p class="note" id="del-runtime-note" hidden style="margin-top:var(--space-3);">需要先启动运行环境，才能清理这条通道。清理完成前会保留通道和设置；若启动失败，可以稍后重试。</p>
       </div>
       <div class="card-foot" style="justify-content:flex-end;">
         <button class="btn btn-secondary" data-close="del-modal">取消</button>

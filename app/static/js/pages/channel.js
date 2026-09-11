@@ -9,10 +9,12 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     const wantId = params.get("id");
     let ch, sys;
     let restoring = false;
+    let deletionRuntimeRequired = false;
     const needsStart = () => ch && (ch.replacement?.phase === "queued" || ["stopped", "error", "down"].includes(ch.status));
     let k, kindLabel, containerId, hostName, methodLabel;
     const routingControlsSupported = () => sys && typeof sys.routing_off === "boolean";
     const routingOn = () => ch && (!routingControlsSupported() || (ch.routing_enabled !== false && ch.routing_enabled !== 0));
+    const deleteNeedsRuntime = () => deletionRuntimeRequired || !!(sys?.runtime && !["ready", "waiting"].includes(sys.runtime.phase) && (ch?.container_id || ch?.replacement));
     const channelBadge = () => {
       if (!routingOn() && ch.status === "logged_in")
         return `<span class="badge is-logged_in"><i class="bdot"></i>已连接 · 不分流</span>`;
@@ -243,6 +245,8 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       $("#top-badge").innerHTML = channelBadge();
       $("#h-status").innerHTML = badgeHTML(ch.status);
       $("#act-power").textContent = ch.replacement?.phase === "queued" ? "应用并启动" : stopped ? "启动" : "停止";
+      $("#del-runtime-note").hidden = !deleteNeedsRuntime();
+      if (!$("#del-confirm").disabled) $("#del-confirm").textContent = deleteNeedsRuntime() ? "启动环境并删除" : "确认删除";
       // 容器已停:登录窗口与检测都无意义 → 只留「启动」+「删除」
       $("#act-probe").style.display = stopped ? "none" : "";
       $("#act-relogin").style.display = (stopped || headless) ? "none" : "";
@@ -370,15 +374,22 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
 
     async function doDelete() {
       const btn = $("#del-confirm"), orig = btn.textContent;
-      btn.disabled = true; btn.textContent = "删除中…";
+      const prepareRuntime = deleteNeedsRuntime();
+      btn.disabled = true; btn.textContent = prepareRuntime ? "准备环境并删除中…" : "删除中…";
       try {
-        await api.remove(ch.id);
+        await api.remove(ch.id, prepareRuntime);
         closeOverlay("del-modal");
         toast(`已删除 ${ch.name}`, { variant: "success" });
         setTimeout(() => location.href = "index.html", 900);
       } catch (e) {
-        toast("删除失败：" + fb.friendlyError(e).title, { variant: "danger", action: { label: "重试", onClick: doDelete } });
+        if (e.body?.runtime_required) deletionRuntimeRequired = true;
         btn.disabled = false; btn.textContent = orig;
+        await boot().catch(() => {});
+        if (deletionRuntimeRequired) {
+          $("#del-runtime-note").hidden = false;
+          btn.textContent = "启动环境并删除";
+        }
+        toast("删除未完成：" + fb.friendlyError(e).title, { variant: "danger" });
       }
     }
     $("#del-confirm").addEventListener("click", doDelete);
