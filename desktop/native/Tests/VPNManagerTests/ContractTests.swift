@@ -3,6 +3,22 @@ import SwiftUI
 @testable import VPNManager
 
 final class ContractTests: XCTestCase {
+    func testApplicationStatusKeepsDormantAndPartialSuccessUnconfirmed() throws {
+        let system = try JSONDecoder().decode(SystemStatus.self, from: fixture("native-system.json"))
+        let state = try XCTUnwrap(system.config_application)
+        XCTAssertTrue(state.available); XCTAssertTrue(state.pending)
+        XCTAssertFalse(state.confirmed(in: system))
+        XCTAssertEqual(state.title(in: system), "设置已保存，连接后生效")
+        let ready = try JSONDecoder().decode(SystemStatus.self, from: Data("{\"runtime\":{\"phase\":\"ready\"},\"mihomo_status\":\"running\",\"config_application\":{\"available\":true,\"pending\":false,\"verified_at\":1}}".utf8))
+        XCTAssertTrue(try XCTUnwrap(ready.config_application).confirmed(in: ready))
+        XCTAssertThrowsError(try operationMessage(["ok":false,"error":"未能修复入口"], fallback: "入口已修复")) { error in
+            XCTAssertEqual(error.localizedDescription, "未能修复入口")
+        }
+        XCTAssertEqual(try operationMessage(["ok":true,"config_application":["pending":true]], fallback:"规则已同步"), "设置已保存，规则同步尚未确认")
+        XCTAssertEqual(try operationMessage(["deferred":true], fallback:"规则已同步"), "已保存，连接后应用")
+        XCTAssertEqual(try operationMessage(["ok":true,"config_application":["pending":false]], fallback:"规则已同步"), "规则已同步")
+    }
+
     @MainActor func testVersionChoicesIgnoreOutOfOrderResponsesAndUnusableArchitectures() async throws {
         let choices = VersionChoices(), firstStarted = expectation(description: "first request pending")
         var resumeFirst: CheckedContinuation<VersionFeed, Never>?

@@ -35,7 +35,10 @@ struct Runtime: Decodable {
     var ready: Bool { ["ready", "waiting"].contains(phase) }
     var label: String { ["dormant":"按需运行", "starting":"准备连接", "ready":"运行中", "waiting":"等待空闲释放", "releasing":"释放中", "failed":"需要重试"][phase] ?? "待确认" }
 }
-struct SystemStatus: Decodable { let runtime: Runtime?; let routing_off: Bool?; let self_heal_enabled: Bool? }
+struct SystemStatus: Decodable {
+    let runtime: Runtime?; let routing_off: Bool?; let self_heal_enabled: Bool?
+    let mihomo_status: String?; let config_application: ConfigApplication?
+}
 struct Adapter: Decodable, Identifiable {
     var id: String { key }
     let key: String; let label: String; let desc: String; let runtime: String; let versioned: Bool
@@ -48,6 +51,7 @@ struct InputField: Decodable, Identifiable {
 struct APIError: LocalizedError {
     let message: String
     var statusCode: Int? = nil
+    var saved = false
     var errorDescription: String? { message }
 }
 
@@ -74,7 +78,7 @@ actor LocalAPI {
         guard let http = response as? HTTPURLResponse else { throw APIError(message: "本地服务响应无法识别") }
         guard (200..<300).contains(http.statusCode) else {
             let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            throw APIError(message: error?["error"] as? String ?? error?["detail"] as? String ?? "操作未完成（\(http.statusCode)）", statusCode: http.statusCode)
+            throw APIError(message: error?["error"] as? String ?? error?["detail"] as? String ?? "操作未完成（\(http.statusCode)）", statusCode: http.statusCode, saved: error?["saved"] as? Bool == true)
         }
         return data
     }

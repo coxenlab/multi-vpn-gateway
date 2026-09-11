@@ -114,7 +114,7 @@ import SwiftUI
         error = nil
         do {
             let value = try await api.write(path, method: method, body: body)
-            message = value["stop_pending"] as? Bool == true ? "已保存停用，实际停止尚待确认" : value["deferred"] as? Bool == true ? "已保存，连接后应用" : success
+            message = try operationMessage(value, fallback: success)
             await refresh()
             if path == "/api/channels", method == "POST" { createdChannelID = value["id"] as? String }
             if let rejected = value["rejected"] as? [String], !rejected.isEmpty {
@@ -125,6 +125,9 @@ import SwiftUI
                 message = "已导入 \(imported.count) 条通道，跳过 \(skipped.count) 条。"
             }
             return true
+        } catch let failure as APIError where failure.saved {
+            self.error = "设置已保存，规则同步尚未确认。请在分流规则中重试同步，无需重复提交。"
+            await refresh(); return false
         } catch {
             self.error = "\(error.localizedDescription)\n若操作超时，请先刷新核对结果，再决定是否重试。"
             await refresh(); return false

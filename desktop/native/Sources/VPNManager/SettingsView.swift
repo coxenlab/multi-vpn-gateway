@@ -47,7 +47,7 @@ struct SettingsView: View {
                 }
                 if isolated { Text("隔离开发版的宿主代理与 TUN 操作已禁用。").font(.caption).foregroundStyle(.secondary) }
                 Button("Clash 配置片段") { inspecting = Inspection(path: "/api/clash-snippet", title: "Clash 配置片段") }
-                Button("重新同步已保存规则") { Task { await model.perform("/api/config/retry", key: "__sync", success: "规则同步完成") } }.disabled(model.busy.contains("__sync"))
+                ConfigApplicationView()
             }
             Section("配置与备份") {
                 Button("导出配置备份…") { Task { await exportBackup() } }
