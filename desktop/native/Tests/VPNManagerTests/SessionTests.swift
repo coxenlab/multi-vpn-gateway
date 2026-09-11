@@ -38,6 +38,87 @@ actor DelayedHTTP {
 }
 
 final class SessionTests: XCTestCase {
+    @MainActor func testOfflineUpgradeStopsOnlyOwnedCoreAndRestoresConfiguration() async throws {
+        let inherited = ProcessInfo.processInfo.environment
+        guard let executable = inherited["VPNMGR_NATIVE_CORE_PATH"], let original = inherited["VPNMGR_NATIVE_UPGRADE_SOURCE"] else { throw XCTSkip("升级闭环需要独立 core 与合成源数据") }
+        guard original.hasPrefix("/tmp/vpnmgr-native-qa-") else { throw APIError(message: "升级测试仅允许合成源目录") }
+        let files = FileManager.default, root = files.temporaryDirectory.appendingPathComponent("vpnmgr-native-switch-" + UUID().uuidString)
+        let bin = root.appendingPathComponent("bin"), source = root.appendingPathComponent("source"), data = root.appendingPathComponent("current")
+        try files.createDirectory(at: bin, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try files.copyItem(at: URL(fileURLWithPath: original), to: source)
+        let originalDatabase = try Data(contentsOf: source.appendingPathComponent("vpnmgr.db"))
+        let listing = root.appendingPathComponent("listing"), commands = root.appendingPathComponent("commands"), pidFile = root.appendingPathComponent("pid")
+        let profile = "vpnmgr-native-switch-qa"
+        try Data("{\"name\":\"\(profile)\",\"status\":\"Stopped\"}\n".utf8).write(to: listing)
+        let colima = bin.appendingPathComponent("colima")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "$VPNMGR_UPGRADE_TEST_COMMANDS"
+        case "$1" in
+          list) cat "$VPNMGR_UPGRADE_TEST_LISTING" ;;
+          stop) exit 0 ;;
+          *) exit 73 ;;
+        esac
+        """.write(to: colima, atomically: true, encoding: .utf8)
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: colima.path)
+        let wrapper = bin.appendingPathComponent("core")
+        let quotedExecutable = "'" + executable.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        try """
+        #!/bin/sh
+        if [ "$#" -eq 0 ]; then printf '%s\\n' "$$" > "$VPNMGR_UPGRADE_TEST_PID"; fi
+        exec \(quotedExecutable) "$@"
+        """.write(to: wrapper, atomically: true, encoding: .utf8)
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
+        var environment = inherited.filter { !$0.key.hasPrefix("MIHOMO_") && $0.key != "UI_PORT" }
+        environment["VPNMGR_CORE_PATH"] = wrapper.path; environment["DATA_DIR"] = data.path
+        environment["VPNMGR_DEV_MODE"] = "1"; environment["VPNMGR_VM_PROFILE"] = profile
+        environment["VPN_NET"] = "vpnmgr_native_switch_qa"; environment["PATH"] = bin.path + ":" + (inherited["PATH"] ?? "/usr/bin:/bin")
+        environment["VPNMGR_UPGRADE_TEST_COMMANDS"] = commands.path; environment["VPNMGR_UPGRADE_TEST_LISTING"] = listing.path
+        environment["VPNMGR_UPGRADE_TEST_PID"] = pidFile.path
+        let model = AppModel(launchEnvironment: environment)
+        func ownedPID() throws -> pid_t { try XCTUnwrap(pid_t(String(contentsOf: pidFile).trimmingCharacters(in: .whitespacesAndNewlines))) }
+        defer { if model.ready, let pid = try? ownedPID() { _ = kill(pid, SIGTERM) } }
+        model.launch(); try await waitForReady(model, true); await model.refresh()
+        XCTAssertTrue(model.channels.isEmpty)
+        let candidate = root.appendingPathComponent("review")
+        await model.prepareUpgrade(from: source, to: candidate)
+        XCTAssertEqual(model.upgradeReport?.version, 2); XCTAssertNil(model.upgradeError)
+        let draft = model.noteDraft(for: "upgrade-fixture"); await draft.load { "" }; draft.text = "unsaved fixture"
+        await model.switchUpgrade(.activate)
+        XCTAssertTrue(model.ready); XCTAssertTrue(model.upgradeError?.contains("尚未保存") == true)
+        draft.text = ""
+        // Direct activation while this data directory is owned must fail before any VM call.
+        let context = OfflineLaunchContext(executable: wrapper, environment: environment)
+        do {
+            let _: UpgradeSwitchStatus = try await Task.detached { try runOfflineCore(context: context, arguments: ["--activate-upgrade", candidate.path], as: UpgradeSwitchStatus.self) }.value
+            XCTFail("An active data owner must block switching")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("正在使用")) }
+        XCTAssertFalse(files.fileExists(atPath: commands.path))
+
+        try Data("{\"name\":\"\(profile)\",\"status\":\"Running\"}\n".utf8).write(to: listing)
+        await model.switchUpgrade(.activate)
+        XCTAssertFalse(model.ready); XCTAssertTrue(model.upgradeError?.contains("仍在使用") == true)
+        XCTAssertFalse(files.fileExists(atPath: data.appendingPathComponent("upgrade-activation.json").path))
+        try Data("{\"name\":\"\(profile)\",\"status\":\"Stopped\"}\n".utf8).write(to: listing)
+        await model.switchUpgrade(.activate); try await waitForReady(model, true); await model.refresh()
+        XCTAssertNil(model.upgradeError); XCTAssertEqual(model.upgradeStatus?.phase, "active")
+        XCTAssertEqual(model.channels.count, 1); XCTAssertEqual(model.system?.runtime?.phase, "dormant")
+        let retainedOld = try XCTUnwrap(model.upgradeStatus?.retained_directory)
+        XCTAssertTrue(files.fileExists(atPath: retainedOld + "/vpnmgr.db"))
+        await model.switchUpgrade(.rollback); try await waitForReady(model, true); await model.refresh()
+        XCTAssertNil(model.upgradeError); XCTAssertEqual(model.upgradeStatus?.phase, "rolled_back")
+        XCTAssertTrue(model.channels.isEmpty); XCTAssertEqual(model.system?.runtime?.phase, "dormant")
+        XCTAssertTrue(try Data(contentsOf: source.appendingPathComponent("vpnmgr.db")) == originalDatabase)
+        await model.switchUpgrade(.finish); try await waitForReady(model, true)
+        XCTAssertNil(model.upgradeStatus); XCTAssertNotNil(model.completedUpgrade)
+        XCTAssertTrue(files.fileExists(atPath: try XCTUnwrap(model.completedUpgrade?.retained_directory) + "/vpnmgr.db"))
+        XCTAssertEqual(kill(try ownedPID(), SIGTERM), 0); try await waitForReady(model, false)
+        let calls = try String(contentsOf: commands).split(separator: "\n").map(String.init)
+        XCTAssertTrue(calls.contains("list --json"))
+        XCTAssertTrue(calls.allSatisfy { $0 == "list --json" || $0 == "stop " + profile })
+        try files.removeItem(at: root)
+    }
+
     @MainActor private func waitForReady(_ model: AppModel, _ value: Bool) async throws {
         let event = expectation(description: value ? "Owned core ready" : "Owned core exited")
         let observation = model.$ready.filter { $0 == value }.prefix(1).sink { _ in event.fulfill() }

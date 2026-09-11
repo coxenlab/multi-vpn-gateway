@@ -282,10 +282,15 @@ fn prepare_runtime(handle: &tauri::AppHandle) -> anyhow::Result<()> {
         }
     }
 
-    seed_vm_image_cache(handle);
-
     let cfg = Config::load();
     cfg.validate()?;
+    if handle.try_state::<vpnmgr_core::data_owner::Lease>().is_none() {
+        let lease = vpnmgr_core::data_owner::Lease::acquire(&cfg.data_dir)?;
+        lease.create_directory()?;
+        handle.manage(lease);
+    }
+    cfg.validate()?;
+    seed_vm_image_cache(handle);
     infra::ensure_params(&cfg.data_dir)?;
     Ok(())
 }

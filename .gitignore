@@ -11,6 +11,9 @@ mihomo/cache.db
 
 # 数据卷手动备份(含 master.key / 密文库,绝不入库)
 desktop/core/.data.bak-*/
+# 数据目录交换的锁、记录和保留副本（开发数据目录可能在仓库内）
+.vpnmgr-data-*
+.vpnmgr-upgrade-*/
 
 # macOS
 .DS_Store

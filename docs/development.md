@@ -151,7 +151,11 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 单元测试用 `.venv/bin/pytest tests -q`，不要从仓库根递归扫描 handoff 符号链接。测试强制使用本轮创建的临时目录，拒绝真实 Docker/requests 网络操作。
 
-升级核对可用 `vpnmgr-core --prepare-upgrade <原目录> <不存在的副本目录>`：SQLite backup 纳入已提交 WAL，复制主密钥、infra 参数、启动配置、分流与 TUN 意图；核对加密字段、恢复日志、配置密钥匹配，且副本升级 schema。源目录只读，输出目录 0700、文件 0600，已有目标拒绝覆盖。副本保留 `upgrade-pending` 并被 Config 拒绝启动；`upgrade-review.json` 只包含数量/文件名/摘要，不含凭据。该入口只准备核对副本，不切换日常数据，不确认外部实例/卷/设备登录状态，也不代表升级验收完成；真正切换必须待原版本退出、数据版本和原 profile 资源核对后单独执行。
+升级核对可用 `vpnmgr-core --prepare-upgrade <原目录> <不存在的副本目录>`：SQLite backup 纳入已提交 WAL，复制主密钥、infra 参数、启动配置、分流/TUN 意图和日志开关；核对加密字段、恢复记录、配置密钥匹配，且副本升级 schema。源目录只读，输出目录 0700、文件 0600，已有目标拒绝覆盖。v2 的 `upgrade-review.json` 记录原目录、profile、数量及文件摘要，不含凭据；准备后的原数据或副本变化会阻止启用。副本保留 `upgrade-pending`，不会因准备成功自动启动。
+
+macOS 离线切换命令使用 `DATA_DIR` 指定新版本数据目录、`VPNMGR_VM_PROFILE` 指定同一个原 profile：`--activate-upgrade <副本目录>`、`--upgrade-status`、`--resume-upgrade`、`--rollback-upgrade`、`--finish-upgrade`。须先退出使用原目录或目标目录的应用；目标目录必须已由新版本初始化，profile 必须读回为 Stopped。这些命令不启动/停止 VM、不修改容器或宿主网络。原生确认入口先正常关闭自己的 core，再调用离线命令并重新启动管理服务；其他安装版仍运行时拒绝切换，不终止对方。服务无法启动时，主界面仍提供升级恢复入口。
+
+目录使用同文件系统的 `RENAME_SWAP` 原子交换，父目录的稳定锁与切换记录不随数据目录移动；原 native-owner.lock 仍被兼容检查，当前 core/Tauri 均在初始化前占用数据目录。每个切换边界同步记录，中断后根据目录标记和 pending 核对实际状态，再继续或回退；结果不明时不盲目重复动作。回退保留切换后的整份数据，`--finish-upgrade` 只归档记录，不删除保留目录。**这是配置切换/回退，不回滚容器、卷内文件或厂商设备身份**；原目录日志历史保留在原位置，副本迁移日志开关。返回的 `runtime_verified` 始终为 false，真实原 profile/客户端和业务升级验收仍须另做。
 
 首次连接通过 `/api/system.runtime` 显示已知的下载、解压、启动阶段。Colima 输出和 Docker 分层进度先转换为不含路径/地址的提示，百分比只表示当前文件或已知分层，不表示整体初始化或 VPN 登录成功。`progress_age_seconds` 仅在启动中返回，自阶段文字/百分比变化后计时；原生设置、新建和模板导入在 90 秒无新提示时说明仍可能在进行，不据此判网络故障或自动重试。失败原因保留在状态区域；启动/释放/退出时禁止再次连接，失败或休眠时由用户显式连接。真实下载源、磁盘不足和系统授权窗口仍需发布前实机验收。
 

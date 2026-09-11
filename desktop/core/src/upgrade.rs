@@ -1,16 +1,16 @@
-//! 升级准备只生成受限副本；源目录和 VM 资源始终不变。副本经单独切换验收后才能启用。
+//! 升级准备只生成受限副本；源目录和 VM 资源始终不变。副本由显式离线切换流程启用。
 use std::{collections::BTreeMap, fs, io::Write, os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt}, path::Path};
 use anyhow::{anyhow, ensure, Context, Result};
 use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-const FILES: &[&str] = &["master.key", "infra.json", "config.yaml", "routing_off", "tun-entry.json"];
+const FILES: &[&str] = &["master.key", "infra.json", "config.yaml", "routing_off", "tun-entry.json", "logs/disabled"];
 const TABLES: &[&str] = &["channels", "rules", "domains", "mirrors", "channel_runtime", "channel_replacements", "channel_stop_intents"];
 pub const PENDING: &str = "upgrade-pending";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Report {
     pub version: u32,
     pub counts: BTreeMap<String, i64>,
@@ -19,9 +19,20 @@ pub struct Report {
     pub database_sha256: String,
     pub runtime_verified: bool,
     pub ready_to_activate: bool,
+    pub source: std::path::PathBuf,
+    pub source_sha256: BTreeMap<String, String>,
+    pub file_sha256: BTreeMap<String, String>,
+    pub vm_profile: String,
 }
 
 fn read_file(root: &Path, name: &str, required: bool) -> Result<Option<Vec<u8>>> {
+    if name.contains('/') {
+        match fs::symlink_metadata(root.join("logs")) {
+            Ok(meta) => ensure!(meta.file_type().is_dir(), "日志目录不能是链接"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !required => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+    }
     let path = root.join(name);
     match fs::symlink_metadata(&path) {
         Ok(meta) => { ensure!(meta.file_type().is_file(), "{name} 必须是普通文件"); Ok(Some(fs::read(path)?)) },
@@ -88,7 +99,7 @@ fn validate_db(path: &Path, key: &[u8]) -> Result<(BTreeMap<String,i64>,usize)> 
     Ok((counts,checked))
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut f=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
     f.write_all(bytes)?; f.sync_all()?; Ok(())
 }
@@ -96,6 +107,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 /// destination 必须不存在。失败保留受限草稿与 pending 标记，禁止误作新数据目录启动。
 /// SQLite backup 同时读取 WAL 已提交内容；复制期间源有变化则拒绝给出完成凭据。
 pub fn prepare(source: &Path, destination: &Path) -> Result<Report> {
+    prepare_for_profile(source, destination, "vpnmgr")
+}
+
+pub fn prepare_for_profile(source: &Path, destination: &Path, vm_profile: &str) -> Result<Report> {
     let source=source.canonicalize().context("原数据目录不可读取")?;
     ensure!(source.is_dir(),"原数据目录无效");
     let parent=destination.parent().ok_or_else(||anyhow!("副本目录无效"))?.canonicalize()?;
@@ -107,31 +122,69 @@ pub fn prepare(source: &Path, destination: &Path) -> Result<Report> {
     let before:i64=conn.query_row("PRAGMA data_version",[],|r|r.get(0))?;
     fs::DirBuilder::new().mode(0o700).create(&destination).context("副本目录必须尚不存在")?;
     write_private(&destination.join(PENDING),b"Upgrade review copy. Runtime activation is not authorized.\n")?;
-    for (name,bytes) in &original {write_private(&destination.join(name),bytes)?;}
+    for (name,bytes) in &original {
+        if name.contains('/') { fs::DirBuilder::new().mode(0o700).create(destination.join("logs"))?; }
+        write_private(&destination.join(name),bytes)?;
+        if name.contains('/') { fs::File::open(destination.join("logs"))?.sync_all()?; }
+    }
     let db=destination.join("vpnmgr.db");
     conn.backup(DatabaseName::Main,&db,None).context("数据库副本未完成，请保留原目录")?;
     fs::set_permissions(&db,fs::Permissions::from_mode(0o600))?;
     let (counts,checked)=validate_db(&db,&original["master.key"])?;
+    let mut source_sha256: BTreeMap<String, String> = original.iter().map(|(name, bytes)| (name.clone(), hash(bytes))).collect();
+    source_sha256.insert("vpnmgr.db".into(), hash(&fs::read(&db)?));
     let after:i64=conn.query_row("PRAGMA data_version",[],|r|r.get(0))?;
     ensure!(before==after && original==materials(&source)?,"复制期间原数据发生变化，请在原版本退出后重新准备");
     // 只在副本执行当前 schema 升级；检查后保留原有账号、MAC、卷及恢复操作引用。
     crate::store::init(&db)?;
     validate_db(&db,&original["master.key"])?;
     fs::File::open(&db)?.sync_all()?;
-    let report=Report {version:1,counts,encrypted_values_checked:checked,
-        files:original.keys().cloned().chain(std::iter::once("vpnmgr.db".into())).collect(),
-        database_sha256:format!("{:x}",Sha256::digest(fs::read(&db)?)),runtime_verified:false,ready_to_activate:false};
+    let files: Vec<_> = original.keys().cloned().chain(std::iter::once("vpnmgr.db".into())).collect();
+    let file_sha256 = files.iter().map(|name| Ok((name.clone(), hash(&fs::read(destination.join(name))?)))).collect::<Result<_>>()?;
+    let report=Report {version:2,counts,encrypted_values_checked:checked,
+        files, database_sha256:hash(&fs::read(&db)?),runtime_verified:false,ready_to_activate:false,
+        source, source_sha256, file_sha256, vm_profile: vm_profile.into()};
     write_private(&destination.join("upgrade-review.json"),&serde_json::to_vec_pretty(&report)?)?;
     fs::File::open(&destination)?.sync_all()?;
     Ok(report)
 }
 
+fn hash(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
+
+/// Validate a sealed review copy and prove the original still matches its committed snapshot.
+pub fn validate_prepared(candidate: &Path) -> Result<Report> {
+    let report = validate_copy(candidate)?;
+    let original = materials(&report.source)?;
+    let mut source_hashes: BTreeMap<_, _> = original.iter().map(|(name, bytes)| (name.clone(), hash(bytes))).collect();
+    read_file(&report.source, "vpnmgr.db", true)?;
+    let db = Connection::open_with_flags(report.source.join("vpnmgr.db"), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let temporary = tempfile::tempdir()?; let snapshot = temporary.path().join("snapshot.db");
+    db.backup(DatabaseName::Main, &snapshot, None)?;
+    source_hashes.insert("vpnmgr.db".into(), hash(&fs::read(snapshot)?));
+    ensure!(source_hashes == report.source_sha256, "原数据在准备副本后发生变化，请退出旧版本并重新准备副本");
+    Ok(report)
+}
+
+pub(crate) fn validate_copy(candidate: &Path) -> Result<Report> {
+    ensure!(candidate.join(PENDING).try_exists()?, "该目录不是待启用的升级副本");
+    let report: Report = serde_json::from_slice(&read_file(candidate,"upgrade-review.json",true)?.unwrap())
+        .context("升级副本版本较旧或检查记录无效，请重新准备副本")?;
+    ensure!(report.version == 2 && !report.ready_to_activate && !report.runtime_verified, "升级副本协议不受支持");
+    let mut actual = materials(candidate)?.keys().cloned().collect::<Vec<_>>(); actual.push("vpnmgr.db".into());
+    ensure!(actual == report.files, "升级副本文件清单发生变化，请重新准备");
+    let mut hashes = BTreeMap::new();
+    for name in &actual { hashes.insert(name.clone(), hash(&read_file(candidate,name,true)?.unwrap())); }
+    ensure!(hashes == report.file_sha256 && hashes.get("vpnmgr.db") == Some(&report.database_sha256), "升级副本内容发生变化，请重新准备");
+    validate_db(&candidate.join("vpnmgr.db"), &read_file(candidate,"master.key",true)?.unwrap())?;
+    Ok(report)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn source(root:&Path) -> (std::path::PathBuf,Connection) {
+    pub(crate) fn source(root:&Path) -> (std::path::PathBuf,Connection) {
         let dir=root.join("original"); fs::create_dir(&dir).unwrap();
         crate::store::init(&dir.join("vpnmgr.db")).unwrap();
         let key=crate::store::master_key(&dir).unwrap();
@@ -156,6 +209,7 @@ mod tests {
         let before=fs::read(source.join("vpnmgr.db")).unwrap();
         let wal=fs::read(source.join("vpnmgr.db-wal")).unwrap();
         let report=prepare(&source,&target).unwrap();
+        validate_prepared(&target).unwrap();
         assert_eq!(report.counts["channels"],1); assert_eq!(report.counts["channel_stop_intents"],1);
         assert_eq!(report.encrypted_values_checked,3); assert!(!report.ready_to_activate && !report.runtime_verified);
         assert_eq!(fs::read(source.join("vpnmgr.db")).unwrap(),before);
@@ -169,6 +223,19 @@ mod tests {
         assert_eq!(copy.query_row("SELECT data_volume FROM channel_runtime",[],|r|r.get::<_,String>(0)).unwrap(),"owned-volume");
         let mut cfg=crate::config::Config::from_getter(|_|None);cfg.data_dir=target;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn sealed_copy_rejects_stale_source_and_preserves_logging_preference() {
+        let root=tempfile::tempdir().unwrap(); let (source, conn)=source(root.path());
+        fs::create_dir(source.join("logs")).unwrap(); fs::write(source.join("logs/disabled"), b"1").unwrap();
+        let target=root.path().join("review"); prepare(&source,&target).unwrap();
+        validate_prepared(&target).unwrap(); assert_eq!(fs::read(target.join("logs/disabled")).unwrap(), b"1");
+        fs::write(target.join("routing_off"), b"changed").unwrap();
+        assert!(validate_prepared(&target).unwrap_err().to_string().contains("副本内容发生变化"));
+        fs::write(target.join("routing_off"), b"1").unwrap();
+        conn.execute("UPDATE channels SET name='changed after preparation'", []).unwrap();
+        assert!(validate_prepared(&target).unwrap_err().to_string().contains("原数据在准备副本后发生变化"));
     }
 
     #[test]

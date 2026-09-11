@@ -76,6 +76,7 @@ struct WorkspaceView: View {
                         Label(model.quitting ? "正在断开并退出" : model.starting ? "正在准备管理界面" : "本地服务尚未就绪", systemImage: "network")
                     } description: { Text("管理界面就绪后，连接通道时才会准备运行环境。") } actions: {
                         if model.starting || model.quitting { ProgressView() } else { Button("重试") { model.launch() } }
+                        if model.canManageUpgrade { Button("升级配置与恢复…") { model.upgradePresented = true }.disabled(model.upgradeSwitching) }
                     }
                 } else {
                     switch page ?? .channels {
@@ -107,6 +108,13 @@ struct WorkspaceView: View {
                 }
         }.onChange(of: model.createdChannelID) { _, id in if let id { selection = id; page = .channels; model.createdChannelID = nil } }
         .sheet(isPresented: $creating) { ChannelEditor(channel: nil) }
+        .sheet(isPresented: $model.upgradePresented) {
+            VStack {
+                UpgradeView()
+                Button("关闭") { model.upgradePresented = false }.keyboardShortcut(.cancelAction)
+                    .disabled(model.upgradePreparing || model.upgradeSwitching).padding()
+            }.frame(width: 780, height: 660).interactiveDismissDisabled(model.upgradePreparing || model.upgradeSwitching)
+        }
         .focusedSceneValue(\.workspaceActions, WorkspaceActions(create: {
             guard model.ready, NSApp.modalWindow == nil, NSApp.keyWindow?.sheetParent == nil else { return }
             creating = true

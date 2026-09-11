@@ -15,21 +15,38 @@ async fn run() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "--prepare-upgrade") {
         anyhow::ensure!(args.len() == 4, "用法: vpnmgr-core --prepare-upgrade 原数据目录 新副本目录");
-        let report = vpnmgr_core::upgrade::prepare(std::path::Path::new(&args[2]), std::path::Path::new(&args[3]))?;
+        let report = vpnmgr_core::upgrade::prepare_for_profile(std::path::Path::new(&args[2]), std::path::Path::new(&args[3]), &Config::load().vm_profile)?;
         println!("{}", serde_json::to_string(&report)?);
         return Ok(());
     }
+    if let Some(command) = args.get(1).and_then(|arg| arg.to_str()) {
+        let cfg = Config::load();
+        let status = match command {
+            "--activate-upgrade" => {
+                anyhow::ensure!(args.len() == 3, "用法: vpnmgr-core --activate-upgrade 升级副本目录（DATA_DIR 指向新版本目录）");
+                Some(vpnmgr_core::upgrade_switch::activate(std::path::Path::new(&args[2]), &cfg).await?)
+            }
+            "--upgrade-status" | "--resume-upgrade" | "--rollback-upgrade" | "--finish-upgrade" => {
+                anyhow::ensure!(args.len() == 2, "升级状态与恢复命令不接受额外参数，使用 DATA_DIR 指定目标目录");
+                match command {
+                    "--upgrade-status" => vpnmgr_core::upgrade_switch::optional_status(&cfg.data_dir)?,
+                    "--resume-upgrade" => Some(vpnmgr_core::upgrade_switch::resume(&cfg).await?),
+                    "--rollback-upgrade" => Some(vpnmgr_core::upgrade_switch::rollback(&cfg).await?),
+                    _ => Some(vpnmgr_core::upgrade_switch::finish(&cfg.data_dir)?),
+                }
+            }
+            _ => anyhow::bail!("未知命令；未启动本地服务"),
+        };
+        println!("{}", serde_json::to_string(&status)?);
+        return Ok(());
+    }
+    anyhow::ensure!(args.len() == 1, "未知命令；未启动本地服务");
     let native_child = std::env::var("VPNMGR_NATIVE_CHILD").as_deref() == Ok("1");
     let mut cfg = Config::load();
-    let _native_owner = if native_child {
-        use std::os::unix::fs::{OpenOptionsExt, DirBuilderExt};
-        cfg.validate()?;
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&cfg.data_dir)?;
-        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)
-            .open(cfg.data_dir.join("native-owner.lock"))?;
-        file.try_lock().map_err(|_| anyhow::anyhow!("这个数据目录已有管理界面在使用，请返回已打开的窗口"))?;
-        Some(file)
-    } else { None };
+    cfg.validate()?;
+    let _data_owner = vpnmgr_core::data_owner::Lease::acquire(&cfg.data_dir)?;
+    _data_owner.create_directory()?;
+    cfg.validate()?;
     if cfg.managed_vm {
         cfg.validate()?;
         vpnmgr_core::infra::ensure_params(&cfg.data_dir)?;

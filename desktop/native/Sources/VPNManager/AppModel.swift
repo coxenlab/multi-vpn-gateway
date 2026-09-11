@@ -18,6 +18,10 @@ import SwiftUI
     @Published var upgradeReport: UpgradeReport?
     @Published var upgradeDestination: URL?
     @Published var upgradeError: String?
+    @Published var upgradePresented = false
+    @Published var upgradeSwitching = false
+    @Published var upgradeStatus: UpgradeSwitchStatus?
+    @Published var completedUpgrade: UpgradeSwitchStatus?
     @Published var visible = true
     private(set) var api: LocalAPI?
     private var child: Process?
@@ -29,6 +33,13 @@ import SwiftUI
     @Published private(set) var quitting = false
     private var generation = UUID()
     private var noteDrafts: [String: NoteDraft] = [:]
+    private let launchEnvironment: [String: String]?
+    private var launchContext: OfflineLaunchContext?
+    private var upgradeRevision = UUID()
+    var canManageUpgrade: Bool { launchContext != nil }
+    var upgradeTargetPath: String? { launchContext?.environment["DATA_DIR"] }
+
+    init(launchEnvironment: [String: String]? = nil) { self.launchEnvironment = launchEnvironment }
 
     func noteDraft(for channelID: String) -> NoteDraft {
         if let draft = noteDrafts[channelID] { return draft }
@@ -50,14 +61,14 @@ import SwiftUI
         if importTicket != nil { importError = "本地服务连接已结束，上次导入结果待确认。请刷新镜像清单核对。" }
         importTicket = nil
     }
-    func isCurrent(_ client: LocalAPI) -> Bool { ready && !quitting && api === client }
+    func isCurrent(_ client: LocalAPI) -> Bool { ready && !quitting && !upgradeSwitching && api === client }
 
     func launch() {
-        guard child == nil, !starting, !quitting else { return }
+        guard child == nil, !starting, !quitting, !upgradeSwitching else { return }
         starting = true; error = nil; output.removeAll(); generation = UUID()
         let currentGeneration = generation
         do {
-            var env = ProcessInfo.processInfo.environment
+            var env = launchEnvironment ?? ProcessInfo.processInfo.environment
             #if DEBUG
             guard env["VPNMGR_DEV_MODE"] == "1", let path = env["VPNMGR_CORE_PATH"], let directory = env["DATA_DIR"], !directory.isEmpty,
                   let profile = env["VPNMGR_VM_PROFILE"], !["vpnmgr", "default"].contains(profile) else {
@@ -73,6 +84,7 @@ import SwiftUI
             env = plan.environment
             #endif
             env["VPNMGR_MANAGED_VM"] = "1"; env["VPNMGR_NATIVE_CHILD"] = "1"
+            launchContext = OfflineLaunchContext(executable: executable, environment: env)
             let process = Process(); process.executableURL = executable; process.environment = env
             #if !DEBUG
             process.currentDirectoryURL = plan.workingDirectory
@@ -88,7 +100,7 @@ import SwiftUI
                     try? self.childInput?.fileHandleForWriting.close()
                     self.childInput = nil; self.childOutput = nil
                     if self.quitting { NSApp.reply(toApplicationShouldTerminate: true) }
-                    else if self.error == nil { self.error = "本地服务已退出（\(process.terminationStatus)），可以重试启动。" }
+                    else if !self.upgradeSwitching, self.error == nil { self.error = "本地服务已退出（\(process.terminationStatus)），可以重试启动。" }
                 }
             }
             pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -251,7 +263,7 @@ import SwiftUI
         } catch { if isCurrent(api) { importError = error.localizedDescription } }
     }
     func prepareUpgrade(from source: URL, to destination: URL) async {
-        guard let executable = child?.executableURL, !upgradePreparing else { return }
+        guard let context = launchContext, !upgradePreparing, !upgradeSwitching else { return }
         upgradePreparing = true; upgradeError = nil; upgradeReport = nil; upgradeDestination = destination
         let sourceScoped = source.startAccessingSecurityScopedResource(), destinationScoped = destination.deletingLastPathComponent().startAccessingSecurityScopedResource()
         defer {
@@ -259,10 +271,62 @@ import SwiftUI
             if sourceScoped { source.stopAccessingSecurityScopedResource() }
             if destinationScoped { destination.deletingLastPathComponent().stopAccessingSecurityScopedResource() }
         }
-        let environment = child?.environment
         do {
-            upgradeReport = try await Task.detached(priority: .utility) { try runUpgradePreparation(executable: executable, environment: environment, source: source, destination: destination) }.value
+            upgradeReport = try await Task.detached(priority: .utility) { try runUpgradePreparation(executable: context.executable, environment: context.environment, source: source, destination: destination) }.value
         } catch { upgradeError = error.localizedDescription }
+    }
+
+    func loadUpgradeStatus() async {
+        guard let context = launchContext, !upgradeSwitching else { return }
+        upgradeRevision = UUID(); let revision = upgradeRevision
+        do {
+            let status = try await Task.detached(priority: .utility) {
+                try runOfflineCore(context: context, arguments: ["--upgrade-status"], as: UpgradeSwitchStatus?.self)
+            }.value
+            if !upgradeSwitching, revision == upgradeRevision { upgradeStatus = status }
+        } catch { if !upgradeSwitching, revision == upgradeRevision { upgradeError = error.localizedDescription } }
+    }
+
+    func switchUpgrade(_ action: UpgradeAction) async {
+        guard let context = launchContext, !upgradeSwitching, !upgradePreparing, !quitting else { return }
+        var arguments = [action.command]
+        guard action == .finish || !noteDrafts.values.contains(where: { $0.dirty }) else {
+            upgradeError = "有尚未保存的登录备注，请先保存或放弃草稿，再切换配置。"; return
+        }
+        if action == .activate {
+            guard upgradeReport?.version == 2, let destination = upgradeDestination else { upgradeError = "请先重新准备并核对升级副本。"; return }
+            arguments.append(destination.path)
+        }
+        upgradeSwitching = true; upgradeError = nil; upgradeRevision = UUID()
+        do {
+            // An old installed instance must be closed by the user, never terminated here.
+            guard context.environment["VPNMGR_DEV_MODE"] == "1" || !NSRunningApplication.runningApplications(withBundleIdentifier: "com.vpnmgr.desktop")
+                .contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) else {
+                throw APIError(message: "旧版本仍在运行。请先从旧版本断开并退出，再执行配置切换。")
+            }
+            if let process = child, process.isRunning {
+                disconnect()
+                try childInput?.fileHandleForWriting.close()
+                let deadline = Date().addingTimeInterval(95)
+                while child != nil {
+                    guard Date() < deadline else { throw APIError(message: "本地服务退出尚未确认，未开始配置切换。请稍后核对状态。") }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+            }
+            let result = try await Task.detached(priority: .utility) {
+                try runOfflineCore(context: context, arguments: arguments, as: UpgradeSwitchStatus.self)
+            }.value
+            upgradeStatus = action == .finish ? nil : result
+            if action == .finish { completedUpgrade = result }
+            else { noteDrafts.removeAll() }
+            upgradeReport = nil // The old prepared snapshot must not be offered for activation again.
+            upgradeSwitching = false
+            message = action == .finish ? "升级记录已保存，保留目录仍在原位置。" : result.label
+            launch()
+        } catch {
+            upgradeSwitching = false; upgradeError = error.localizedDescription
+            await loadUpgradeStatus() // Observe an uncertain result; never blindly repeat the write.
+        }
     }
     func uploadInstaller(_ file: URL, channelID: String) async {
         guard let api, isCurrent(api), !busy.contains(channelID) else { return }
@@ -275,6 +339,7 @@ import SwiftUI
         } catch { if isCurrent(api) { self.error = error.localizedDescription } }
     }
     func quit() -> NSApplication.TerminateReply {
+        guard !upgradeSwitching else { upgradeError = "配置切换正在进行，请完成或恢复切换后再退出。"; return .terminateCancel }
         quitting = true; disconnect(); message = "正在断开并退出…"
         guard let child, child.isRunning else { return .terminateNow }
         try? childInput?.fileHandleForWriting.close() // EOF asks owned core to run its complete shutdown sequence.
