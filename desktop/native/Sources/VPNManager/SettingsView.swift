@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var selectedBackup: SelectedBackup?
     @State private var systemProxy = false
     @State private var tun = false
+    @State private var helperUpdateRequired = false
     @State private var entryLoaded = false
     @State private var foreignProxy = false
     @State private var confirmProxy = false
@@ -37,6 +38,9 @@ struct SettingsView: View {
                 Toggle("TUN 接管", isOn: Binding(get: { tun }, set: { value in Task { if await model.perform("/api/entry/tun", key: "__entry", body: ["enable": value]) { await loadEntry() } } })).disabled(!entryLoaded || entryRequest.loading || !helperInstalled || !hostAvailable || model.busy.contains("__entry"))
                 if hostAvailable {
                     LabeledContent("TUN 助手", value: !entryLoaded ? "待确认" : helperInstalled ? "已安装\(helperVersion.map { " · " + $0 } ?? "")" : "未安装")
+                    if entryLoaded && helperUpdateRequired {
+                        Text("助手版本需要更新，TUN 路由与空闲释放尚不能完成确认。请更新助手，再重试连接。").font(.callout).foregroundStyle(.orange)
+                    }
                     HStack {
                         Button(helperInstalled ? "更新助手…" : "安装助手…") { helperAction = "install" }.disabled(!entryLoaded || entryRequest.loading || !helperResources || model.busy.contains("__entry"))
                         if helperInstalled { Button("卸载助手…", role: .destructive) { helperAction = "uninstall" }.disabled(entryRequest.loading || model.busy.contains("__entry")) }
@@ -102,6 +106,7 @@ struct SettingsView: View {
         }) { status, proxy in
             tun = status.enabled; helperInstalled = status.installed; helperResources = status.resources == true
             helperVersion = status.helper?.version
+            helperUpdateRequired = status.needsUpdate
             systemProxy = proxy.enabled && proxy.is_ours; foreignProxy = proxy.enabled && !proxy.is_ours
             entryLoaded = true
         }
@@ -123,6 +128,11 @@ struct SettingsView: View {
 struct Inspection: Identifiable { let path: String; let title: String; var id: String { path } }
 struct TunEntryStatus: Decodable {
     let enabled: Bool; let installed: Bool; let resources: Bool?; let helper: Helper?
+    let expected_version: String?
+    var needsUpdate: Bool {
+        guard installed, let expected_version, let version = helper?.version else { return false }
+        return version != expected_version
+    }
     struct Helper: Decodable { let version: String? }
 }
 struct ProxyEntryStatus: Decodable { let enabled: Bool; let is_ours: Bool }
