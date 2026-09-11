@@ -32,8 +32,16 @@ struct Rule: Decodable, Identifiable, Hashable {
 }
 struct Runtime: Decodable {
     let phase: String; let detail: String?; let error: String?
+    let progress_age_seconds: UInt64?
     var ready: Bool { ["ready", "waiting"].contains(phase) }
-    var label: String { ["dormant":"按需运行", "starting":"准备连接", "ready":"运行中", "waiting":"等待空闲释放", "releasing":"释放中", "failed":"需要重试"][phase] ?? "待确认" }
+    var working: Bool { ["starting", "releasing", "closing"].contains(phase) }
+    var canConnect: Bool { ["dormant", "failed"].contains(phase) }
+    var label: String { ["dormant":"按需运行", "starting":"准备连接", "ready":"运行中", "waiting":"等待空闲释放", "releasing":"释放中", "failed":"连接未完成", "closing":"正在断开"][phase] ?? "待确认" }
+    var notice: String? {
+        if phase == "failed" { return error.flatMap { $0.isEmpty ? nil : $0 } ?? "运行环境尚未就绪。请查看运行诊断，核对后重试连接。" }
+        return detail.flatMap { $0.isEmpty ? nil : $0 }
+    }
+    var quietPreparation: Bool { phase == "starting" && (progress_age_seconds ?? 0) >= 90 }
 }
 struct SystemStatus: Decodable {
     let runtime: Runtime?; let routing_off: Bool?; let self_heal_enabled: Bool?

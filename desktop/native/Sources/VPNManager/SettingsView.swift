@@ -22,9 +22,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("运行环境") {
-                LabeledContent("状态", value: model.system?.runtime?.label ?? "待确认")
-                if let detail = model.system?.runtime?.detail, !detail.isEmpty { Text(detail).foregroundStyle(.secondary) }
-                Button("连接运行环境") { Task { await model.perform("/api/runtime/start", key: "__runtime", success: "运行环境已连接") } }.disabled(model.busy.contains("__runtime"))
+                RuntimeStatusView()
                 Button("检查环境") { inspecting = Inspection(path: "/api/preflight", title: "环境检查") }
                 if model.system?.self_heal_enabled != nil {
                     Toggle("自动修复连接", isOn: Binding(get: { model.system?.self_heal_enabled == true }, set: { value in Task { await model.perform("/api/system/self-heal", key: "__self-heal", body: ["enabled": value], success: value ? "自动修复已开启" : "自动修复已暂停") } })).disabled(model.busy.contains("__self-heal"))

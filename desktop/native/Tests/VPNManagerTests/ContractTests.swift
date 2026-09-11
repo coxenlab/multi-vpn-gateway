@@ -3,6 +3,24 @@ import SwiftUI
 @testable import VPNManager
 
 final class ContractTests: XCTestCase {
+    func testRuntimeFeedbackKeepsFailureAndDoesNotTreatSlowPreparationAsFailure() throws {
+        func runtime(_ json: String) throws -> Runtime { try JSONDecoder().decode(Runtime.self, from: Data(json.utf8)) }
+        let slow = try runtime(#"{"phase":"starting","detail":"正在下载运行环境文件…","progress_age_seconds":90}"#)
+        XCTAssertTrue(slow.working); XCTAssertTrue(slow.quietPreparation)
+        XCTAssertFalse(slow.canConnect); XCTAssertFalse(slow.ready)
+        XCTAssertEqual(slow.notice, "正在下载运行环境文件…")
+        let failed = try runtime(#"{"phase":"failed","detail":"正在下载旧阶段","error":"磁盘空间不足","progress_age_seconds":200}"#)
+        XCTAssertTrue(failed.canConnect); XCTAssertFalse(failed.working); XCTAssertFalse(failed.quietPreparation)
+        XCTAssertEqual(failed.notice, "磁盘空间不足")
+        for phase in ["ready", "waiting", "releasing", "closing", "unknown"] {
+            let value = try runtime("{\"phase\":\"\(phase)\"}")
+            XCTAssertFalse(value.canConnect); XCTAssertFalse(value.quietPreparation)
+        }
+        XCTAssertTrue(try runtime(#"{"phase":"dormant"}"#).canConnect)
+        XCTAssertFalse(try runtime(#"{"phase":"starting","progress_age_seconds":89}"#).quietPreparation)
+        XCTAssertNotNil(try runtime(#"{"phase":"failed","error":""}"#).notice)
+    }
+
     func testApplicationStatusKeepsDormantAndPartialSuccessUnconfirmed() throws {
         let system = try JSONDecoder().decode(SystemStatus.self, from: fixture("native-system.json"))
         let state = try XCTUnwrap(system.config_application)

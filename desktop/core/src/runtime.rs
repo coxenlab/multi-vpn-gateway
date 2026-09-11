@@ -132,6 +132,7 @@ async fn start(state: &AppState) -> Result<()> {
         }
         progress("正在启动运行环境，首次准备可能需要下载组件…");
         vm::start_with_progress(&cfg.vm_profile, rosetta, |detail| {
+            if let Some(message) = crate::startup_feedback::vm_detail(&detail) { progress(&message); }
             crate::ev!(debug, "runtime", "vm_start_progress", "运行环境启动进度", {"detail":detail});
         }).await?;
     }
@@ -154,6 +155,7 @@ async fn start(state: &AppState) -> Result<()> {
     }
     progress("检查分流组件…");
     infra::ensure_mihomo_image_with_progress(&connection, cfg, |detail| {
+        if let Some(message) = crate::startup_feedback::image_detail(&detail) { progress(&message); }
         crate::ev!(debug, "runtime", "image_progress", "分流组件准备进度", {"detail":detail});
     }).await?;
     infra::ensure_mihomo(&connection, cfg).await?;

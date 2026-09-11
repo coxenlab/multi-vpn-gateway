@@ -114,6 +114,44 @@ final class SessionTests: XCTestCase {
         try await server.respond("/api/vpn-types", json: "[]")
     }
 
+    @MainActor func testRuntimeStartKeepsProgressAndRetriesOnlyAfterExplicitAction() async throws {
+        let server = DelayedHTTP(), model = AppModel()
+        model.connect(to: api(server))
+        defer { model.disconnect(); Task { await server.finish() } }
+        func snapshot(_ runtime: String) async throws {
+            await wait(server, "/api/channels"); await wait(server, "/api/system")
+            try await server.respond("/api/channels", json: "[]")
+            try await server.respond("/api/system", json: "{\"runtime\":\(runtime)}")
+            await wait(server, "/api/vpn-types"); try await server.respond("/api/vpn-types", json: "[]")
+        }
+        let start = Task { await model.perform("/api/runtime/start", key: "__runtime") }
+        await wait(server, "/api/runtime/start")
+        let duplicate = await model.perform("/api/runtime/start", key: "__runtime")
+        XCTAssertFalse(duplicate)
+        let refresh = Task { await model.refresh() }
+        try await snapshot(#"{"phase":"starting","detail":"正在下载运行环境文件…","progress_age_seconds":90}"#)
+        await refresh.value
+        XCTAssertTrue(model.busy.contains("__runtime")); XCTAssertTrue(model.system?.runtime?.quietPreparation == true)
+        XCTAssertNil(model.error)
+        try await server.respond("/api/runtime/start", json: #"{"detail":"磁盘空间不足"}"#, status: 503)
+        try await snapshot(#"{"phase":"failed","detail":"正在下载旧阶段","error":"磁盘空间不足"}"#)
+        let completed = await start.value
+        XCTAssertFalse(completed); XCTAssertFalse(model.busy.contains("__runtime"))
+        // Dismissing the transient error keeps the durable server reason and manual retry.
+        model.error = nil
+        XCTAssertEqual(model.system?.runtime?.notice, "磁盘空间不足")
+        XCTAssertTrue(model.system?.runtime?.canConnect == true)
+        let beforeRetry = await server.count
+        XCTAssertEqual(beforeRetry, 7) // One write and two read snapshots; no automatic restart.
+        let retry = Task { await model.perform("/api/runtime/start", key: "__runtime", success: "运行环境已连接") }
+        await wait(server, "/api/runtime/start")
+        try await server.respond("/api/runtime/start", json: #"{"ok":true}"#)
+        try await snapshot(#"{"phase":"ready","detail":"运行环境已就绪"}"#)
+        let retried = await retry.value
+        XCTAssertTrue(retried); XCTAssertEqual(model.message, "运行环境已连接")
+        XCTAssertTrue(model.system?.runtime?.ready == true); XCTAssertFalse(model.busy.contains("__runtime"))
+    }
+
     @MainActor func testLateRefreshCannotOverwriteReconnectedService() async throws {
         let old = DelayedHTTP(), current = DelayedHTTP(), model = AppModel()
         defer { model.disconnect(); Task { await old.finish(); await current.finish() } }

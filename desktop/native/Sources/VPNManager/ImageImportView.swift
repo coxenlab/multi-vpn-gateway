@@ -36,11 +36,9 @@ struct ImageImportView: View {
                 if let error = ticket.error { Text(error).foregroundStyle(.red) }
                 else { Text(ticket.progress ?? "等待确认").foregroundStyle(.secondary) }
                 if let error = model.importError { Text(error).foregroundStyle(.red) }
+                if ticket.status == "preview", model.system?.runtime?.ready != true { RuntimeStatusView() }
                 HStack {
                     if ticket.status == "preview" {
-                        if model.system?.runtime?.ready != true {
-                            Button("连接运行环境") { Task { await model.perform("/api/runtime/start", key: "__runtime", success: "运行环境已连接") } }.disabled(model.busy.contains("__runtime"))
-                        }
                         Button("确认导入模板") { Task { await model.confirmImageImport() } }
                             .buttonStyle(.borderedProminent).disabled(model.system?.runtime?.ready != true || model.busy.contains("__image-import"))
                     }

@@ -33,6 +33,7 @@ pub mod shutdown;
 pub mod lifecycle;
 pub mod runtime_lifecycle;
 pub mod runtime;
+pub mod startup_feedback;
 pub mod stop_intents;
 pub mod upgrade;
 pub mod image_archive;

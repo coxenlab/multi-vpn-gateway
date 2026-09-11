@@ -23,6 +23,8 @@ pub struct Snapshot {
     pub release_in_seconds: Option<u64>,
     pub error: Option<String>,
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_age_seconds: Option<u64>,
 }
 
 struct State {
@@ -34,6 +36,7 @@ struct State {
     deadline: Option<Instant>,
     error: Option<String>,
     detail: String,
+    detail_changed: Instant,
     flight: Option<Flight>,
 }
 
@@ -46,7 +49,7 @@ impl Default for Coordinator {
     fn default() -> Self {
         Self {
             state: Mutex::new(State { phase: Phase::Dormant, closing: false, active: 0,
-                revision: 0, attempt: 0, deadline: None, error: None, detail: String::new(), flight: None }),
+                revision: 0, attempt: 0, deadline: None, error: None, detail: String::new(), detail_changed: Instant::now(), flight: None }),
             changed: watch::channel(0).0,
         }
     }
@@ -70,6 +73,10 @@ impl Coordinator {
     }
 
     pub fn snapshot(&self) -> Snapshot {
+        self.snapshot_at(Instant::now())
+    }
+
+    fn snapshot_at(&self, now: Instant) -> Snapshot {
         let state = self.state.lock().unwrap();
         Snapshot {
             phase: if state.closing { Phase::Closing } else { state.phase },
@@ -77,12 +84,17 @@ impl Coordinator {
             release_in_seconds: state.deadline.map(|at| at.saturating_duration_since(Instant::now()).as_secs()),
             error: state.error.clone(),
             detail: state.detail.clone(),
+            progress_age_seconds: (state.phase == Phase::Starting && !state.closing)
+                .then(|| now.saturating_duration_since(state.detail_changed).as_secs()),
         }
     }
 
     pub fn progress(&self, detail: impl Into<String>) {
         let mut state = self.state.lock().unwrap();
-        state.detail = detail.into();
+        let detail = detail.into();
+        if state.detail == detail { return; }
+        state.detail = detail;
+        state.detail_changed = Instant::now();
         self.publish(&mut state);
     }
 
@@ -143,6 +155,8 @@ impl Coordinator {
                         state.phase = Phase::Starting;
                         state.attempt += 1;
                         state.error = None;
+                        state.detail = "正在准备连接…".into();
+                        state.detail_changed = Instant::now();
                         let (sender, receiver) = watch::channel(None);
                         state.flight = Some(receiver.clone());
                         self.publish(&mut state);
@@ -255,6 +269,37 @@ mod tests {
     fn coordinator() -> Arc<Coordinator> { Arc::new(Coordinator::default()) }
     async fn ready(c: &Arc<Coordinator>) { c.ensure(|| async { Ok(()) }).await.unwrap(); }
     async fn settle() { for _ in 0..20 { tokio::task::yield_now().await; } }
+
+    #[tokio::test]
+    async fn progress_age_observes_changes_and_resets_on_explicit_retry() {
+        let c = coordinator();
+        assert_eq!(c.snapshot().progress_age_seconds, None);
+        let (signal, started) = tokio::sync::oneshot::channel();
+        let gate = Arc::new(Semaphore::new(0));
+        let task = tokio::spawn({ let c = c.clone(); let gate = gate.clone(); async move {
+            c.ensure(move || async move {
+                signal.send(()).unwrap(); gate.acquire().await.unwrap().forget(); Err("fixture failure".into())
+            }).await
+        }});
+        started.await.unwrap();
+        c.progress("正在下载运行环境文件…");
+        let changed = c.state.lock().unwrap().detail_changed;
+        c.progress("正在下载运行环境文件…");
+        assert_eq!(c.state.lock().unwrap().detail_changed, changed);
+        let quiet = c.snapshot_at(changed + Duration::from_secs(90));
+        assert_eq!(quiet.phase, Phase::Starting); assert_eq!(quiet.progress_age_seconds, Some(90));
+        assert_eq!(quiet.error, None); assert_eq!(quiet.start_attempt, 1);
+        gate.add_permits(1); assert!(task.await.unwrap().is_err());
+        assert_eq!(c.snapshot().progress_age_seconds, None);
+        let retry = c.clone();
+        c.ensure(move || async move {
+            let snapshot = retry.snapshot();
+            assert_eq!(snapshot.detail, "正在准备连接…");
+            assert_eq!(snapshot.error, None); assert_eq!(snapshot.progress_age_seconds, Some(0));
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(c.snapshot().start_attempt, 2); assert_eq!(c.snapshot().progress_age_seconds, None);
+    }
 
     #[tokio::test]
     async fn concurrent_boot_shares_result_even_when_first_request_is_cancelled() {

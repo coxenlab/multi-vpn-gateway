@@ -86,7 +86,7 @@ struct ChannelEditor: View {
                     Text("密码仅在本机加密保存。").foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped).disabled(busy || !model.ready)
-            if busy, let detail = model.system?.runtime?.detail, !detail.isEmpty { Text(detail).font(.callout).foregroundStyle(.secondary) }
+            if busy || model.system?.runtime?.phase == "failed" { RuntimeStatusView(allowsConnection: false) }
             if let error = model.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy)

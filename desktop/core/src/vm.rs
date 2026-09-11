@@ -245,20 +245,26 @@ where
 
 /// 起专属 VM 并逐行上报 stdout/stderr。非 TTY 下 colima 的输出格式不稳定,故保留原文。
 /// `enable_rosetta=false` 用于 Apple Silicon 用户明确跳过 Rosetta 时,避免 `--vz-rosetta` 硬失败。
-pub async fn start_with_progress<F>(profile: &str, enable_rosetta: bool, mut on_progress: F) -> Result<()>
+pub async fn start_with_progress<F>(profile: &str, enable_rosetta: bool, on_progress: F) -> Result<()>
 where
     F: FnMut(String) + Send,
 {
     if !colima_present().await {
         return Err(anyhow!("未找到 colima(请先安装;后续版本会随 app 内置打包)"));
     }
-    let mut child = Command::new("colima")
-        .args(start_args(profile, enable_rosetta))
+    let mut command = Command::new("colima");
+    command.args(start_args(profile, enable_rosetta));
+    run_start_command(command, on_progress).await
+}
+
+async fn run_start_command<F>(mut command: Command, mut on_progress: F) -> Result<()>
+where F: FnMut(String) + Send {
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| anyhow!("colima start {profile}: {e}"))?;
+        .map_err(|e| anyhow!("运行环境启动命令不可用: {e}"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("无法捕获 colima stdout"))?;
     let stderr = child.stderr.take().ok_or_else(|| anyhow!("无法捕获 colima stderr"))?;
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -268,14 +274,18 @@ where
 
     let mut wait = Box::pin(child.wait());
     let mut streams_open = true;
+    let mut failure_hint = None;
     let st = loop {
         tokio::select! {
             result = &mut wait => {
-                break result.map_err(|e| anyhow!("colima start {profile}: {e}"))?;
+                break result.map_err(|e| anyhow!("无法确认运行环境启动结果: {e}"))?;
             }
             line = rx.recv(), if streams_open => {
                 match line {
-                    Some(line) => on_progress(line),
+                    Some(line) => {
+                        failure_hint = crate::startup_feedback::failure_hint(&line).or(failure_hint);
+                        on_progress(line);
+                    },
                     None => streams_open = false,
                 }
             }
@@ -284,10 +294,11 @@ where
     let _ = stdout_task.await;
     let _ = stderr_task.await;
     while let Ok(line) = rx.try_recv() {
+        failure_hint = crate::startup_feedback::failure_hint(&line).or(failure_hint);
         on_progress(line);
     }
     if !st.success() {
-        return Err(anyhow!("colima start {profile} 失败(exit {:?})", st.code()));
+        return Err(anyhow!("{}", failure_hint.unwrap_or("运行环境启动未完成。请查看运行诊断，核对原因后重试连接。")));
     }
     Ok(())
 }
@@ -655,6 +666,26 @@ en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n"
         let second = split_progress_chunk(&mut pending, "像 43%\rprovision\n\rready".as_bytes());
         assert_eq!(second, vec!["下载镜像 43%", "provision"]);
         assert_eq!(String::from_utf8(pending).unwrap(), "ready");
+    }
+
+    #[tokio::test]
+    async fn startup_output_is_drained_and_failure_has_actionable_feedback() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'Downloading fixture\\r43%% |====|\\n'; printf 'no space left on device: /private/fixture' >&2; exit 42"]);
+        let mut lines = Vec::new();
+        let error = run_start_command(command, |line| lines.push(line)).await.unwrap_err();
+        assert!(lines.iter().any(|line| line == "43% |====|"));
+        assert!(lines.iter().any(|line| line.contains("no space left")));
+        assert!(error.to_string().contains("磁盘空间不足"));
+        assert!(!error.to_string().contains("/private/fixture"));
+
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'resolve redirect failed during earlier fallback\\n'; exit 0"]);
+        // A recoverable diagnostic never overrides the real exit status.
+        run_start_command(command, |_| {}).await.unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'unknown failure' >&2; exit 42"]);
+        assert!(run_start_command(command, |_| {}).await.unwrap_err().to_string().contains("运行诊断"));
     }
 
     #[test]
