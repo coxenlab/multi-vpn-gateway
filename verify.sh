@@ -19,6 +19,7 @@ export DOCKER_HOST="unix://$VERIFY_DATA/absent-docker.sock"
 export VPNMGR_DEV_MODE=1
 export VPNMGR_VM_PROFILE=vpnmgr-verify
 .venv/bin/python -m pytest tests -q
+.venv/bin/python -m unittest discover -s desktop/native/tool-tests -p 'test_*.py'
 cargo test --locked --offline --manifest-path desktop/core/Cargo.toml
 cargo test --locked --offline --manifest-path desktop/helper/Cargo.toml
 cargo clippy --locked --offline --manifest-path desktop/core/Cargo.toml --all-targets -- -D warnings
@@ -43,7 +44,7 @@ class Scripts(HTMLParser):
         if tag == 'script' and self.active is not None:
             self.scripts.append((self.active, ''.join(self.code))); self.active = None
 
-for path in Path('desktop/app').glob('*.py'):
+for path in [*Path('desktop/app').glob('*.py'), *Path('desktop/native').glob('*.py')]:
     ast.parse(path.read_text(), filename=str(path))
 for path in sorted(Path('app/static/js').rglob('*.js')):
     result = subprocess.run(['node', '--check', '--input-type=module'], input=path.read_text(), text=True, capture_output=True)

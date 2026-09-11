@@ -34,7 +34,7 @@
 │   ├── dockerhub.py            # 实时拉取 EC 版本 tag(过滤 + arch 标记 + 缓存 + 离线兜底)
 │   └── static/                 # 共享 Web 前端，每页一个 ES module 入口
 │       └── js/pages/           # 八个页面控制器；api / page-data / app / feedback 为共享模块
-├── desktop/                    # macOS 桌面版(Tauri 壳 + Rust host-only core)
+├── desktop/                    # macOS 原生 SwiftUI/AppKit + Rust core；app/ 保留旧壳源码与共享构建资源
 │   └── core/src/events.rs      # 运行事件内存环 + 脱敏 JSONL + 查询/导出 API
 └── tests/                      # pytest 单测(独立于运行镜像)+ smoke.sh 栈冒烟
 ```
@@ -159,7 +159,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 桌面出站诊断由 `usernet.rs` 随看门狗最多每 60 秒采样一次，整轮 10 秒上限、命令 3 秒上限、输出 64 KiB 上限；仅按当前 profile 的 Lima 网络配置和对应 PID 文件定位进程，并核验命令身份。`runtime_info.rs` 从映射文件一致的 Mach-O 构建信息读取依赖，按文件身份缓存；只读取 load commands 和 Go 构建信息段，不要求用户安装 Go。识别 gvisor-tap-vsock v0.8.9 默认 10 槽，以及明确版本 `v2.1.2-vpnmgr.698.8b4db4a` 的回移候选 128 槽；replacement、未知依赖或格式均不推断容量。版本识别是诊断参照，不是签名验证。来源：[Go 构建信息格式](https://go.dev/src/debug/buildinfo/buildinfo.go)、[v0.8.9 TCP forwarder](https://github.com/containers/gvisor-tap-vsock/blob/v0.8.9/pkg/services/forwarder/tcp.go)。
 
-桌面 runtime 构建使用 `desktop/app/runtime-sources.lock.json` 固定 Lima 源码提交、Colima/Docker 官方资源 SHA256 和 Go 1.26.1。开发机需该 Go 版本及 Xcode；最终用户无需安装。`stage-runtime.sh` 默认构建 baseline，`VPNMGR_RUNTIME_VARIANT=gvisor698 ./build-dmg.sh` 显式选择候选。候选只回移 [上游 #698](https://github.com/containers/gvisor-tap-vsock/pull/698) 的三个库文件，校验改前/改后哈希，不更新 Lima 的 go.mod/go.sum；整版本替换另有 UDP API 不兼容及依赖升级，未采用。源码/构建缓存默认在 `~/Library/Caches/vpnmgr-build/runtime/`，缓存损坏则停止；暂存前验证所有产物、签名及配套 guestagent，附 manifest 和 Go 构建信息，下一次打包不会再用 Homebrew 文件静默覆盖候选。当前仅支持 macOS arm64；真实网络切换/Clash/睡醒和长时间验收通过前，候选不作为默认安装版本。
+桌面 runtime 构建使用 `desktop/app/runtime-sources.lock.json` 固定 Lima 源码提交、Colima/Docker 官方资源 SHA256 和 Go 1.26.1。开发机需该 Go 版本及 Xcode；最终用户无需安装。`stage-runtime.sh` 默认构建 baseline，准备候选时显式设置 `VPNMGR_RUNTIME_VARIANT=gvisor698`；原生发布检查/构建再用 `--runtime-variant gvisor698` 核对，不会自动重建或替换 runtime。候选只回移 [上游 #698](https://github.com/containers/gvisor-tap-vsock/pull/698) 的三个库文件，校验改前/改后哈希，不更新 Lima 的 go.mod/go.sum；整版本替换另有 UDP API 不兼容及依赖升级，未采用。源码/构建缓存默认在 `~/Library/Caches/vpnmgr-build/runtime/`，缓存损坏则停止；暂存前验证所有产物、签名及配套 guestagent，附 manifest 和 Go 构建信息。VM 下载 URL 与对应 Colima 版本共用 `desktop/app/vm-image-source.json`。当前仅支持 macOS arm64；真实网络切换/Clash/睡醒和长时间验收通过前，候选不作为默认安装版本。
 
 `/api/system` 只读缓存，设置的环境页可展开时间、SYN_SENT 总数、最多 16 个目标及最近守卫结果。共享 usernet 的连接无法唯一反查通道；多网卡配置也不证明 usernet 是默认出口。诊断只提供候选证据，不改变登录态、不触发自动重启，权限/超时/配置不明确时报告未知，历史采样保留时间标记。
 
@@ -170,7 +170,7 @@ Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `des
 
 ### macOS 原生镜像模板导入
 
-开发入口见 `desktop/native/README.md`，仍未替换正式 Tauri 分发。桌面 core 提供：
+开发与发布构建入口见 `desktop/native/README.md`。构建脚本已接原生 UI，实际原生发行包与日常安装仍未切换/验收。桌面 core 提供：
 
 - `POST /api/images/imports`：原始归档请求体，支持 Docker save `.tar`/`.tar.gz`，返回任务 ID、镜像/适配器/架构、原始归档字节数与 SHA256。校验不连接或启动 VM。
 - `GET /api/images/imports/:id`：读取预览/导入进度与结果；`DELETE` 取消预览或清理终态记录，导入中拒绝取消。

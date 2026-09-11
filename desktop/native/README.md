@@ -2,7 +2,7 @@
 
 SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子进程；管理界面初始化不启动 VM，业务沿用 core 的 HTTP 合同。Web 版保留，只有厂商登录界面使用局部 WKWebView。
 
-当前为开发入口，尚未替换 Tauri 分发壳，未打包或安装。
+开发和发布构建入口均已接入原生界面。尚未实际生成、运行或安装原生发行包；已安装的日常 App 未修改。
 
 正式模式的启动代码已接入 `Contents/Resources`：本地 core、runtime 工具/助手、静态登录页面、内置容器镜像与 VM 镜像均先做可读性/执行权限检查。缺件时显示具体组件，在检查通过前不创建数据、不启动 core；另一个相同 bundle ID 的应用正在运行时拒绝启动。该检查不能替代资源来源校验或完整签名验证。
 
@@ -30,6 +30,28 @@ SwiftUI + AppKit，最低 macOS 14。Rust core 作为本应用持有的本地子
 - 升级数据通过目录选择准备受限副本，检查结果与副本位置可直接查看；实例核对和切换验收完成前始终保留 pending，不能自动启用。
 - 配置备份最多 16 MiB，在后台分块读取；确认前显示通道/规则数量，提交期间防重复。结果保留新增通道与未导入条目的具体原因，区分保存完成与规则待同步。服务连接变化或导入结果不明时先核对列表，不直接重复提交。备份保留通道分流开关、规则启停/备注/锁定状态；导入通道保持停止。
 - 开发模式禁用宿主系统代理/TUN 操作。替换其他应用设置的自动代理须由界面明确确认。
+
+## 发布构建入口
+
+`desktop/app/build-dmg.sh` 现转到 `desktop/native/build-release.py`，不再调用 Tauri 构建。版本号与 bundle ID 暂沿用 `desktop/app/tauri.conf.json` 这一处产品元信息，原生最低系统为 macOS 14、架构为 arm64。
+
+只读核对已准备资源：
+
+```sh
+./desktop/app/build-dmg.sh --check
+```
+
+输入包括带锁定 manifest 的 runtime、内置 `mihomo.tar.gz`/`oss-vpn.tar.gz`、与锁定 Colima 版本对应的 VM 缓存、宿主 mihomo。检查来源锁、构建身份、逐文件摘要、架构/签名、完整 gzip 校验和静态登录资源；这是本地完整性检查，不代替镜像来源认证与真实载入验收。旧暂存目录没有 manifest 时会停止，不能静默用 Homebrew 或已安装 App 的运行工具补齐。可用 `--runtime-dir`、`--images-dir`、`--vm-image-dir`、`--mihomo` 显式选已准备资源。候选 runtime 还必须同时指定 `--runtime-variant gvisor698`，默认 baseline。
+
+**当前不执行打包安装。** 完成相关验收并进入发布阶段后，构建须显式提供不存在的仓库外目录，例如：
+
+```sh
+./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr-native-1.3.0"
+```
+
+脚本要求工作区干净，离线从当前源码编译 SwiftUI、Rust core 和助手；不复用暂存旧助手，不调用 Docker、Colima 或安装命令。构建期间使用独立临时目录；成功后原子发布 `.app`、DMG、SHA256 和构建记录，已有输出目录不会被覆盖。输出不能是应用安装目录。构建记录包含提交、版本、编译器、runtime 身份和输入摘要。当前只提供本地 ad-hoc 签名，不提供 Developer ID 签名/公证。
+
+`desktop/native/tool-tests/test_build_release.py` 在隔离小夹具中验证输入检查、防覆盖、资源映射与命令编排；编译、签名和 DMG 命令全部使用替身，不生成可运行的应用或真实 DMG。这些测试不等于真实发行包验收。
 
 ## 验证范围与剩余工作
 

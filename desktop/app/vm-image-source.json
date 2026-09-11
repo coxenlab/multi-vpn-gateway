@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "colima_version": "v0.10.3",
+  "url": "https://github.com/abiosoft/colima-core/releases/download/v0.10.4/ubuntu-24.04-minimal-cloudimg-arm64-docker.raw.gz"
+}
