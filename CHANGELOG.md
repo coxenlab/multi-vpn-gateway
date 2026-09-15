@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-15
+
 ### Fixed / 修复
 - 桌面 VM 禁止 Colima 把来宾通配监听自动映射到宿主；回环 TCP、Docker Unix socket 及 app 自持的 loopback SSH 入口保留，下次 VM 启动生效。
 - hagb 通道探活失败后可对照域名/IP 通路恢复 Dante 负 DNS 缓存；按容器代次限制恢复频率，成功仍以原内网 SOCKS 探活为准。
