@@ -42,7 +42,7 @@ pub fn build_mihomo_config(mut base: Yaml, channels: &[ChannelPublic], rules: &[
         .collect();
     // 命门 #2:mihomo 是**首个命中**(非最长前缀),故 IP-CIDR 须按前缀长度**降序**产出
     // ——更具体的绑定(/32)排在宽网段(/24)之前,否则跨通道撞同一私网段时宽段会盖住具体主机
-    // 绑定(见「客户A .73 被客户B /24 盖住」)。同前缀长度保持插入顺序(stable sort);域名保持原序,
+    // 绑定。同前缀长度保持插入顺序(stable sort);域名保持原序,
     // 与 IP 分组互不干扰(域名匹配域名连接、IP-CIDR 匹配 IP 连接,二者正交)。
     let mut domain_out: Vec<String> = Vec::new();
     let mut ip_out: Vec<(u8, String)> = Vec::new();
@@ -662,8 +662,8 @@ mod tests {
 
     #[test]
     fn mihomo_config_ip_rules_most_specific_first() {
-        // 命门 #2:首个命中语义下,更具体的前缀必须排在宽网段之前,否则跨通道 /24 盖住 /32
-        //(复现「客户A .73/32 被客户B 10.20.30.0/24 盖住」)。插入顺序故意宽段在前。
+        // 命门 #2:首个命中语义下,更具体的前缀必须排在宽网段之前,否则跨通道 /24 盖住 /32。
+        // 插入顺序故意宽段在前。
         let base = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         let chans = vec![ch("wide"), ch("host")];
         let rules = vec![
@@ -801,7 +801,7 @@ mod tests {
         // 回归:旧实现把 "ip:port" 塞进 conf 的 `host =` → openfortivpn getaddrinfo 整串失败。
         // 现在:host:port 走 CLI 位置参数;conf 只放 password(+ trusted-cert),不含 host=/username=。
         let mut cfg = serde_json::Map::new();
-        cfg.insert("server".into(), serde_json::json!("203.0.113.10:10443"));
+        cfg.insert("server".into(), serde_json::json!("vpn.example.com:10443"));
         cfg.insert("username".into(), serde_json::json!("alice"));
         cfg.insert("password".into(), serde_json::json!("p@ss w0rd"));
         let actions = oss_plan("openfortivpn", &cfg, Some("ABCDEF0123")).unwrap();
@@ -819,7 +819,7 @@ mod tests {
             OssAction::Exec { cmd } => Some(cmd.join(" ")),
             _ => None,
         }).expect("openfortivpn Exec");
-        assert!(run.contains("openfortivpn '203.0.113.10:10443'"), "host:port 整串走 CLI 位置参数(openfortivpn 自拆端口):\n{run}");
+        assert!(run.contains("openfortivpn 'vpn.example.com:10443'"), "host:port 整串走 CLI 位置参数(openfortivpn 自拆端口):\n{run}");
         assert!(run.contains("-u 'alice'"), "username 走 CLI -u");
         assert!(!run.contains("p@ss w0rd"), "命门 #5:密码绝不在 argv");
     }

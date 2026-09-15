@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn crash_loop_rules() {
-        // 客户E实况:173 次重启、单次存活 ~88s → 死循环
+        // 实测样本:173 次重启、单次存活 ~88s → 死循环
         assert!(is_crash_loop("running", 173, Some(88)));
         // docker 报 restarting 直接算
         assert!(is_crash_loop("restarting", 1, None));

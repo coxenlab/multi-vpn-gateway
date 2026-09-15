@@ -396,7 +396,7 @@ pub async fn install_rosetta() -> Result<bool> {
 // 漏出去挂 75s。豁免:docker 网段自身、VM 自己的网段、以及宿主当前直连的局域网网段(这些目标
 // 需要保留合法互通,其中不可达目标仍可能占槽;换网 / 睡醒后更新豁免)。
 // ⚠️ 别改成容器内 `ip route add unreachable`:本机发包先查路由再过 nat OUTPUT,会把 EC 用
-// nat REDIRECT(→4440)接管的网段资源在查路由时就拒掉(客户A实测)。Web 栈跑在 Docker Desktop
+// nat REDIRECT(→4440)接管的网段资源在查路由时就拒掉(实测)。Web 栈跑在 Docker Desktop
 // 上没有 usernet 这个上限,不下发。
 
 const EGRESS_CHAIN: &str = "VPNMGR_EGRESS";

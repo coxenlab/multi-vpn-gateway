@@ -523,7 +523,7 @@ pub async fn restore_channel(State(st): State<AppState>, Path(cid): Path<String>
 
 /// 改状态的处理函数(create/start/stop/delete)统一脱离 HTTP 请求生命周期:前端跳转 / 刷新会
 /// 取消请求,axum 随之丢弃处理中的 future,留下「容器已动、库未写、无审计」的半完成状态
-/// (2026-09-10 客户C实例)。spawn 后 await:客户端断开也不取消。
+/// (2026-09-10 实测)。spawn 后 await:客户端断开也不取消。
 async fn detached(
     name: &str,
     fut: impl std::future::Future<Output = axum::response::Response> + Send + 'static,
