@@ -2,6 +2,10 @@
 
 **English** | [中文](./README.zh-CN.md)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Docker%20%7C%20macOS%2014%2B-lightgrey?style=flat-square)](#getting-started)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-community-FFB003?style=flat-square)](https://linux.do)
+
 > A self-hosted VPN management gateway. It runs multiple corporate VPNs side by
 > side — each isolated in its own Docker container exposing a SOCKS5 exit — and a
 > dedicated second mihomo instance routes traffic to them by domain / IP. Your
@@ -86,6 +90,25 @@ docker compose down
 
 Delete a single VPN container from the UI, or `docker rm -f vpn-<id>`.
 
+### macOS desktop app (optional)
+
+Besides the Compose stack, the repository contains a native macOS app
+(`desktop/`): a SwiftUI shell hosting the same web UI, a Rust core that owns the
+local HTTP API, a privileged helper for the route-level TUN entry, and a bundled
+Colima / Lima Linux VM so the host needs no Docker installation. Build it from
+source:
+
+```bash
+./desktop/app/build-dmg.sh --check                            # verify staged build inputs
+./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr"  # build the .app + .dmg
+```
+
+Requires macOS 14+ on arm64. Builds are **ad-hoc signed only** — Developer ID
+signing and notarization are not provided, and no prebuilt binaries are
+published. See [`desktop/native/README.md`](./desktop/native/README.md) for the
+staged inputs, what the build verifies, and what still needs on-device
+acceptance.
+
 ### Frontend-only development
 
 To iterate on the UI without the backend or Docker:
@@ -135,6 +158,7 @@ Adapters are declarative (`app/adapters.yaml`) and grouped into three families:
 ├── mihomo/config.template.yaml   # mihomo config template (rendered at first run)
 ├── images/                       # self-built container images (oss / byo)
 ├── app/                          # FastAPI backend + static frontend
+├── desktop/                      # macOS app: SwiftUI shell, Rust core, privileged helper
 ├── tests/                        # pytest unit tests + smoke.sh
 └── docs/
     ├── design.md                 # full design intent (start here for the "why")
@@ -215,7 +239,21 @@ creating ──▶ running ──▶ logged_in     (plus stopped, error)
 
 - [`docs/design.md`](./docs/design.md) — the original design rationale (a pre-implementation snapshot; some tech choices differ from the as-built code — see development.md for the current architecture).
 - [`docs/development.md`](./docs/development.md) — architecture, the invariants that must not break, and contributor notes.
+- [`desktop/native/README.md`](./desktop/native/README.md) — the macOS app: lifecycle, release build, and the limits of its verification.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — how to run, test, and contribute.
+
+## Acknowledgements
+
+This project is developed in the open, and endorses the
+[LINUX DO](https://linux.do) community, where it is shared and discussed.
+
+It also stands on:
+
+- [mihomo](https://github.com/MetaCubeX/mihomo) — the engine behind the second-layer routing
+- [noVNC](https://github.com/novnc/noVNC) — the browser VNC client used for interactive logins
+- [hagb/docker-easyconnect](https://github.com/Hagb/docker-easyconnect) — upstream containers for the EasyConnect / aTrust adapters
+- [Colima](https://github.com/abiosoft/colima) and [Lima](https://github.com/lima-vm/lima) — the Linux VM bundled with the macOS app
+- [Dante](https://www.inet.no/dante/), [microsocks](https://github.com/rofl0r/microsocks), and the OpenConnect / OpenVPN / WireGuard projects — the SOCKS5 exits and tunnels inside the containers
 
 ## License
 

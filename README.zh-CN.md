@@ -2,6 +2,10 @@
 
 [English](./README.md) | **中文**
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Docker%20%7C%20macOS%2014%2B-lightgrey?style=flat-square)](#快速开始)
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-%E8%AE%A4%E5%8F%AF%E7%A4%BE%E5%8C%BA-FFB003?style=flat-square)](https://linux.do)
+
 > 自托管的 VPN 管理网关。把多家企业 VPN 同时跑起来——每家各关进一个 Docker 容器、暴露一个 SOCKS5 出口——再由一个独立的第二个 mihomo 实例按域名 / IP 把流量分流到各家。现有 Clash 一字不改,只加一个 `vpn-router` 节点 + 订阅一份分流规则。全程全 Docker,本机零新增依赖。
 
 ## 解决什么问题
@@ -64,6 +68,21 @@ docker compose down
 
 删某个 VPN 容器:在界面点删除,或 `docker rm -f vpn-<id>`。
 
+### macOS 桌面版(可选)
+
+除了 Compose 栈,仓库里还有一个原生 macOS app(`desktop/`):SwiftUI 壳承载同一套 Web 界面,
+Rust core 持有本地 HTTP 接口,另有一个特权 helper 负责路由级 TUN 入口,并随包带一份
+Colima / Lima 的 Linux VM——宿主不用装 Docker。从源码构建:
+
+```bash
+./desktop/app/build-dmg.sh --check                            # 只核对已准备的构建输入
+./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr"  # 构建 .app + .dmg
+```
+
+需要 macOS 14+ / arm64。构建产物**只做本地 ad-hoc 签名**——不提供 Developer ID 签名与公证,
+也不发布预编译包。构建输入、核对了什么、以及哪些仍需实机验收,见
+[`desktop/native/README.md`](./desktop/native/README.md)。
+
 ### 只改前端
 
 不想起后端 / Docker,只调界面:
@@ -108,6 +127,7 @@ pytest
 ├── mihomo/config.template.yaml   # mihomo 配置模板(首次运行渲染)
 ├── images/                       # 自建容器镜像(oss / byo)
 ├── app/                          # FastAPI 后端 + 静态前端
+├── desktop/                      # macOS 桌面版:SwiftUI 壳、Rust core、特权 helper
 ├── tests/                        # pytest 单测 + smoke.sh
 └── docs/
     ├── design.md                 # 完整设计意图(想懂「为什么」先读它)
@@ -183,7 +203,20 @@ creating ──▶ running ──▶ logged_in     (另有 stopped、error)
 
 - [`docs/design.md`](./docs/design.md) —— 原始设计 / 落地方案(实现前的快照,部分技术选型与最终实现不同;当前架构见 development.md)。
 - [`docs/development.md`](./docs/development.md) —— 架构、绝不能破坏的命门、开发约定。
+- [`desktop/native/README.md`](./desktop/native/README.md) —— macOS 桌面版:生命周期、发布构建入口,以及验证边界。
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) —— 如何跑、测、贡献。
+
+## 致谢
+
+本项目完整开源,并认可 [LINUX DO](https://linux.do) 社区——项目在那里分享与讨论。
+
+本项目还站在这些工作之上:
+
+- [mihomo](https://github.com/MetaCubeX/mihomo) —— 第二层分流的引擎
+- [noVNC](https://github.com/novnc/noVNC) —— 交互式登录用的浏览器 VNC 客户端
+- [hagb/docker-easyconnect](https://github.com/Hagb/docker-easyconnect) —— EasyConnect / aTrust 适配器的上游镜像
+- [Colima](https://github.com/abiosoft/colima) 与 [Lima](https://github.com/lima-vm/lima) —— macOS 桌面版随包的 Linux VM
+- [Dante](https://www.inet.no/dante/)、[microsocks](https://github.com/rofl0r/microsocks),以及 OpenConnect / OpenVPN / WireGuard —— 容器里的 SOCKS5 出口与隧道
 
 ## 许可
 

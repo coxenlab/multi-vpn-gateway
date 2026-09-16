@@ -13,6 +13,10 @@ client. In particular:
     only orchestrates third-party Docker images (e.g. `hagb/docker-easyconnect`,
     `hagb/docker-atrust`) that are pulled at runtime. Those upstream images and
     their contents are governed by their own respective terms.
+  * Hillstone Secure Connect is proprietary software owned by Hillstone
+    Networks. `images/hillstone/Dockerfile` downloads the vendor's own Linux
+    installer from the vendor's site **at image build time, on your machine**;
+    no Hillstone binary is contained in, or distributed with, this repository.
   * Other vendor clients (Cisco AnyConnect, GlobalProtect, Fortinet, Pulse/
     Ivanti, etc.) are likewise the property of their respective owners and are
     not distributed by this project.
@@ -22,6 +26,27 @@ Bundled open-source components:
   * noVNC (https://github.com/novnc/noVNC) core client library is vendored at
     `app/static/vendor/novnc/` under the Mozilla Public License 2.0; see
     `app/static/vendor/novnc/LICENSE.txt`.
+
+The macOS desktop build (`desktop/`) additionally *assembles* — it does not
+vendor into this repository — third-party binaries that are downloaded and
+verified at build time, and that end up inside any `.app` / `.dmg` you produce:
+
+  * mihomo (https://github.com/MetaCubeX/mihomo) — **GPL-3.0**, shipped as an
+    unmodified upstream binary and an unmodified upstream container image, run
+    as a separate process. Version and digests are pinned in
+    `app/mihomo-source.json`; the corresponding source is available from that
+    upstream project at the pinned tag.
+  * Lima and lima-guestagent (https://github.com/lima-vm/lima) — Apache-2.0,
+    built from the pinned upstream source.
+  * Colima (https://github.com/abiosoft/colima) — MIT.
+  * Docker CLI (https://github.com/docker/cli) — Apache-2.0.
+  * gvisor-tap-vsock (https://github.com/containers/gvisor-tap-vsock) —
+    Apache-2.0, as a Lima dependency.
+
+If you redistribute a build of the macOS app, you are redistributing those
+components and must comply with their licenses (for mihomo, that includes the
+GPL-3.0 obligation to offer the corresponding source). This project publishes
+no prebuilt binaries.
 
 Product and company names are used only to describe compatibility (nominative
 use); no affiliation, sponsorship, or endorsement is implied.
@@ -43,6 +68,9 @@ you run with this tool, and for complying with the applicable vendor terms
   * EasyConnect / aTrust 是深信服(Sangfor)的闭源软件。本项目不附带其安装包
     或二进制,仅在运行时编排第三方 Docker 镜像(如 `hagb/docker-easyconnect`、
     `hagb/docker-atrust`);这些上游镜像及其内容受各自条款约束。
+  * Hillstone Secure Connect 是山石网科的闭源软件。`images/hillstone/Dockerfile`
+    在**你本机构建镜像时**从厂商官网下载其官方 Linux 安装器;本仓库不包含、
+    也不分发任何山石二进制。
   * 其它厂商客户端(Cisco AnyConnect、GlobalProtect、Fortinet、Pulse/Ivanti
     等)同属各自所有者,本项目不分发。
 
@@ -51,6 +79,22 @@ you run with this tool, and for complying with the applicable vendor terms
   * noVNC(https://github.com/novnc/noVNC)核心客户端库以 vendor 形式收录于
     `app/static/vendor/novnc/`,遵循 Mozilla Public License 2.0,见
     `app/static/vendor/novnc/LICENSE.txt`。
+
+macOS 桌面版(`desktop/`)另会在构建期下载并校验一批第三方二进制(不收录进本
+仓库),它们会进入你构建出的 `.app` / `.dmg`:
+
+  * mihomo(https://github.com/MetaCubeX/mihomo)—— **GPL-3.0**,以未修改的上游
+    二进制与未修改的上游容器镜像形式随包,作为独立进程运行。版本与摘要锁定在
+    `app/mihomo-source.json`,对应源码可在该上游项目的同一 tag 获取。
+  * Lima 与 lima-guestagent(https://github.com/lima-vm/lima)—— Apache-2.0,
+    由锁定的上游源码构建。
+  * Colima(https://github.com/abiosoft/colima)—— MIT。
+  * Docker CLI(https://github.com/docker/cli)—— Apache-2.0。
+  * gvisor-tap-vsock(https://github.com/containers/gvisor-tap-vsock)——
+    Apache-2.0,作为 Lima 的依赖。
+
+如果你要再分发 macOS 版构建产物,就等于在分发上述组件,须遵守各自许可证
+(mihomo 为 GPL-3.0,含「提供对应源码」的义务)。本项目不发布任何预编译二进制。
 
 文中出现的产品与公司名称仅用于描述兼容性(指称性使用),不暗示任何关联、
 赞助或背书。
