@@ -80,7 +80,10 @@ Colima / Lima 的 Linux VM——宿主不用装 Docker。从源码构建:
 ```
 
 需要 macOS 14+ / arm64。构建产物**只做本地 ad-hoc 签名**——不提供 Developer ID 签名与公证,
-也不发布预编译包。构建输入、核对了什么、以及哪些仍需实机验收,见
+下载来的包会被 Gatekeeper 拦,需自行去掉隔离属性。预编译 `.dmg` 挂在
+[最新 release](https://github.com/coxenlab/multi-vpn-gateway/releases/latest),附 SHA-256
+与 `THIRD-PARTY-LICENSES.txt`;注意该 app 会安装一个 root 级特权 helper 来管理 TUN 入口。
+构建输入、核对了什么、以及哪些仍需实机验收,见
 [`desktop/native/README.md`](./desktop/native/README.md)。
 
 ### 只改前端

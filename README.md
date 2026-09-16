@@ -104,10 +104,13 @@ source:
 ```
 
 Requires macOS 14+ on arm64. Builds are **ad-hoc signed only** — Developer ID
-signing and notarization are not provided, and no prebuilt binaries are
-published. See [`desktop/native/README.md`](./desktop/native/README.md) for the
-staged inputs, what the build verifies, and what still needs on-device
-acceptance.
+signing and notarization are not provided, so a downloaded build is blocked by
+Gatekeeper until you clear its quarantine attribute. Prebuilt `.dmg` files are
+attached to the [latest release](https://github.com/coxenlab/multi-vpn-gateway/releases/latest)
+with SHA-256 checksums and a bundled `THIRD-PARTY-LICENSES.txt`; note that the
+app installs a root-level privileged helper to manage the TUN entry. See
+[`desktop/native/README.md`](./desktop/native/README.md) for the staged inputs,
+what the build verifies, and what still needs on-device acceptance.
 
 ### Frontend-only development
 

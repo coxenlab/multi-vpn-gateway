@@ -45,8 +45,9 @@ verified at build time, and that end up inside any `.app` / `.dmg` you produce:
 
 If you redistribute a build of the macOS app, you are redistributing those
 components and must comply with their licenses (for mihomo, that includes the
-GPL-3.0 obligation to offer the corresponding source). This project publishes
-no prebuilt binaries.
+GPL-3.0 obligation to offer the corresponding source). The `.dmg` files attached
+to this project's releases ship a `THIRD-PARTY-LICENSES.txt` reproducing those
+licenses in full, along with the pinned upstream source locations.
 
 Product and company names are used only to describe compatibility (nominative
 use); no affiliation, sponsorship, or endorsement is implied.
@@ -94,7 +95,8 @@ macOS 桌面版(`desktop/`)另会在构建期下载并校验一批第三方二�
     Apache-2.0,作为 Lima 的依赖。
 
 如果你要再分发 macOS 版构建产物,就等于在分发上述组件,须遵守各自许可证
-(mihomo 为 GPL-3.0,含「提供对应源码」的义务)。本项目不发布任何预编译二进制。
+(mihomo 为 GPL-3.0,含「提供对应源码」的义务)。本项目 release 上挂的 `.dmg` 随附
+`THIRD-PARTY-LICENSES.txt`,逐字复制了上述许可证全文并给出锁定版本的上游源码地址。
 
 文中出现的产品与公司名称仅用于描述兼容性(指称性使用),不暗示任何关联、
 赞助或背书。
