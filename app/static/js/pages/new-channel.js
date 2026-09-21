@@ -276,18 +276,6 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       if (!connected) toast("还没连通也可以先绑规则，稍后在通道详情里登录", { variant: "info" });
     });
 
-    // 「键入到容器」自动留档到该通道的登录备注(同文本只记一次;旧后端无 /note 则跳过)
-    async function wizRecordTyped(text) {
-      const t = text.trim();
-      if (!t || !createdId) return;
-      try {
-        const { note } = await api.noteGet(createdId);
-        if ((note || "").includes(t)) return;
-        const ts = new Date().toLocaleString("zh-CN", { hour12: false });
-        await api.noteSet(createdId, (note ? note.replace(/\n*$/, "\n") : "") + `[${ts}] 键入：${t}`, note || "");
-        toast("已记入登录备注");
-      } catch (e) { if (e.status !== 404) toast("自动记录未完成，请在通道详情的登录备注中核对后保存。", { variant: "danger" }); }
-    }
     const vncPlaceholder = $("#vnc-placeholder").cloneNode(true);
     const vncView = createVncLifecycle({
       channelId: () => createdId,
@@ -323,7 +311,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         wizVncUrl = url;
         let sh = document.getElementById("vnc-sendbar");
         if (!sh) { sh = document.createElement("div"); sh.id = "vnc-sendbar"; f.insertAdjacentElement("afterend", sh); }
-        vncText.mountBar(sh, () => wizVncUrl, wizRecordTyped, { signal });
+        vncText.mountBar(sh, () => wizVncUrl, { signal });
       } catch (e) {
         if (!current()) return;
         if (ph) ph.textContent = "登录窗口打开失败";

@@ -50,7 +50,7 @@
 构建须显式提供不存在的仓库外目录，例如：
 
 ```sh
-./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr-native-1.3.0"
+./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr-native-1.3.1"
 ```
 
 脚本要求工作区干净，离线从当前源码编译一次 SwiftUI、Rust core 和助手；不复用暂存旧助手，不调用 Docker、Colima 或安装命令。每个模式从空目录组装，在 `lite/`、`with-vm/` 分开保存 `.app` 和构建记录；DMG 名为 `vpnmgr_<version>_arm64_lite.dmg` / `vpnmgr_<version>_arm64_with-vm.dmg`，各附 SHA256。全部选中模式通过后才一次原子发布输出目录，任一失败均不交付半套产物；已有输出不会被覆盖，输出不能是应用安装目录。构建记录包含模式、提交、版本、编译器、runtime 身份和各版输入摘要。当前只提供本地 ad-hoc 签名，不提供 Developer ID 签名/公证。

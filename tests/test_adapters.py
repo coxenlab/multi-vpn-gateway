@@ -28,6 +28,7 @@ def test_easyconnect_kwargs_match_legacy():
         "ports": {"8080/tcp": ("127.0.0.1", None)},
         "network": "testnet",
         "restart_policy": {"Name": "unless-stopped"},
+        "shm_size": "512m",
     }
 
 
@@ -145,3 +146,12 @@ def test_dns_opts_manifest_drives_docker_dns_opt():
     spec = dict(registry.get("custom")); spec["dns_opts"] = []
     kw = adapters.build_run_kwargs(_ch(vpn_type="custom", ec_ver=""), spec, "v", VNET)
     assert "dns_opt" not in kw
+
+
+def test_shm_size_manifest_drives_docker_shm_size():
+    """GUI 家族(hagb/byo)声明 shm_size_mb:内嵌 Chromium 渲染用 /dev/shm,默认 64M 会 SIGBUS。"""
+    for t in ("easyconnect", "atrust", "custom", "hillstone"):
+        kw = adapters.build_run_kwargs(_ch(vpn_type=t), registry.get(t), "v", VNET)
+        assert kw["shm_size"] == "512m", t
+    kw = adapters.build_run_kwargs(_ch(vpn_type="anyconnect"), registry.get("anyconnect"), "v", VNET)
+    assert "shm_size" not in kw

@@ -582,8 +582,8 @@ def config_export():
                 if field in ('server', 'username', 'password'): cfg[field] = value
         if c.get("login_method") != "headless":
             cfg.pop("password", None)   # 交互登录密码不随导出
-        # 登录备注一律不随导出:「键入到容器」自动留档默认开,备注里大概率就是上一行
-        # 刚剥掉的交互登录密码(红队 D5),导出明文会绕过剥密;备注留在本机加密库里。
+        # 备忘录一律不随导出:用户常手记交互登录密码(旧版还会自动留档键入内容),
+        # 导出明文会绕过上一行的剥密(红队 D5);备忘录留在本机加密库里。
         cfg.pop("login_note", None)
         if c.get("login_method") == "byo":
             cfg.pop("package", None)    # 安装器二进制在数据卷里带不走,文件名引用一并不导

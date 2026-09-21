@@ -18,7 +18,7 @@ import SwiftUI
             if !loaded || !dirty || (discardDraft && text == initialDraft) { text = latest; baseline = latest; loaded = true; latestConflict = nil }
             else if latest != baseline { latestConflict = latest }
             error = nil
-        } catch { self.error = "备注读取失败，草稿已保留。请重试。" }
+        } catch { self.error = "备忘读取失败，草稿已保留。请重试。" }
     }
     @discardableResult func save(write: (String, String) async throws -> Void, fetch: () async throws -> String) async -> Bool {
         guard loaded, dirty, !busy, latestConflict == nil else { return false }
@@ -31,7 +31,7 @@ import SwiftUI
             return true
         } catch let failure as APIError where failure.statusCode == 409 {
             latestConflict = (try? await fetch())
-            error = "备注已有新修改。草稿已保留，请核对最新内容。"
+            error = "备忘已有新修改。草稿已保留，请核对最新内容。"
         } catch { self.error = "保存结果尚未确认，草稿已保留。请重新读取核对。" }
         return false
     }
@@ -46,24 +46,24 @@ struct ChannelNoteView: View {
     let channelID: String
     @ObservedObject var draft: NoteDraft
     var body: some View {
-        Section("登录备注") {
+        Section("备忘录") {
             TextEditor(text: $draft.text).frame(minHeight: 100).disabled(!draft.loaded)
-            Text("加密保存在本机，可记录登录步骤和验证码接收方式。").font(.caption).foregroundStyle(.secondary)
+            Text("加密保存在本机，只记录你手动写入的内容。").font(.caption).foregroundStyle(.secondary)
             if let error = draft.error { Text(error).font(.callout).foregroundStyle(.red) }
             if let latest = draft.latestConflict {
-                DisclosureGroup("最新保存的备注（你的草稿仍在上方）") { Text(latest.isEmpty ? "（空备注）" : latest).textSelection(.enabled) }
+                DisclosureGroup("最新保存的备忘（你的草稿仍在上方）") { Text(latest.isEmpty ? "（空备忘）" : latest).textSelection(.enabled) }
                 HStack {
                     Button("已核对，继续编辑草稿") { draft.keepDraftAfterReview() }
-                    Button("放弃草稿并载入最新备注") { Task { await load(discard: true) } }
+                    Button("放弃草稿并载入最新备忘") { Task { await load(discard: true) } }
                 }.disabled(draft.busy)
             }
             HStack {
-                Button(draft.busy ? "处理中…" : "保存备注") { Task { await save() } }
+                Button(draft.busy ? "处理中…" : "保存备忘") { Task { await save() } }
                     .disabled(!draft.dirty || draft.busy || draft.latestConflict != nil || draft.text.unicodeScalars.count > 20000)
                 Button("重新读取") { Task { await load() } }.disabled(draft.busy)
                 if draft.dirty { Text("有未保存的修改").font(.caption).foregroundStyle(.secondary) }
             }
-            if draft.text.unicodeScalars.count > 20000 { Text("备注超过 20000 字符，请精简后保存。").foregroundStyle(.red) }
+            if draft.text.unicodeScalars.count > 20000 { Text("备忘超过 20000 字符，请精简后保存。").foregroundStyle(.red) }
         }.task(id: channelID) { await load() }
     }
     private func fetch() async throws -> String {
@@ -80,6 +80,6 @@ struct ChannelNoteView: View {
             guard model.isCurrent(api) else { throw CancellationError() }
             _ = try await api.write("/api/channels/\(channelID)/note", method: "PUT", body: ["note": note, "expected_note": expected])
             guard model.isCurrent(api) else { throw CancellationError() }
-        }, fetch: fetch), model.isCurrent(api) { model.message = draft.dirty ? "备注已保存，后续输入仍在草稿中" : "备注已保存" }
+        }, fetch: fetch), model.isCurrent(api) { model.message = draft.dirty ? "备忘已保存，后续输入仍在草稿中" : "备忘已保存" }
     }
 }

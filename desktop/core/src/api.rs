@@ -1758,8 +1758,8 @@ pub async fn config_export(State(st): State<AppState>) -> axum::response::Respon
         if ch.login_method == "byo" {
             config.remove("package");
         }
-        // 登录备注一律不导出:「键入到容器」自动留档默认开,备注里大概率就是上面刚剥掉的
-        // 交互登录密码(红队 D5),导出明文会绕过剥密;备注留在本机加密库。
+        // 备忘录一律不导出:用户常手记交互登录密码(旧版还会自动留档键入内容),
+        // 导出明文会绕过上面的剥密(红队 D5);备忘录留在本机加密库。
         config.remove("login_note");
         let stored_rules = match store::list_rules(&db, &ch.id) {
             Ok(rules) => rules,

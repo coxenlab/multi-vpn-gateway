@@ -18,10 +18,11 @@ def _ctx(ch, vnc_pwd):
 
 
 def _apply_spec_hostcfg(kw, spec):
-    """manifest 驱动的 HostConfig 附加项(三家族共用):sysctls / dns_opts / device_cgroup_rules。
+    """manifest 驱动的 HostConfig 附加项(三家族共用):sysctls / dns_opts / device_cgroup_rules / shm_size_mb。
 
     - dns_opts → docker `--dns-opt`(初始 resolv.conf 的 options 行):容器解析器策略,如
       `no-aaaa`(内网纯 IPv4;第三方客户端自带 DNS 代理常丢 AAAA 致双栈查询超时)。
+    - shm_size_mb → docker `--shm-size`:GUI 客户端内嵌 Chromium 的渲染共享内存,默认 64M 会 SIGBUS。
     - 空值不写键(对齐 legacy:空 sysctls 不带 sysctls 键)。
     """
     sysctls = spec.get("sysctls") or {}
@@ -33,6 +34,9 @@ def _apply_spec_hostcfg(kw, spec):
     dcr = spec.get("device_cgroup_rules")     # openfortivpn:放行 /dev/ppp(major 108)
     if dcr:
         kw["device_cgroup_rules"] = list(dcr)
+    shm = spec.get("shm_size_mb")
+    if shm:
+        kw["shm_size"] = f"{int(shm)}m"
     return kw
 
 

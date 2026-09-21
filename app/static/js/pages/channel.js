@@ -96,7 +96,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       $("#replacement-message").textContent = pending.phase === "queued"
         ? "启动这条通道后应用新设置。原连接设置仍保留，你可以继续编辑或撤销本次修改。"
         : waiting
-        ? "启动通道、完成登录并通过内网检测后，本次修改才会完成。若新设置无法使用，可以恢复上一次设置；已保存的登录备注会保留。"
+        ? "启动通道、完成登录并通过内网检测后，本次修改才会完成。若新设置无法使用，可以恢复上一次设置；已保存的备忘录会保留。"
         : pending.can_restore ? "上一次设置和数据仍保留，可以恢复后再尝试。"
         : pending.phase === "deleting" ? "正在清理关联的通道实例，完成后会移除通道。" : "正在清理本次操作保留的旧资源。";
       const button = $("#replacement-restore");
@@ -131,7 +131,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     }
     function setLastProbe(when = Date.now()) { $("#h-last").textContent = new Date(when).toLocaleTimeString("zh-CN", { hour12: false }); }
 
-    /* ── 登录备注(加密落库;旧后端无 /note → 卡片保持隐藏) ── */
+    /* ── 备忘录(加密落库;旧后端无 /note → 卡片保持隐藏) ── */
     const noteCard = document.querySelector('[data-od-id="ch-note"]');
     let noteLoaded = false, noteBusy = false, noteBase = "", noteLatest = null;
     const noteDirty = () => noteLoaded && $("#note-text").value !== noteBase;
@@ -141,7 +141,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       $("#note-keep-draft").disabled = noteBusy;
       $("#note-use-latest").disabled = noteBusy;
       $("#note-conflict").hidden = noteLatest === null;
-      $("#note-latest").textContent = noteLatest || "（空备注）";
+      $("#note-latest").textContent = noteLatest || "（空备忘）";
       $("#note-state").textContent = message || (noteBusy ? "处理中…" : noteDirty() ? "有未保存的修改" : "已保存");
     }
     async function loadNote(force = false, discard = false) {
@@ -156,7 +156,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
         noteLoaded = true;
         noteCard.hidden = false;
       } catch (e) {
-        if (e.status !== 404) toast("备注读取失败，草稿已保留。", { variant: "danger" });
+        if (e.status !== 404) toast("备忘读取失败，草稿已保留。", { variant: "danger" });
       } finally { noteBusy = false; renderNoteState(); }
     }
     async function saveNote(silent = false) {
@@ -166,27 +166,15 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       try {
         await api.noteSet(ch.id, submitted, noteBase);
         noteBase = submitted;
-        if (!silent) toast(noteDirty() ? "备注已保存，后续输入仍在草稿中" : "已保存");
+        if (!silent) toast(noteDirty() ? "备忘已保存，后续输入仍在草稿中" : "已保存");
         return true;
       } catch (e) {
         if (e.status === 409) {
           try { noteLatest = (await api.noteGet(ch.id)).note || ""; } catch (_) { /* 原基线保留，重试不能覆盖新内容 */ }
-          toast("备注已有新修改，草稿已保留。请核对最新内容。", { variant: "danger" });
+          toast("备忘已有新修改，草稿已保留。请核对最新内容。", { variant: "danger" });
         } else toast("保存结果尚未确认，草稿已保留。请重新读取核对。", { variant: "danger" });
         return false;
       } finally { noteBusy = false; renderNoteState(); }
-    }
-    async function recordTyped(text) {
-      if (!noteLoaded) await loadNote();
-      if (!noteLoaded) return;
-      const t = text.trim();
-      const ta = $("#note-text");
-      if (!t || ta.value.includes(t)) return;
-      const ts = new Date().toLocaleString("zh-CN", { hour12: false });
-      ta.value = (ta.value ? ta.value.replace(/\n*$/, "\n") : "") + `[${ts}] 键入：${t}`;
-      renderNoteState();
-      if (await saveNote(true)) toast("已记入登录备注");
-      else toast("键入内容已留在备注草稿中，请核对后保存。", { variant: "info" });
     }
     $("#note-save").addEventListener("click", () => saveNote());
     $("#note-reload").addEventListener("click", () => loadNote(true));
@@ -197,7 +185,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     $("#note-copy").addEventListener("click", () => {
       const head = [`通道：${ch.name}（${kindLabel}）`, `网关：${hostName}`, `账号：${ch.username || "—"}`].join("\n");
       const body = $("#note-text").value;
-      copyText(head + (body ? "\n---\n" + body : ""), body ? "已复制（含备注，注意其中可能有密码）" : "已复制");
+      copyText(head + (body ? "\n---\n" + body : ""), body ? "已复制（含备忘）" : "已复制");
     });
 
     /* ── 登录 tab:真 noVNC iframe ── */
@@ -248,7 +236,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
             sh.id = "vnc-sendbar";
             document.querySelector('[data-od-id="vnc"]')?.insertAdjacentElement("afterend", sh);
           }
-          vncText.mountBar(sh, () => vncUrl, recordTyped, { signal });
+          vncText.mountBar(sh, () => vncUrl, { signal });
         };
         const ready = await waitNovncReady(url, 60, { signal });
         if (!current()) return;
@@ -284,6 +272,7 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       // 容器已停:登录窗口与检测都无意义 → 只留「启动」+「删除」
       $("#act-probe").style.display = stopped ? "none" : "";
       $("#act-relogin").style.display = (stopped || headless) ? "none" : "";
+      $("#act-rebuild").style.display = stopped || ch.replacement ? "none" : "";
       const routing = $("#act-routing");
       routing.hidden = !routingControlsSupported();
       routing.textContent = routingOn() ? "参与分流 · 开" : "参与分流 · 关";
@@ -339,7 +328,28 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
     $("#act-probe").addEventListener("click", (e) => doProbe(e.currentTarget));
 
     /* ── 编辑连接信息 ── */
+    let editVersioned = false, verTouched = false;
+    $("#e-ver").addEventListener("change", () => { verTouched = true; });
+    async function loadEditVersions() {
+      const sel = $("#e-ver"), cur = ch.ec_ver || "";
+      editVersioned = false; verTouched = false;
+      try {
+        const spec = (await api.vpnTypes()).find(t => t.key === ch.vpn_type);
+        if (!spec?.versioned) { $("#e-ver-field").hidden = true; return; }
+        editVersioned = true;
+        const render = (versions) => {
+          if (cur && !versions.some(v => v.tag === cur)) versions.unshift({ tag: cur, usable_here: true });
+          const keep = verTouched ? sel.value : cur;
+          sel.innerHTML = versions.map(v =>
+            `<option value="${fb.esc(v.tag)}"${v.tag === keep ? " selected" : ""}${v.usable_here || v.tag === cur ? "" : " disabled"}>${fb.esc(v.tag)}${v.usable_here ? "" : "（本机不可用）"}</option>`).join("");
+          $("#e-ver-field").hidden = !versions.length;
+        };
+        render([]);   // 版本列表实时查 Docker Hub(可达数秒):先显示当前版本,到了再补全
+        try { render((await api.vpnVersions(ch.vpn_type)).versions || []); } catch (_) { /* 离线:只保留当前版本 */ }
+      } catch (_) { $("#e-ver-field").hidden = true; editVersioned = false; }
+    }
     function openEdit() {
+      loadEditVersions();
       $("#e-name").value = ch.name || "";
       $("#e-server").value = ch.server || (ch.config && ch.config.server) || "";
       $("#e-username").value = ch.username || (ch.config && ch.config.username) || "";
@@ -358,8 +368,9 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       const body = { name: $("#e-name").value, server: $("#e-server").value, username: $("#e-username").value, probe_url: $("#e-probe").value };
       const pw = $("#e-password").value;
       if (pw) body.password = pw;
+      if (editVersioned && verTouched && $("#e-ver").value && $("#e-ver").value !== (ch.ec_ver || "")) body.ec_ver = $("#e-ver").value;
       const connChanged = body.server !== (ch.server || "") ||
-        body.username !== (ch.username || (ch.config && ch.config.username) || "") || !!pw;
+        body.username !== (ch.username || (ch.config && ch.config.username) || "") || !!pw || "ec_ver" in body;
       const btn = $("#e-save");
       const saveForLater = ch.replacement?.phase === "queued" || (sys.runtime && !["ready", "waiting"].includes(sys.runtime.phase));
       btn.disabled = true; btn.textContent = connChanged && !saveForLater ? "保存并重新连接…" : "保存中…";
@@ -392,6 +403,27 @@ import { createVncLifecycle } from "../vnc-lifecycle.js";
       } finally { btn.disabled = false; }
     }
     $("#act-power").addEventListener("click", () => doPower());
+    /* 重建容器 = 停止 + 启动(hagb/oss 启动即 docker run fresh,同卷/MAC;byo 原地重启保留自装客户端) */
+    $("#act-rebuild").addEventListener("click", async (e) => {
+      const btn = e.currentTarget, orig = btn.textContent;
+      const byo = ch.login_method === "byo";
+      const msg = byo ? "将重启这条通道的容器，已装的客户端保留，需要在登录窗口重新连接。"
+        : ch.login_method === "headless" ? "将用当前设置重新创建容器并自动重连，期间这条通道的流量会中断。"
+        : "将用当前设置重新创建容器，需要在登录窗口重新登录，期间这条通道的流量会中断。";
+      if (!await fb.confirm(msg, { title: "重建容器", confirmLabel: "重建" })) return;
+      btn.disabled = true; btn.textContent = "重建中…";
+      try {
+        const stopped = await api.stop(ch.id);
+        if (stopped.stop_pending) { await boot(); toast("停止尚待确认，请稍后再重建", { variant: "info" }); return; }
+        await api.start(ch.id); await boot();
+        $("#vnc-frame")?.replaceWith(Object.assign(document.createElement("div"), { className: "vnc-stage", id: "vnc-stage", textContent: "登录窗口" }));
+        $("#vnc-sendbar")?.remove();
+        toast(ch.login_method === "headless" ? "已重建，正在重连" : "已重建，请重新登录", { variant: "success" });
+      } catch (err) {
+        await boot().catch(() => {});
+        toast("重建失败：" + fb.friendlyError(err).title, { variant: "danger" });
+      } finally { btn.disabled = false; btn.textContent = orig; }
+    });
     $("#act-stop").addEventListener("click", () => doPower(true));
     $("#act-routing").addEventListener("click", async (e) => {
       const btn = e.currentTarget;

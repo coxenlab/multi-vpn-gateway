@@ -68,6 +68,7 @@
             <button class="btn btn-primary" id="act-relogin">重新登录</button>
             <button class="btn btn-secondary" id="act-probe">检测连通</button>
             <button class="btn btn-secondary" id="act-power">停止</button>
+            <button class="btn btn-secondary" id="act-rebuild" type="button">重建容器</button>
             <button class="btn btn-secondary" id="act-stop" hidden>停用</button>
             <button class="btn btn-secondary" id="act-routing" type="button" role="switch" aria-checked="true" hidden>参与分流 · 开</button>
             <span class="spacer"></span>
@@ -95,11 +96,12 @@
                       <div class="stack-3">
                         <div class="field"><label>名称</label><input class="input" id="e-name" type="text" autocomplete="off"></div>
                         <div class="field"><label>VPN 网关</label><input class="input mono" id="e-server" type="text" autocomplete="off" placeholder="host:port"></div>
+                        <div class="field" id="e-ver-field" hidden><label>客户端版本</label><select class="input mono" id="e-ver"></select></div>
                         <div class="field"><label>账号</label><input class="input mono" id="e-username" type="text" autocomplete="off"></div>
                         <div class="field"><label>密码</label><input class="input" id="e-password" type="password" autocomplete="new-password" placeholder="留空则不修改"></div>
                         <div class="field"><label>内网验证地址</label><input class="input mono" id="e-probe" type="text" autocomplete="off"></div>
                       </div>
-                      <p class="note" style="margin-top:var(--space-3);">改网关、账号或密码会重新连接；只改名称或验证地址不影响连接。</p>
+                      <p class="note" style="margin-top:var(--space-3);">改网关、账号、密码或客户端版本会重建容器并需要重新登录；只改名称或验证地址不影响连接。</p>
                       <div style="display:flex; gap:var(--space-2); margin-top:var(--space-3);">
                         <button class="btn btn-primary btn-sm" id="e-save" type="submit">保存</button>
                         <button class="btn btn-ghost btn-sm" id="e-cancel" type="button">取消</button>
@@ -109,20 +111,20 @@
                 </div>
 
                 <div class="card" data-od-id="ch-note" hidden>
-                  <div class="card-head"><h3>登录备注</h3><button class="btn btn-sm btn-ghost" id="note-copy" type="button" style="margin-left:auto;">复制</button></div>
+                  <div class="card-head"><h3>备忘录</h3><button class="btn btn-sm btn-ghost" id="note-copy" type="button" style="margin-left:auto;">复制</button></div>
                   <div class="card-body">
                     <textarea class="input mono" id="note-text" rows="6" spellcheck="false"
-                      placeholder="记录这条 VPN 的登录信息：账号、密码、验证码接收方式、联系人…&#10;手动登录时照着这里抄。"></textarea>
-                    <p class="note" style="margin-top:var(--space-2);">加密保存在本机。登录窗口里「键入到容器」发送过的文本会自动记到这里。</p>
+                      placeholder="记录这条 VPN 的备忘：登录方式、验证码接收人、联系人、注意事项…"></textarea>
+                    <p class="note" style="margin-top:var(--space-2);">加密保存在本机，只记录你手动写入的内容。</p>
                     <div style="display:flex; align-items:center; gap:var(--space-2); margin-top:var(--space-3);">
                       <button class="btn btn-primary btn-sm" id="note-save" type="button">保存</button>
                       <button class="btn btn-ghost btn-sm" id="note-reload" type="button">重新读取</button>
                       <span class="note" id="note-state" role="status"></span>
                     </div>
                     <div id="note-conflict" hidden style="margin-top:var(--space-3);">
-                      <details><summary>最新保存的备注（你的草稿仍在上方）</summary><pre id="note-latest" style="white-space:pre-wrap;overflow-wrap:anywhere;"></pre></details>
+                      <details><summary>最新保存的备忘（你的草稿仍在上方）</summary><pre id="note-latest" style="white-space:pre-wrap;overflow-wrap:anywhere;"></pre></details>
                       <button class="btn btn-sm btn-ghost" id="note-keep-draft" type="button">已核对，继续编辑草稿</button>
-                      <button class="btn btn-sm btn-ghost" id="note-use-latest" type="button">放弃草稿并载入最新备注</button>
+                      <button class="btn btn-sm btn-ghost" id="note-use-latest" type="button">放弃草稿并载入最新备忘</button>
                     </div>
                   </div>
                 </div>

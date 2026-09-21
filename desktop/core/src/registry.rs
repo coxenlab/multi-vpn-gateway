@@ -55,6 +55,9 @@ pub struct AdapterSpec {
     /// 容器解析器策略(docker --dns-opt → 初始 resolv.conf 的 options 行),如 `no-aaaa`。
     #[serde(default)]
     pub dns_opts: Vec<String>,
+    /// /dev/shm 上限(MiB,docker --shm-size);GUI 客户端内嵌 Chromium 渲染用,默认 64M 会 SIGBUS。
+    #[serde(default)]
+    pub shm_size_mb: Option<u32>,
     /// 向导里替代通用 byo 告警的专属提示(可选;如 hillstone 预装客户端说明)。
     #[serde(default)]
     pub notice: Option<String>,

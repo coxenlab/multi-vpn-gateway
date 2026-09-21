@@ -122,7 +122,7 @@ struct SettingsView: View {
                 Button("选择备份…") { importing = true }
             } label: { settingLabel("导入配置", detail: "先核对备份内容，再确认导入。") }
         } header: { Text("配置备份") } footer: {
-            Text("备份可能包含自动登录凭据，请妥善保存。交互登录密码与登录备注不导出。")
+            Text("备份可能包含自动登录凭据，请妥善保存。交互登录密码与备忘录不导出。")
         }
         Section("升级与恢复") {
             LabeledContent {

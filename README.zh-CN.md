@@ -158,10 +158,10 @@ Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/s
 | PATCH | `/api/rules` | 以 `ids[]` 和 `enabled` 批量启停；桌面版额外跳过锁定规则并返回 `skipped_locked` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | 删规则 → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | 起 / 停容器 → `{ok}` |
-| POST | `/api/channels/{cid}/restore` | 替换尚未验证时恢复上一次设置；保留已保存的登录备注 |
+| POST | `/api/channels/{cid}/restore` | 替换尚未验证时恢复上一次设置；保留已保存的备忘录 |
 | DELETE | `/api/channels/{cid}` | 删通道 → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | 容器日志 → `{lines}` |
-| GET \| PUT | `/api/channels/{cid}/note` | 登录备注 `{note}`；加密存储，仅此端点读回，通道列表不暴露正文 |
+| GET \| PUT | `/api/channels/{cid}/note` | 备忘录 `{note}`；加密存储，仅此端点读回，通道列表不暴露正文 |
 | GET | `/api/config/export` | 导出通道与规则，保留分流开关、规则启停/备注/锁定状态；含自动登录所需凭据，文件须妥善保管 |
 | POST | `/api/config/import` | 接受不超过 16 MiB 的 JSON 备份，保留规则元数据；导入后为停止状态，返回已导入与跳过项 |
 | POST | `/api/config/retry` | 重试已保存规则的同步，读回托管规则/代理并保存启动配置 |

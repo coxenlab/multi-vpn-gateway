@@ -24,12 +24,7 @@ const view = createVncLifecycle({
       if (!current()) return;
       const frame = document.createElement("iframe"); frame.title = "VPN 登录窗口"; frame.src = result.url; host.replaceChildren(frame);
       state.textContent = "完成登录后，请回到通道概览检测内网连通。";
-      vncText.mountBar(document.querySelector("#sendbar"), () => result.url, async text => {
-        const value = text.trim(); if (!value || !current()) return;
-        const stored = await api.noteGet(cid); if (!current()) return;
-        const note = stored.note || "";
-        if (!note.includes(value)) await api.noteSet(cid, (note ? note + "\n" : "") + `[${new Date().toLocaleString("zh-CN")}] 键入：${value}`);
-      }, { signal });
+      vncText.mountBar(document.querySelector("#sendbar"), () => result.url, { signal });
     } catch (_) { if (current()) state.textContent = "登录窗口打开失败，可以重新打开。"; }
   },
 });

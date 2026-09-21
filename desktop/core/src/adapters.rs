@@ -34,7 +34,7 @@ fn parse_device(s: &str) -> DeviceMapping {
     }
 }
 
-/// 共有 HostConfig:caps/devices/sysctls/dns_opts/network/restart(unless-stopped)/device_cgroup_rules。
+/// 共有 HostConfig:caps/devices/sysctls/dns_opts/shm_size/network/restart(unless-stopped)/device_cgroup_rules。
 fn base_host_config(spec: &AdapterSpec, vpn_net: &str) -> HostConfig {
     HostConfig {
         cap_add: Some(spec.caps.clone()),
@@ -56,6 +56,8 @@ fn base_host_config(spec: &AdapterSpec, vpn_net: &str) -> HostConfig {
         },
         // manifest dns_opts → --dns-opt(容器解析器策略,如 no-aaaa;对照 Python _apply_spec_hostcfg)
         dns_options: if spec.dns_opts.is_empty() { None } else { Some(spec.dns_opts.clone()) },
+        // manifest shm_size_mb → --shm-size(GUI 客户端 Chromium 渲染共享内存;对照 Python _apply_spec_hostcfg)
+        shm_size: spec.shm_size_mb.map(|m| i64::from(m) * 1024 * 1024),
         ..Default::default()
     }
 }
@@ -232,6 +234,17 @@ mod tests {
             let p = build_run_kwargs("d2", "02:00:00:00:00:01", None, &registry::get(t).unwrap(), "v", "net").unwrap();
             assert!(hc(&p).dns_options.is_none(), "{t}");
         }
+    }
+
+    #[test]
+    fn shm_size_manifest_drives_host_shm_size() {
+        // GUI 家族(hagb/byo)放大 /dev/shm,防内嵌 Chromium 渲染越界 SIGBUS;无头 oss 不带
+        for t in ["easyconnect", "atrust", "custom", "hillstone"] {
+            let p = build_run_kwargs("s1", "02:00:00:00:00:01", Some("7.6.7"), &registry::get(t).unwrap(), "v", "net").unwrap();
+            assert_eq!(hc(&p).shm_size, Some(512 * 1024 * 1024), "{t}");
+        }
+        let p = build_run_kwargs("s2", "", None, &registry::get("anyconnect").unwrap(), "", "net").unwrap();
+        assert!(hc(&p).shm_size.is_none());
     }
 
     #[test]

@@ -6,6 +6,7 @@ struct ChannelView: View {
     let channel: Channel
     @State private var editing = false
     @State private var deleting = false
+    @State private var rebuilding = false
     @State private var tab = "概览"
     @State private var loginURL: URL?
     private var busy: Bool { model.busy.contains(channel.id) }
@@ -21,6 +22,7 @@ struct ChannelView: View {
                 Menu {
                     if channel.needsStart && channel.configured_status != "stopped" { Button("停用通道") { action("stop") } }
                     Button("编辑连接信息") { editing = true }
+                    if !channel.needsStart && channel.replacement == nil { Button("重建容器…") { rebuilding = true } }
                     if channel.login_method == "byo" { Button("上传客户端安装包…") { uploadInstaller() }.disabled(channel.needsStart || model.system?.runtime?.ready != true) }
                     Button("检测连通") { action("status", method: "GET", message: "检测完成") }.disabled(channel.needsStart)
                     Button(channel.routing_enabled ? "暂停参与分流" : "恢复参与分流") { Task { await model.perform("/api/channels/\(channel.id)", key: channel.id, method: "PATCH", body: ["routing_enabled": !channel.routing_enabled], success: "已保存分流设置") } }
@@ -88,6 +90,9 @@ struct ChannelView: View {
                 }
             }
             .sheet(isPresented: $editing) { ChannelEditor(channel: channel) }
+            .confirmationDialog("重建“\(channel.name)”的容器？", isPresented: $rebuilding, titleVisibility: .visible) {
+                Button("重建容器") { rebuild() }
+            } message: { Text(rebuildMessage) }
             .confirmationDialog("删除“\(channel.name)”？", isPresented: $deleting, titleVisibility: .visible) {
                 Button(needsRuntimeForDelete ? "启动环境并删除" : "删除通道", role: .destructive) {
                     Task { await model.perform("/api/channels/\(channel.id)\(needsRuntimeForDelete ? "?prepare_runtime=true" : "")", key: channel.id, method: "DELETE", success: "通道已删除") }
@@ -99,6 +104,21 @@ struct ChannelView: View {
         panel.message = "选择不超过 1 GiB 的客户端安装包，上传后在通道桌面中运行。"
         guard panel.runModal() == .OK, let file = panel.url else { return }
         Task { await model.uploadInstaller(file, channelID: channel.id) }
+    }
+    private var rebuildMessage: String {
+        switch channel.login_method {
+        case "byo": return "将重启这条通道的容器，已装的客户端保留，需要在登录窗口重新连接。"
+        case "headless": return "将用当前设置重新创建容器并自动重连，期间这条通道的流量会中断。"
+        default: return "将用当前设置重新创建容器，需要在登录窗口重新登录，期间这条通道的流量会中断。"
+        }
+    }
+    /// 重建容器 = 停止 + 启动(hagb/oss 启动即重建,byo 原地重启);停止未确认时不接着启动。
+    private func rebuild() {
+        Task {
+            guard await model.perform("/api/channels/\(channel.id)/stop", key: channel.id, success: "已停止") else { return }
+            guard let current = model.channels.first(where: { $0.id == channel.id }), current.stop_pending != true else { return }
+            await model.perform("/api/channels/\(channel.id)/start", key: channel.id, success: channel.login_method == "headless" ? "已重建，正在重连" : "已重建，请重新登录")
+        }
     }
     private var needsRuntimeForDelete: Bool { model.system?.runtime?.ready != true && (channel.container_id != nil || channel.replacement != nil) }
     private func action(_ name: String, method: String = "POST", message: String = "操作已完成") {

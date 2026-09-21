@@ -354,7 +354,7 @@ import SwiftUI
         guard let context = launchContext, !upgradeSwitching, !upgradePreparing, !quitting else { return }
         var arguments = [action.command]
         guard action == .finish || !noteDrafts.values.contains(where: { $0.dirty }) else {
-            upgradeError = "有尚未保存的登录备注，请先保存或放弃草稿，再切换配置。"; return
+            upgradeError = "有尚未保存的备忘录，请先保存或放弃草稿，再切换配置。"; return
         }
         if action == .activate {
             guard upgradeReport?.version == 2, let destination = upgradeDestination else { upgradeError = "请先重新准备并核对升级副本。"; return }

@@ -105,9 +105,8 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
   }
 
   /* 在 host 元素里装「发送文本到容器」输入条。getUrl() 返回当前登录窗 url(未就绪返回空)。
-   * onSent(text):可选;键入成功后回调(页面用它把文本留档到「登录信息备注」),
-   * 带勾选开关(默认开),失败静默——留档是辅助,绝不影响键入本身。 */
-  function mountBar(host, getUrl, onSent, { signal } = {}) {
+   * 键入内容只进容器,不留档(备忘录只收用户手写内容)。 */
+  function mountBar(host, getUrl, { signal } = {}) {
     if (!host || host.querySelector(".vnc-sendbar")) return;
     const bar = document.createElement("div");
     bar.className = "vnc-sendbar";
@@ -117,13 +116,9 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
                placeholder="粘贴要发进容器的文本（密码 / 验证码…）" style="flex:1;" />
         <button class="btn btn-secondary" type="button" style="flex:none;">键入到容器</button>
       </div>
-      <p class="note" style="margin:var(--space-1) 0 0;">先在登录窗里点选目标输入框，再点「键入到容器」；文本同时写入容器剪贴板，容器内 Ctrl+V 也可粘贴。</p>
-      ${onSent ? `<label class="note" style="display:flex;align-items:center;gap:6px;margin:var(--space-1) 0 0;cursor:pointer;">
-        <input type="checkbox" data-record checked style="margin:0;" /> 键入成功后自动记入「登录信息备注」（同文本只记一次）
-      </label>` : ""}`;
+      <p class="note" style="margin:var(--space-1) 0 0;">先在登录窗里点选目标输入框，再点「键入到容器」；文本同时写入容器剪贴板，容器内 Ctrl+V 也可粘贴。</p>`;
     const input = bar.querySelector("input");
     const btn = bar.querySelector("button");
-    const recordCb = bar.querySelector("[data-record]");
     signal?.addEventListener("abort", () => { input.value = ""; }, { once: true });
     const doSend = async () => {
       if (signal?.aborted || btn.disabled) return;
@@ -138,9 +133,6 @@ import KeyTable from "../vendor/novnc/core/input/keysym.js";
         const n = await send(url, text, { signal });
         if (signal?.aborted) return;
         window.toast?.(`已向容器键入 ${n} 个字符`);
-        if (onSent && recordCb?.checked) {
-          try { await onSent(text); } catch (_e) { /* 留档失败不影响键入 */ }
-        }
       } catch (e) {
         if (!signal?.aborted) window.toast?.("键入失败:" + (e?.message || e), { variant: "danger" });
       } finally {

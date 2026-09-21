@@ -26,6 +26,10 @@ adapters:
     caps: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun:rwm"]
     sysctls: {}
+    # /dev/shm 上限(MiB,= docker --shm-size;两栈同源)。GUI 客户端内嵌 Chromium 用 /dev/shm 做
+    # 渲染共享内存,docker 默认 64M;重登录页(全屏背景 + 大量插件脚本)实测映射约 189M,写越界
+    # SIGBUS → 客户端崩溃重启、一连接就跳回服务器地址页(2026-09-21 core 实锤)。tmpfs 按需占用。
+    shm_size_mb: 512
 
   atrust:
     label: aTrust
@@ -48,6 +52,7 @@ adapters:
     caps: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun:rwm"]
     sysctls: {"net.ipv4.conf.default.route_localnet": "1"}
+    shm_size_mb: 512        # 同 easyconnect:GUI 内嵌浏览器渲染用 /dev/shm
 
   # ── R2 oss 无头家族(共用自建镜像 vpnmgr/oss-vpn:latest)──
   # 密钥经 stdin/临时文件注入容器,绝不进命令行(命门 #5)。无 noVNC。
@@ -212,6 +217,7 @@ adapters:
     # glibc 双栈查询等到超时 → 按域名走 SOCKS5 必败、按 IP 正常)。企业内网为纯 IPv4,
     # no-aaaa 让 glibc 只发 A 查询即修;是 run 参数而非镜像改动,客户端追加 nameserver 时保留。
     dns_opts: [no-aaaa]
+    shm_size_mb: 512        # 自装 GUI 客户端多为 Electron/CEF,同 easyconnect
 
   # ── byo 家族专用成员:Hillstone Secure Connect(山石网科 SSL VPN / ZTNA)──
   # 官方只出 x86_64 Linux 客户端(Qt GUI + root 守护进程),无开源实现可用
@@ -241,3 +247,4 @@ adapters:
     devices: ["/dev/net/tun:/dev/net/tun:rwm"]
     sysctls: {}
     dns_opts: [no-aaaa]   # 守护进程 DNS 代理丢 AAAA(见 custom 注释),2026-09-09 实测
+    shm_size_mb: 512

@@ -189,10 +189,10 @@ Web mode's source of truth is `app/main.py`; desktop mode additionally exposes r
 | PATCH | `/api/rules` | batch enable / disable with `ids[]` and `enabled`; desktop additionally skips locked rules and returns `skipped_locked` |
 | DELETE | `/api/channels/{cid}/rules/{rid}` | delete one rule → `{ok, reload_status}` |
 | POST | `/api/channels/{cid}/start` \| `/stop` | start / stop container → `{ok}` |
-| POST | `/api/channels/{cid}/restore` | restore the previous settings while a replacement awaits verification; saved login notes are retained |
+| POST | `/api/channels/{cid}/restore` | restore the previous settings while a replacement awaits verification; saved memos are retained |
 | DELETE | `/api/channels/{cid}` | delete channel → `{ok}` |
 | GET | `/api/channels/{cid}/logs?tail=200` | container logs → `{lines}` |
-| GET \| PUT | `/api/channels/{cid}/note` | encrypted login notes `{note}`, read back only through this endpoint |
+| GET \| PUT | `/api/channels/{cid}/note` | encrypted channel memo `{note}`, read back only through this endpoint |
 | GET | `/api/config/export` | export channels and rules, retaining routing switches and rule enabled/note/locked fields; includes automatic-login credentials, so keep the file private |
 | POST | `/api/config/import` | JSON backup up to 16 MiB; import stopped channels, preserving rule metadata; returns imported and skipped items |
 | POST | `/api/config/retry` | retry saved routing configuration; confirm managed rules/proxies and persist the boot config |
