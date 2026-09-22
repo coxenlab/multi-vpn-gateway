@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "adapter": "hillstone",
+  "label": "Hillstone Secure Connect",
+  "package_version": "20260922",
+  "client_version": null,
+  "os": "linux",
+  "architecture": "arm64",
+  "client_architecture": "amd64",
+  "requires_x86_64_translation": true,
+  "filename": "hillstone-desktop-20260922-linux-arm64.tar.gz",
+  "bytes": 386634076,
+  "sha256": "072bf92eee46f8b57d382dd774a25a020594a57383d55e73103fbbc87e6210e5",
+  "url": "https://github.com/coxenlab/multi-vpn-gateway/releases/download/containers-20260922/hillstone-desktop-20260922-linux-arm64.tar.gz",
+  "image_tag": "vpnmgr/hillstone-desktop:latest",
+  "config_digest": "sha256:877e36ac1599c116237e3f0400a6928bc94b59b626c971858e8e9dba1e141012",
+  "source_image_id": "sha256:c3340bb1e38d2a18de8c678b80779c36193659278cbb66ce04eb2f58507a20b1",
+  "image_created_at": "2026-09-07T07:52:42.03004263Z",
+  "export_method": "docker image save",
+  "validation": {
+    "layer_digests": "passed",
+    "app_archive_prepare": "passed",
+    "credentials_included": false,
+    "runtime_volumes_included": false,
+    "fresh_vm_load": "not_run",
+    "vendor_login_this_release": "not_run"
+  }
+}

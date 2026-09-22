@@ -5,8 +5,8 @@ The MIT License in `LICENSE` covers only this project's own source code
 (the FastAPI backend, the orchestration logic, the static frontend, and the
 self-built `images/oss` and `images/byo` container images).
 
-This project does NOT distribute, bundle, or relicense any proprietary VPN
-client. In particular:
+Proprietary VPN clients retain their vendors' licenses; this project's MIT
+License does not cover or relicense them. Distribution differs by client:
 
   * EasyConnect / aTrust are proprietary software owned by Sangfor
     Technologies. This project does not ship their installers or binaries; it
@@ -15,8 +15,12 @@ client. In particular:
     their contents are governed by their own respective terms.
   * Hillstone Secure Connect is proprietary software owned by Hillstone
     Networks. `images/hillstone/Dockerfile` downloads the vendor's own Linux
-    installer from the vendor's site **at image build time, on your machine**;
-    no Hillstone binary is contained in, or distributed with, this repository.
+    installer from the vendor's site at image build time. Optional prebuilt
+    container archives attached to this repository's Releases include that
+    client and its runtime dependencies. The Git source tree contains build
+    definitions and download manifests, not the vendor binaries. The client
+    remains governed by Hillstone's terms; its inclusion does not grant a
+    license or imply vendor endorsement.
   * Other vendor clients (Cisco AnyConnect, GlobalProtect, Fortinet, Pulse/
     Ivanti, etc.) are likewise the property of their respective owners and are
     not distributed by this project.
@@ -64,14 +68,16 @@ you run with this tool, and for complying with the applicable vendor terms
 `LICENSE` 中的 MIT 协议仅覆盖本项目自有的源代码(FastAPI 后端、编排逻辑、
 静态前端,以及自建的 `images/oss`、`images/byo` 容器镜像)。
 
-本项目不分发、不打包、不转授任何闭源 VPN 客户端。具体而言:
+闭源 VPN 客户端仍适用其厂商条款,不受本项目 MIT 协议覆盖或转授。
+各客户端的分发方式如下:
 
   * EasyConnect / aTrust 是深信服(Sangfor)的闭源软件。本项目不附带其安装包
     或二进制,仅在运行时编排第三方 Docker 镜像(如 `hagb/docker-easyconnect`、
     `hagb/docker-atrust`);这些上游镜像及其内容受各自条款约束。
   * Hillstone Secure Connect 是山石网科的闭源软件。`images/hillstone/Dockerfile`
-    在**你本机构建镜像时**从厂商官网下载其官方 Linux 安装器;本仓库不包含、
-    也不分发任何山石二进制。
+    在构建镜像时从厂商官网下载官方 Linux 安装器。本仓库 Release 中可选下载的
+    预装容器镜像包含该客户端及其运行依赖;Git 源码目录只保存构建定义和下载清单,
+    不保存厂商二进制。客户端仍适用山石条款,随镜像提供不代表授予使用许可或厂商背书。
   * 其它厂商客户端(Cisco AnyConnect、GlobalProtect、Fortinet、Pulse/Ivanti
     等)同属各自所有者,本项目不分发。
 

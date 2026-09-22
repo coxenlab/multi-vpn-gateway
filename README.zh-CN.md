@@ -86,6 +86,12 @@ Colima / Lima 的 Linux VM——宿主不用装 Docker。从源码构建:
 构建输入、核对了什么、以及哪些仍需实机验收,见
 [`desktop/native/README.md`](./desktop/native/README.md)。
 
+### 预装 VPN 容器镜像
+
+[容器镜像下载](./downloads/containers/README.md) 提供 Hillstone Secure Connect
+的 Linux arm64 镜像包、SHA-256 校验值和导入说明。镜像包作为独立 Release 附件下载；
+ZLink 待容器登录和连通验证通过后加入。
+
 ### 只改前端
 
 不想起后端 / Docker,只调界面:

@@ -112,6 +112,13 @@ app installs a root-level privileged helper to manage the TUN entry. See
 [`desktop/native/README.md`](./desktop/native/README.md) for the staged inputs,
 what the build verifies, and what still needs on-device acceptance.
 
+### Prebuilt VPN container images
+
+[Container downloads](./downloads/containers/README.md) provides the Hillstone
+Secure Connect Linux arm64 image, SHA-256 checksums and import instructions.
+Container archives are separate Release assets; ZLink will be listed after its
+container login and connectivity checks pass.
+
 ### Frontend-only development
 
 To iterate on the UI without the backend or Docker:
