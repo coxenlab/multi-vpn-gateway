@@ -3,230 +3,83 @@
 [English](./README.md) | **中文**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Docker%20%7C%20macOS%2014%2B-lightgrey?style=flat-square)](#快速开始)
+[![Platform](https://img.shields.io/badge/platform-Docker%20%7C%20macOS%2014%2B-lightgrey?style=flat-square)](#安装)
 [![LINUX DO](https://img.shields.io/badge/LINUX%20DO-%E8%AE%A4%E5%8F%AF%E7%A4%BE%E5%8C%BA-FFB003?style=flat-square)](https://linux.do)
 
-> 自托管的 VPN 管理网关。把多家企业 VPN 同时跑起来——每家各关进一个 Docker 容器、暴露一个 SOCKS5 出口——再由一个独立的第二个 mihomo 实例按域名 / IP 把流量分流到各家。现有 Clash 一字不改,只加一个 `vpn-router` 节点 + 订阅一份分流规则。全程全 Docker,本机零新增依赖。
+> 同时连多家企业 VPN：每家关进一个 Docker 容器、暴露一个 SOCKS5 出口，再由一个独立的 mihomo 按域名 / IP 分流。现有 Clash 一字不改，只加一个 `vpn-router` 节点并订阅一份规则。
 
 ## 解决什么问题
 
-要同时连多家企业 VPN,官方客户端会互相抢路由 / DNS、各装一堆驱动,而且通常一次只能连一家。这个网关把每家 VPN 隔离进各自的容器,对外统一成 SOCKS5 出口,再按域名 / IP 分流——多家内网同时可达,互不干扰。
-
-## 架构
-
-三层,流量自外向内:
+官方客户端会互相抢路由和 DNS，通常一次只能连一家。本工具把每家 VPN 隔离在各自容器里，多家内网同时可达、互不干扰。
 
 ```
-你现有的 Clash ──(命中分流规则)──▶ vpn-router 节点
-                                        │
-              第二个 mihomo(本工具)── 按 域名 / IP 分流 ──▶ ch-1 / ch-2 / …
-                                        │
-        每家 VPN 一个容器(ch-{id})── EC / aTrust / openconnect / … ──▶ SOCKS5 出口 ──▶ 企业内网
+你现有的 Clash ──(命中规则)──▶ vpn-router
+                                  │
+        本工具的 mihomo ── 按域名 / IP 分流 ──▶ ch-1 / ch-2 / …
+                                  │
+        每家 VPN 一个容器 ── SOCKS5 出口 ──▶ 企业内网
 ```
 
-- **登录**:有头客户端(EasyConnect / aTrust,或 BYO 桌面)跑 noVNC,在浏览器里完成企业 VPN 的交互式登录(支持「重新登录」应对设备重绑);无头客户端经注入凭据登录,无 noVNC。
-- **判活**:后端经 SOCKS5 探活(`socks5h` 远程解析 `probe_url`)判定是否真连上内网——而非「VNC 连上了」。
-- **配置同步**:规则变更使用热加载；相同有效配置读回一致时不重复加载。页面区分已保存与已确认同步，失败可重试，保留上次可用启动配置。
+- **登录**：EasyConnect / aTrust 等有界面的客户端在浏览器里的 noVNC 窗口中登录；OpenConnect、OpenVPN、WireGuard 等无界面客户端用保存的凭据自动登录。
+- **是否连上**：以经 SOCKS5 访问内网验证地址的结果为准，不以「窗口打开了」为准。
+- **没有 Clash**：也可以把系统或浏览器代理指向本工具（PAC 或系统代理），命中规则的走 VPN，其余直连。
 
-没有 Clash 时也能用「入口接入」:把系统 / 浏览器代理直接指向本工具 mihomo(`/entry/proxy.pac`,或 `/api/entry/setup-commands` 给的各平台一键命令),命中规则的流量走 VPN、其余直连。
+## 安装
 
-## 快速开始
+### macOS 桌面版（推荐）
 
-### 前置要求
+1. 到 [最新 Release](https://github.com/coxenlab/multi-vpn-gateway/releases/latest) 下载 `.dmg`：`lite`（推荐）首次启动时下载 VM 镜像；`with-vm` 已内置 VM 镜像，体积更大。
+2. 打开 `.dmg`，把 `vpnmgr.app` 拖进「应用程序」。
+3. 安装包只做了 ad-hoc 签名、未经 Apple 公证，首次打开会被拦截，需要先去掉隔离属性：
 
-Docker,且带 Compose v2 插件(`docker compose`)。除此之外什么都不用装——所有运行期依赖都在容器里。
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/vpnmgr.app
+   ```
 
-### 启动
+需要 Apple Silicon、macOS 14 及以上。应用自带 Linux VM，不用另装 Docker。应用会安装一个以 root 运行的助手程序，用于配置路由入口和系统代理，请先核对 Release 里的 SHA-256。从源码构建见 [`desktop/native/README.md`](./desktop/native/README.md)。
 
-在仓库根目录:
+### Docker Compose（自行部署）
+
+需要 Docker 和 Compose v2。在仓库根目录：
 
 ```bash
-./start.sh
+./start.sh            # 首次生成 .env（随机端口与密钥），之后可重复执行
+docker compose down   # 停止
 ```
 
-`start.sh` 可重复执行,做三件事:
+端口只绑 `127.0.0.1`，具体见 `.env`：`UI_PORT` 是管理界面，`MIHOMO_PORT` 给 Clash 接。
 
-1. 首次运行:生成 `.env`,里面是随机高位端口(管理界面 / mihomo 分流 / mihomo 控制台)+ mihomo 密钥,之后保持不变。
-2. 首次运行:用密钥从模板渲染 `mihomo/config.yaml`。已存在的配置(含你建好的通道)会保留。
-3. 执行 `docker compose up -d --build`。
+### 预装客户端镜像
 
-完成后会打印出各端点——**全部只绑 `127.0.0.1`**:
-
-| 端点 | 环境变量 | 用途 |
-|---|---|---|
-| 管理界面(Web UI) | `UI_PORT` | 管理操作台,在浏览器打开 |
-| mihomo 分流端口 | `MIHOMO_PORT` | 给你的 Clash 接(见界面里「Clash 配置」按钮) |
-| mihomo 控制台 | `MIHOMO_CTRL_PORT` | mihomo 外部控制台 API |
-
-具体端口见 `.env`。首次运行会拉 / 构建镜像,耗时较久。
-
-### 停止
-
-```bash
-docker compose down
-```
-
-删某个 VPN 容器:在界面点删除,或 `docker rm -f vpn-<id>`。
-
-### macOS 桌面版(可选)
-
-除了 Compose 栈,仓库里还有一个原生 macOS app(`desktop/`):SwiftUI 壳承载同一套 Web 界面,
-Rust core 持有本地 HTTP 接口,另有一个特权 helper 负责路由级 TUN 入口,并随包带一份
-Colima / Lima 的 Linux VM——宿主不用装 Docker。从源码构建:
-
-```bash
-./desktop/app/build-dmg.sh --check                            # 只核对已准备的构建输入
-./desktop/app/build-dmg.sh --output "$HOME/Downloads/vpnmgr"  # 构建 .app + .dmg
-```
-
-需要 macOS 14+ / arm64。构建产物**只做本地 ad-hoc 签名**——不提供 Developer ID 签名与公证,
-下载来的包会被 Gatekeeper 拦,需自行去掉隔离属性。预编译 `.dmg` 挂在
-[最新 release](https://github.com/coxenlab/multi-vpn-gateway/releases/latest),附 SHA-256
-与 `THIRD-PARTY-LICENSES.txt`;注意该 app 会安装一个 root 级特权 helper 来管理 TUN 入口。
-构建输入、核对了什么、以及哪些仍需实机验收,见
-[`desktop/native/README.md`](./desktop/native/README.md)。
-
-### 预装 VPN 容器镜像
-
-[容器镜像下载](./downloads/containers/README.md) 提供 Hillstone Secure Connect
-的 Linux arm64 镜像包、SHA-256 校验值和导入说明。镜像包作为独立 Release 附件下载；
-ZLink 待容器登录和连通验证通过后加入。
-
-### 只改前端
-
-不想起后端 / Docker,只调界面:
-
-```bash
-cd app/static && python3 -m http.server 8080
-```
-
-### 跑测试
-
-在宿主跑单测(不需要 FastAPI,依赖与 app 镜像分开):
-
-```bash
-pip install --require-hashes --only-binary=:all: -r tests/requirements-dev.txt
-pytest
-```
+[容器镜像下载](./downloads/containers/README.md) 提供 Hillstone Secure Connect 的 Linux arm64 镜像包和导入说明。
 
 ## 支持的 VPN
 
-适配器是声明式的(`app/adapters.yaml`),分三个家族:
-
-| 家族 | 登录 | 客户端 |
+| 类型 | 登录方式 | 客户端 |
 |---|---|---|
-| **hagb** | 交互式,经 noVNC | EasyConnect、aTrust(上游 `hagb/docker-easyconnect` / `hagb/docker-atrust` 镜像) |
-| **oss** | 无头(注入凭据) | Cisco AnyConnect、GlobalProtect、Fortinet、Juniper/Pulse、Ivanti、openfortivpn、OpenVPN、WireGuard——共用自建镜像 `vpnmgr/oss-vpn`(`images/oss/`) |
-| **byo** | 自带,经 noVNC | 一台 `custom` Linux 桌面(`vpnmgr/byo-desktop`,`images/byo/`),自己手动装任意 VPN GUI——长尾兜底,尽力而为 |
+| EasyConnect / aTrust | 浏览器中登录 | 上游 [hagb](https://github.com/Hagb/docker-easyconnect) 镜像 |
+| 开源协议 | 自动登录 | AnyConnect、GlobalProtect、Fortinet、Juniper / Pulse、openfortivpn、OpenVPN、WireGuard |
+| Hillstone Secure Connect | 浏览器中登录 | 预装镜像，见上 |
+| 自定义 | 浏览器中登录 | 一台 Linux 桌面，自己装任意 VPN 客户端；尽力而为 |
 
-> BYO 兜底适用于「自带 tun、纯网络认证」的普通 Linux GUI/CLI 客户端;**不支持** systemd/dbus 守护进程客户端、需 host 缺失内核模块、硬件令牌 / 智能卡 / TPM 绑定、仅 Windows/macOS 的客户端。这类场景请优先用 hagb / oss 适配器。
-
-## 仓库结构
-
-```
-.
-├── README.md / README.zh-CN.md   # 本文件(中英双语)
-├── LICENSE                       # MIT(项目自有代码)
-├── NOTICE                        # 第三方 / 闭源软件免责声明
-├── CONTRIBUTING.md
-├── CHANGELOG.md
-├── docker-compose.yml            # mihomo + app 两服务;端口全绑 127.0.0.1
-├── start.sh                      # 一键启动
-├── gen_env.py                    # 生成 .env(随机端口 + 密钥)
-├── mihomo/config.template.yaml   # mihomo 配置模板(首次运行渲染)
-├── images/                       # 自建容器镜像(oss / byo)
-├── app/                          # FastAPI 后端 + 静态前端
-├── desktop/                      # macOS 桌面版:SwiftUI 壳、Rust core、特权 helper
-├── tests/                        # pytest 单测 + smoke.sh
-└── docs/
-    ├── design.md                 # 完整设计意图(想懂「为什么」先读它)
-    └── development.md            # 架构、命门、开发约定
-```
-
-## HTTP API
-
-Web 模式以 `app/main.py` 为准；桌面模式额外提供由 `desktop/core/src/server.rs` 注册的运行事件接口。
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/vpn-types` | 适配器列表(驱动向导类型网格) |
-| GET | `/api/vpn-types/{type}/versions` | `{versions:[{tag, arch, usable_here}]}`,实时 Docker Hub;非 versioned 适配器返回空列表 |
-| GET | `/api/channels` | 通道列表(每条含 `domains[]` / `ips[]` / `socks_endpoint` / `uptime` 等) |
-| POST | `/api/channels` | 建通道并起容器(`name, vpn_type, server, ec_ver, login_method, username, password, probe_url, config{}`) |
-| PATCH | `/api/channels/{cid}` | 修改通道字段；实际变化的连接参数会重建目标容器，名称/验证地址等元信息不重建；桌面另支持 `routing_enabled` |
-| GET | `/api/channels/{cid}/login` | noVNC 登录地址 `{url}`;无头适配器返回 `{login_mode:"headless"}` |
-| PUT / DELETE | `/api/channels/{cid}/login/viewers/{viewer}` | 仅桌面：续期 / 释放 `login?viewer=<UUID>` 获取的观看标识；login 返回 `viewer_id` 和 60 秒有效期；未传标识的旧客户端保留原生命周期 |
-| POST | `/api/channels/{cid}/upload` | multipart 上传 → `{ok, package}`(BYO 安装器经 `put_archive` 落数据卷) |
-| GET | `/api/channels/{cid}/status` | **跑 SOCKS5 探活** → `{status, connected, latency_ms}` |
-| GET | `/api/channels/{cid}/health` | 自动刷新读取共享探活缓存，含 `checked_at` / `stale`；过期先返回旧结果并后台更新，手动检测继续用 `/status` |
-| POST | `/api/channels/{cid}/rules` | 加分流规则(`patterns[]` 或 `pattern`,可选 `kind: domain\|ip`;裸 IP 自动补 `/32`、`/128`)→ `{reload_status, domains, ips, added, rejected}` |
-| PATCH | `/api/channels/{cid}/rules/{rid}` | 修改单条规则(`enabled`，桌面版另支持 `note` / `locked`)→ `{ok, rule, reload_status?}` |
-| PATCH | `/api/rules` | 以 `ids[]` 和 `enabled` 批量启停；桌面版额外跳过锁定规则并返回 `skipped_locked` |
-| DELETE | `/api/channels/{cid}/rules/{rid}` | 删规则 → `{ok, reload_status}` |
-| POST | `/api/channels/{cid}/start` \| `/stop` | 起 / 停容器 → `{ok}` |
-| POST | `/api/channels/{cid}/restore` | 替换尚未验证时恢复上一次设置；保留已保存的备忘录 |
-| DELETE | `/api/channels/{cid}` | 删通道 → `{ok}` |
-| GET | `/api/channels/{cid}/logs?tail=200` | 容器日志 → `{lines}` |
-| GET \| PUT | `/api/channels/{cid}/note` | 备忘录 `{note}`；加密存储，仅此端点读回，通道列表不暴露正文 |
-| GET | `/api/config/export` | 导出通道与规则，保留分流开关、规则启停/备注/锁定状态；含自动登录所需凭据，文件须妥善保管 |
-| POST | `/api/config/import` | 接受不超过 16 MiB 的 JSON 备份，保留规则元数据；导入后为停止状态，返回已导入与跳过项 |
-| POST | `/api/config/retry` | 重试已保存规则的同步，读回托管规则/代理并保存启动配置 |
-| GET | `/api/preflight` | 环境分项检查；可传 `vpn_type`、`version`，`scope=full` 执行完整诊断；可能运行临时 TUN 探针 |
-| POST | `/api/preflight/fix/{action}` | `create_network` 或 `pull_image`；下载返回 `task_id`，工作槽位占满时返回 429 |
-| GET | `/api/preflight/fix/{task_id}` | 镜像下载进度/结果；404 表示记录不可用，应先核对镜像清单再决定是否重新下载 |
-| GET | `/api/images` | 镜像清单及当前架构可用版本 |
-| GET / POST | `/api/mirrors` | 查询镜像下载源 / 以 `{host}` 新增下载源 |
-| PATCH / DELETE | `/api/mirrors/{mid}` | 修改 `priority` / `enabled`，或移除下载源 |
-| POST | `/api/mirrors/test` | 以 `{host}` 检查下载源 HTTPS `/v2/` 入口，返回可达性与延迟 |
-| GET | `/api/system` | mihomo 状态 / 端口 / 控制台地址，以及 `config_application` 的待同步状态、确认代次和时间；桌面额外含 `usernet` 低频诊断缓存及最近守卫核对结果 |
-| POST | `/api/system/self-heal` | 桌面版内存态自愈动作开关(`enabled`)；重开 app 自动恢复 |
-| GET \| POST | `/api/routing` | 桌面版持久化全直连总开关(`{off}`)；不改规则原始启停状态 |
-| GET | `/api/connections` | mihomo 实时连接 |
-| GET | `/api/proxies` | mihomo 代理 → `{proxies}` |
-| GET | `/clash/vpn-rules.yaml` | 给 Clash 订阅的 rule-provider 清单(`text/plain`) |
-| GET | `/api/clash-snippet` | 给用户 Clash 粘的节点 + 规则(`text/plain`) |
-| GET | `/entry/proxy.pac` | 无 Clash 时入口接入的 PAC 文件 |
-| GET | `/api/entry/setup-commands` | 各平台代理开 / 关一键命令 |
-| GET | `/api/events` | 桌面运行事件查询，支持 `since_seq` / `level` / `src` / `event` / `q` / `limit` |
-| GET | `/api/events/export?days=2` | 导出桌面最近 1–14 天的 JSONL 运行事件 |
-| GET \| POST | `/api/events/enabled` | 桌面运行事件记录开关 `{enabled}` |
-
-> 另有 `GET /` 与一个 catch-all 静态挂载，提供共享 Web 页面。完整桌面专用入口（TUN、系统代理、容器诊断）以 `desktop/core/src/server.rs` 为准。
-
-## 通道状态机
-
-```
-creating ──▶ running ──▶ logged_in     (另有 stopped、error)
-```
-
-- **running**:容器起来了,还没登录成功(待登录)
-- **logged_in**:SOCKS5 探活通过(真连上内网)
+自定义类型适合「自带 tun、只做网络认证」的普通 Linux 客户端；依赖 systemd 守护进程、硬件令牌 / 智能卡，或只有 Windows / macOS 版的客户端不支持。
 
 ## 安全
 
-- 所有 host 端口只绑 `127.0.0.1`,**永不** `0.0.0.0`。
-- 密码 Fernet 加密落库;`master.key` 权限 0600、存在数据卷;接口永不回传密文与 secret 字段。无头适配器经 stdin 注入凭据,绝不进命令行;BYO 安装器流式落数据卷,绝不入 SQLite。
-- SOCKS5(1080)只在 Docker 内网暴露。桌面版不 publish noVNC 容器 8080，由 app 为每条通道自持一条 SSH 转发到 `127.0.0.1` 随机高位端口；Web 版保留 Docker loopback 映射。
+- 所有端口只绑 `127.0.0.1`。
+- 密码等凭据加密存储，接口不回传；凭据经标准输入注入容器，不出现在命令行。
+- 导出的备份含自动登录所需凭据，请妥善保管。
 
-## 文档
+## 开发
 
-- [`docs/design.md`](./docs/design.md) —— 原始设计 / 落地方案(实现前的快照,部分技术选型与最终实现不同;当前架构见 development.md)。
-- [`docs/development.md`](./docs/development.md) —— 架构、绝不能破坏的命门、开发约定。
-- [`desktop/native/README.md`](./desktop/native/README.md) —— macOS 桌面版:生命周期、发布构建入口,以及验证边界。
-- [`CONTRIBUTING.md`](./CONTRIBUTING.md) —— 如何跑、测、贡献。
+- [`docs/development.md`](./docs/development.md)：架构、不能破坏的约定、接口要点。
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md)：怎么跑、怎么测。
+- [`docs/design.md`](./docs/design.md)：最初的设计稿（实现前的快照，部分选型与现状不同）。
 
 ## 致谢
 
-本项目完整开源,并认可 [LINUX DO](https://linux.do) 社区——项目在那里分享与讨论。
-
-本项目还站在这些工作之上:
-
-- [mihomo](https://github.com/MetaCubeX/mihomo) —— 第二层分流的引擎
-- [noVNC](https://github.com/novnc/noVNC) —— 交互式登录用的浏览器 VNC 客户端
-- [hagb/docker-easyconnect](https://github.com/Hagb/docker-easyconnect) —— EasyConnect / aTrust 适配器的上游镜像
-- [Colima](https://github.com/abiosoft/colima) 与 [Lima](https://github.com/lima-vm/lima) —— macOS 桌面版随包的 Linux VM
-- [Dante](https://www.inet.no/dante/)、[microsocks](https://github.com/rofl0r/microsocks),以及 OpenConnect / OpenVPN / WireGuard —— 容器里的 SOCKS5 出口与隧道
+项目在 [LINUX DO](https://linux.do) 社区分享与讨论，并基于：[mihomo](https://github.com/MetaCubeX/mihomo)、[noVNC](https://github.com/novnc/noVNC)、[hagb/docker-easyconnect](https://github.com/Hagb/docker-easyconnect)、[Colima](https://github.com/abiosoft/colima) / [Lima](https://github.com/lima-vm/lima)、[Dante](https://www.inet.no/dante/)、[microsocks](https://github.com/rofl0r/microsocks)，以及 OpenConnect / OpenVPN / WireGuard。
 
 ## 许可
 
-MIT,见 [`LICENSE`](./LICENSE)。MIT 仅覆盖本项目自有代码;第三方 / 闭源软件免责声明见 [`NOTICE`](./NOTICE)。
+MIT，见 [`LICENSE`](./LICENSE)，只覆盖本项目自有代码；第三方与闭源软件说明见 [`NOTICE`](./NOTICE)。

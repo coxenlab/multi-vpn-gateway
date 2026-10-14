@@ -108,12 +108,11 @@ creating ──▶ running ──▶ logged_in        (另有 stopped、error)
 
 ## HTTP API
 
-Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `desktop/core/src/server.rs` 为事实源。完整端点表见 [README](../README.zh-CN.md#http-api)。要点:
+Web 公共端点以 `app/main.py` 为事实源；桌面 host-only 端点以 `desktop/core/src/server.rs` 为事实源(README 不列接口)。要点:
 
 - 分流规则走 `POST /api/channels/{cid}/rules`(`patterns[]` 或 `pattern`,可选 `kind: domain|ip`,裸 IP 自动补 `/32`、`/128`),`PATCH` / `DELETE .../rules/{rid}` 启停 / 删除单条。域名与 IP-CIDR 均已支持。
 - `GET /clash/vpn-rules.yaml` 产出 `behavior: classical` 的 rule-provider 清单;`GET /api/clash-snippet` 给出 `vpn-router` 节点 + `RULE-SET,vpn-rules` 引用(或内联回退)。
 - 桌面版 `GET /api/events` 按游标/级别/来源/事件码/消息查询运行事件；`GET /api/events/export?days=1` 导出本机脱敏 JSONL。web 版无此路由,前端按 404 隐藏「运行日志」。
-- 改 API 必须同步改 README 的 API 表。
 
 ## 现状与下一步
 
