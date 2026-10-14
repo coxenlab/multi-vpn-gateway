@@ -234,15 +234,23 @@ impl Coordinator {
         wait_flight(&mut flight).await.map(|_| true)
     }
 
-    /// 永久拒绝新操作，等已接受的资源任务和启动/释放完成；总预算由退出流程控制。
+    /// 立即拒绝新操作，不等待已有任务；让退出流程能先收入口。
+    pub fn begin_closing(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.closing = true;
+        state.deadline = None;
+        self.publish(&mut state);
+    }
+
+    pub fn start_in_flight(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.phase == Phase::Starting && state.flight.is_some()
+    }
+
+    /// 等已接受的资源任务和启动/释放完成；调用方限制等待预算。
     pub async fn quiesce(&self) {
         let mut changed = self.changed.subscribe();
-        {
-            let mut state = self.state.lock().unwrap();
-            state.closing = true;
-            state.deadline = None;
-            self.publish(&mut state);
-        }
+        self.begin_closing();
         loop {
             {
                 let state = self.state.lock().unwrap();
@@ -343,6 +351,22 @@ mod tests {
         assert_eq!(c.snapshot().phase, Phase::Failed);
         c.quiesce().await;
         assert_eq!(c.snapshot().phase, Phase::Closing);
+    }
+
+    #[tokio::test]
+    async fn closing_preserves_starting_flight_until_it_really_finishes() {
+        let c = coordinator();
+        let gate = Arc::new(Semaphore::new(0));
+        let task = { let (c, gate) = (c.clone(), gate.clone()); tokio::spawn(async move {
+            c.ensure(move || async move { gate.acquire().await.unwrap().forget(); Ok(()) }).await
+        }) };
+        settle().await;
+        c.begin_closing();
+        assert_eq!(c.snapshot().phase, Phase::Closing);
+        assert!(c.start_in_flight(), "退出不能与仍在启动的 VM 并发 stop");
+        gate.add_permits(1);
+        task.await.unwrap().unwrap();
+        assert!(!c.start_in_flight());
     }
 
     #[tokio::test]

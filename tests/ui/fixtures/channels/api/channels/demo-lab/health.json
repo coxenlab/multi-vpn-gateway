@@ -1,0 +1,11 @@
+{
+  "status": "logged_in",
+  "connected": true,
+  "latency_ms": 12,
+  "checked_at": 1789999988000,
+  "stale": false,
+  "replacement": null,
+  "blocked": false,
+  "awaiting_target": false,
+  "target": "a-very-long-internal-service-name.build-cluster.lab.example.test"
+}

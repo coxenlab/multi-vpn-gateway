@@ -29,3 +29,5 @@ desktop/core/.data.bak-*/
 # Swift Package build products
 /desktop/native/.build/
 /desktop/native/.swiftpm/
+/desktop/tongdao/.build/
+/desktop/tongdao/.swiftpm/

@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "host": "mirror-a.example.com",
+    "priority": 10,
+    "enabled": 1
+  },
+  {
+    "id": 2,
+    "host": "mirror-b.example.com",
+    "priority": 20,
+    "enabled": 1
+  },
+  {
+    "id": 3,
+    "host": "registry.example.test",
+    "priority": 30,
+    "enabled": 0
+  }
+]

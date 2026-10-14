@@ -180,7 +180,8 @@ pub fn plan_rules(patterns: &[String], forced: Option<&str>, existing: &[(String
 /// 对照 main.py login 的 url 构造(命门 #4:Web 栈用 Docker loopback 映射；桌面栈由 app SSH 转发持有端口)。
 /// path 须带尾斜杠:镜像内 tinyproxy 把 /websockify 301→/websockify/,WS 握手不跟随 301。
 pub fn login_url(port: i64, vnc_password: &str, vpn_type: &str) -> String {
-    let resize = if vpn_type == "atrust" { "scale" } else { "remote" };
+    // The generic Xvfb desktop has a fixed canvas; fit it inside the login pane.
+    let resize = if matches!(vpn_type, "atrust" | "custom") { "scale" } else { "remote" };
     format!(
         "http://127.0.0.1:{port}/vnc.html?path=websockify/&autoconnect=true&resize={resize}&password={vnc_password}"
     )
@@ -209,28 +210,37 @@ pub fn clash_provider_text(rules: &[Rule]) -> String {
 }
 
 /// 对照 clash_snippet:节点 + provider 订阅 + 内联两种(二选一)。命门 #2:IP/域名都带 no-resolve(入口侧语义)。
+/// 旧身份;按身份取节点名 / 规则集名用 [`clash_snippet_text_for`]。
 pub fn clash_snippet_text(rules: &[Rule], mihomo_host_port: &str, ui_port: &str) -> String {
+    clash_snippet_text_for(&crate::identity::VPNMGR, rules, mihomo_host_port, ui_port)
+}
+
+/// 节点名、规则集名(连同缓存路径)按身份取:两个应用的片段加进同一个 Clash 不撞名、不共用缓存文件。
+/// 订阅地址 `/clash/vpn-rules.yaml` 是各自端口上的路由,不随身份变。通道管家的说明文字不出现内部用词,
+/// 旧身份的输出逐字节不变。
+pub fn clash_snippet_text_for(id: &crate::identity::Identity, rules: &[Rule], mihomo_host_port: &str, ui_port: &str) -> String {
     let port = if mihomo_host_port.is_empty() { "?" } else { mihomo_host_port };
     let ui = if ui_port.is_empty() { "<UI端口>" } else { ui_port };
+    let (proxy, provider) = (id.clash_proxy_name, id.clash_provider_name);
     let mut l = vec![
         "# ① 在你现有 Clash 的 proxies: 下加这个节点".to_string(),
         "proxies:".into(),
-        "  - name: vpn-router".into(),
+        format!("  - name: {proxy}"),
         "    type: socks5".into(),
         "    server: 127.0.0.1".into(),
         format!("    port: {port}"),
         "".into(),
         "# ② 方式甲(推荐):订阅一份规则,绑新域名/IP 自动同步,之后不再动 Clash".into(),
         "rule-providers:".into(),
-        "  vpn-rules:".into(),
+        format!("  {provider}:"),
         "    type: http".into(),
         "    behavior: classical".into(),
         "    format: yaml".into(),
         format!("    url: http://127.0.0.1:{ui}/clash/vpn-rules.yaml"),
         "    interval: 60".into(),
-        "    path: ./providers/vpn-rules.yaml".into(),
+        format!("    path: ./providers/{provider}.yaml"),
         "# rules: 顶部加一行引用(no-resolve 对清单内 IP-CIDR 生效)".into(),
-        "  - RULE-SET,vpn-rules,vpn-router,no-resolve".into(),
+        format!("  - RULE-SET,{provider},{proxy},no-resolve"),
         "".into(),
         "# ② 方式乙:直接内联(不想用 provider 时)".into(),
     ];
@@ -243,22 +253,37 @@ pub fn clash_snippet_text(rules: &[Rule], mihomo_host_port: &str, ui_port: &str)
     } else {
         for (kind, pattern) in enabled {
             if kind == "ip" {
-                l.push(format!("  - IP-CIDR,{pattern},vpn-router,no-resolve"));
+                l.push(format!("  - IP-CIDR,{pattern},{proxy},no-resolve"));
             } else {
-                l.push(format!("  - DOMAIN-SUFFIX,{pattern},vpn-router,no-resolve"));
+                l.push(format!("  - DOMAIN-SUFFIX,{pattern},{proxy},no-resolve"));
             }
         }
     }
     l.push("".into());
     l.push(format!("# ③ 无 Clash 时:把系统/浏览器代理指向 127.0.0.1:{port}"));
-    l.push("#    本工具 mihomo 自身分流:命中→VPN 容器,其余→直连。".into());
+    l.push(if std::ptr::eq(id, &crate::identity::VPNMGR) {
+        "#    本工具 mihomo 自身分流:命中→VPN 容器,其余→直连。"
+    } else {
+        "#    本工具自己分流:命中规则的走对应通道,其余走原网络。"
+    }.into());
+    if !id.tun_config_frozen {
+        l.push("# UDP 不经本工具，按你后面的规则处理。".into());
+    }
     l.join("\n")
 }
 
 /// 对照 entry_pac:命中域名/v4 网段走入口 SOCKS5,其余 DIRECT(v6 网段略过,isInNet 仅 v4)。
 pub fn pac_text(rules: &[Rule], mihomo_host_port: &str) -> String {
+    pac_text_for(&crate::identity::VPNMGR, rules, mihomo_host_port)
+}
+
+pub fn pac_text_for(id: &crate::identity::Identity, rules: &[Rule], mihomo_host_port: &str) -> String {
     let port = if mihomo_host_port.is_empty() { "?" } else { mihomo_host_port };
-    let proxy = format!("SOCKS5 127.0.0.1:{port}; SOCKS 127.0.0.1:{port}; DIRECT");
+    let proxy = if id.tun_config_frozen {
+        format!("SOCKS5 127.0.0.1:{port}; SOCKS 127.0.0.1:{port}; DIRECT")
+    } else {
+        format!("SOCKS5 127.0.0.1:{port}")
+    };
     let mut domains = Vec::new();
     let mut nets = Vec::new();
     // 命门②出口再校验:含 DANGER 字符的脏 pattern 整条跳过(serde_json 转义是第二层防线)。
@@ -459,6 +484,7 @@ mod tests {
         assert!(u.contains("resize=scale"));
         assert!(u.contains("password=deadbeef"));
         assert!(login_url(45678, "deadbeef", "easyconnect").contains("resize=remote"));
+        assert!(login_url(45678, "deadbeef", "custom").contains("resize=scale"));
     }
 
     fn rl(kind: &str, pat: &str, en: i64) -> crate::store::Rule {
@@ -574,6 +600,88 @@ mod tests {
         assert!(out.contains("http://127.0.0.1:8787/clash/vpn-rules.yaml"));
         assert!(out.contains("IP-CIDR,10.0.0.0/8,vpn-router,no-resolve"));
         assert!(out.contains("DOMAIN-SUFFIX,y.com,vpn-router,no-resolve"));
+    }
+
+    const LEGACY_SNIPPET: &str = "# ① 在你现有 Clash 的 proxies: 下加这个节点
+proxies:
+  - name: vpn-router
+    type: socks5
+    server: 127.0.0.1
+    port: 7899
+
+# ② 方式甲(推荐):订阅一份规则,绑新域名/IP 自动同步,之后不再动 Clash
+rule-providers:
+  vpn-rules:
+    type: http
+    behavior: classical
+    format: yaml
+    url: http://127.0.0.1:8787/clash/vpn-rules.yaml
+    interval: 60
+    path: ./providers/vpn-rules.yaml
+# rules: 顶部加一行引用(no-resolve 对清单内 IP-CIDR 生效)
+  - RULE-SET,vpn-rules,vpn-router,no-resolve
+
+# ② 方式乙:直接内联(不想用 provider 时)
+  - IP-CIDR,10.20.0.0/16,vpn-router,no-resolve
+  - DOMAIN-SUFFIX,corp.example,vpn-router,no-resolve
+
+# ③ 无 Clash 时:把系统/浏览器代理指向 127.0.0.1:7899
+#    本工具 mihomo 自身分流:命中→VPN 容器,其余→直连。";
+
+    #[test]
+    fn legacy_clash_snippet_is_byte_identical() {
+        let rs = vec![rl("ip", "10.20.0.0/16", 1), rl("ip", "192.0.2.0/24", 0), rl("domain", "corp.example", 1)];
+        assert_eq!(clash_snippet_text(&rs, "7899", "8787"), LEGACY_SNIPPET);
+        assert_eq!(clash_snippet_text_for(&crate::identity::VPNMGR, &rs, "7899", "8787"), LEGACY_SNIPPET);
+    }
+
+    #[test]
+    fn tongdao_clash_snippet_uses_own_names() {
+        let rs = vec![rl("ip", "10.20.0.0/16", 1), rl("ip", "192.0.2.0/24", 0), rl("domain", "corp.example", 1)];
+        let out = clash_snippet_text_for(&crate::identity::TONGDAO, &rs, "7899", "8787");
+        // 结构不变,只换节点名和规则集名、最后一行说明;订阅地址是各自端口上的同名路由,不改。
+        assert_eq!(out, LEGACY_SNIPPET.replace("vpn-router", "tongdao-router").replace("vpn-rules", "tongdao-rules")
+            .replace("/clash/tongdao-rules.yaml", "/clash/vpn-rules.yaml")
+            .replace("本工具 mihomo 自身分流:命中→VPN 容器,其余→直连。", "本工具自己分流:命中规则的走对应通道,其余走原网络。\n# UDP 不经本工具，按你后面的规则处理。"));
+        assert!(out.contains("  - name: tongdao-router\n") && out.contains("  tongdao-rules:\n"));
+        assert!(out.contains("path: ./providers/tongdao-rules.yaml"));
+        assert!(out.contains("RULE-SET,tongdao-rules,tongdao-router,no-resolve"));
+        assert!(out.contains("IP-CIDR,10.20.0.0/16,tongdao-router,no-resolve"));
+        let rest = out.replace("/clash/vpn-rules.yaml", "");
+        assert!(!rest.contains("vpn-router") && !rest.contains("vpn-rules"), "{out}");
+    }
+
+    #[test]
+    fn tongdao_clash_snippet_comments_avoid_internal_words() {
+        let with_rules = vec![rl("ip", "10.20.0.0/16", 1), rl("domain", "corp.example", 1)];
+        for rs in [with_rules, vec![]] {
+            let out = clash_snippet_text_for(&crate::identity::TONGDAO, &rs, "7899", "8787");
+            let comments: Vec<&str> = out.lines().filter(|line| line.trim_start().starts_with('#')).collect();
+            assert!(comments.len() >= 6, "{out}");
+            for line in comments {
+                let lower = line.to_lowercase();
+                for word in ["mihomo", "docker", "socks", "probe", "容器"] {
+                    assert!(!lower.contains(word), "注释行含 {word}: {line}");
+                }
+            }
+            // 配置项本身是 Clash 的语法,保留。
+            assert!(out.contains("    type: socks5\n"));
+        }
+        // 旧身份的这一行不变。
+        assert!(clash_snippet_text(&[], "7899", "8787").ends_with("#    本工具 mihomo 自身分流:命中→VPN 容器,其余→直连。"));
+    }
+
+    #[test]
+    fn tongdao_pac_has_no_matching_direct_fallback() {
+        let rs = vec![rl("domain", "corp.example", 1), rl("ip", "10.0.0.0/8", 1)];
+        let legacy = pac_text(&rs, "7899");
+        for id in [&crate::identity::TONGDAO, crate::identity::for_profile("tongdao-dev")] {
+            let pac = pac_text_for(id, &rs, "7899");
+            assert!(pac.contains("var PROXY = \"SOCKS5 127.0.0.1:7899\";"));
+            assert!(!pac.contains("; DIRECT") && !pac.contains("; SOCKS "));
+            assert!(pac.contains("return 'DIRECT';"), "未命中的地址仍走原网络");
+            assert_eq!(pac, legacy.replace("; SOCKS 127.0.0.1:7899; DIRECT", ""));
+        }
     }
 
     #[test]

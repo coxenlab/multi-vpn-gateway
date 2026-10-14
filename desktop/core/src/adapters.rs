@@ -1,7 +1,10 @@
 //! Runtime 家族:把 AdapterSpec 合成 bollard 容器配置。对照 app/adapters.py。纯函数。
 use anyhow::{anyhow, Result};
 use bollard::container::Config;
-use bollard::models::{DeviceMapping, HostConfig, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{
+    DeviceMapping, HostConfig, HostConfigCgroupnsModeEnum, RestartPolicy,
+    RestartPolicyNameEnum,
+};
 use std::collections::HashMap;
 use crate::registry::AdapterSpec;
 
@@ -36,8 +39,17 @@ fn parse_device(s: &str) -> DeviceMapping {
 
 /// 共有 HostConfig:caps/devices/sysctls/dns_opts/shm_size/network/restart(unless-stopped)/device_cgroup_rules。
 fn base_host_config(spec: &AdapterSpec, vpn_net: &str) -> HostConfig {
+    let mut caps = spec.caps.clone();
+    if spec.systemd && !caps.iter().any(|cap| cap == "SYS_ADMIN") {
+        caps.push("SYS_ADMIN".into());
+    }
+    let full_init_tmpfs = spec.systemd.then(|| HashMap::from([
+        ("/run".into(), "rw,nosuid,nodev,mode=755".into()),
+        ("/run/lock".into(), "rw,nosuid,nodev,noexec,relatime,mode=755".into()),
+        ("/tmp".into(), "rw,nosuid,nodev,mode=1777".into()),
+    ]));
     HostConfig {
-        cap_add: Some(spec.caps.clone()),
+        cap_add: Some(caps),
         devices: Some(spec.devices.iter().map(|d| parse_device(d)).collect()),
         sysctls: if spec.sysctls.is_empty() {
             None
@@ -58,6 +70,9 @@ fn base_host_config(spec: &AdapterSpec, vpn_net: &str) -> HostConfig {
         dns_options: if spec.dns_opts.is_empty() { None } else { Some(spec.dns_opts.clone()) },
         // manifest shm_size_mb → --shm-size(GUI 客户端 Chromium 渲染共享内存;对照 Python _apply_spec_hostcfg)
         shm_size: spec.shm_size_mb.map(|m| i64::from(m) * 1024 * 1024),
+        cgroupns_mode: spec.systemd.then_some(HostConfigCgroupnsModeEnum::PRIVATE),
+        tmpfs: full_init_tmpfs,
+        security_opt: spec.systemd.then(|| vec!["apparmor=tongdao-generic".into()]),
         ..Default::default()
     }
 }
@@ -261,6 +276,15 @@ mod tests {
         // 命门 #6:NET_ADMIN + MKNOD
         assert!(h.cap_add.as_ref().unwrap().contains(&"NET_ADMIN".to_string()));
         assert!(h.cap_add.as_ref().unwrap().contains(&"MKNOD".to_string()));
+        assert!(h.cap_add.as_ref().unwrap().contains(&"SYS_ADMIN".to_string()));
+        assert_eq!(h.cgroupns_mode, Some(HostConfigCgroupnsModeEnum::PRIVATE));
+        assert_eq!(h.security_opt, Some(vec!["apparmor=tongdao-generic".to_string()]));
+        let tmpfs = h.tmpfs.as_ref().expect("full init tmpfs");
+        assert_eq!(tmpfs.len(), 3);
+        for path in ["/run", "/run/lock", "/tmp"] { assert!(tmpfs.contains_key(path), "{path}"); }
+        assert_ne!(h.privileged, Some(true));
+        assert!(h.pid_mode.is_none());
+        assert!(h.cgroup_parent.is_none());
         // env:USE_NOVNC + PASSWORD(模板化),无凭据
         let env = p.config.env.as_ref().unwrap();
         assert!(env.contains(&"USE_NOVNC=1".to_string()));
@@ -281,5 +305,17 @@ mod tests {
         let mut spec = registry::get("easyconnect").unwrap();
         spec.runtime = "weird".into();
         assert!(build_run_kwargs("x", "", None, &spec, "v", "net").is_err());
+    }
+
+    #[test]
+    fn full_init_is_not_inherited_by_other_adapters() {
+        for key in ["easyconnect", "atrust", "anyconnect", "hillstone"] {
+            let p = build_run_kwargs("plain", "", None, &registry::get(key).unwrap(), "v", "net").unwrap();
+            let h = hc(&p);
+            assert!(!h.cap_add.as_ref().is_some_and(|caps| caps.iter().any(|cap| cap == "SYS_ADMIN")), "{key}");
+            assert!(h.cgroupns_mode.is_none(), "{key}");
+            assert!(h.security_opt.is_none(), "{key}");
+            assert!(h.tmpfs.is_none(), "{key}");
+        }
     }
 }

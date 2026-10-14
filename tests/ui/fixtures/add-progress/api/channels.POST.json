@@ -1,0 +1,32 @@
+{
+  "__status__": 200,
+  "__delay_ms__": 2200,
+  "__body__": {
+    "id": "demo-park1",
+    "name": "园区办公",
+    "vpn_type": "easyconnect",
+    "server": "vpn.example.test",
+    "ec_ver": "7.6.7",
+    "login_method": "interactive",
+    "username": "",
+    "vnc_password": "vnc-demo-park1",
+    "mac": "02:11:22:33:44:50",
+    "novnc_port": 39150,
+    "probe_url": "",
+    "status": "running",
+    "container_id": "c-demo-park1",
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "running",
+    "domains": [],
+    "ips": [],
+    "volume_name": "vpndata-demo-park1",
+    "socks_proxy": "ch-demo-park1",
+    "socks_endpoint": "vpn-demo-park1:1080",
+    "uptime": "1小时5分",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  }
+}

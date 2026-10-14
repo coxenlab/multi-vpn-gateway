@@ -1,0 +1,5 @@
+[Unit]
+Description=Channel network access
+[Service]
+ExecStart=/usr/bin/microsocks -i 0.0.0.0 -p 1080
+Restart=on-failure

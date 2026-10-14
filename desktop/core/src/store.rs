@@ -172,6 +172,26 @@ pub fn set_probe_result(db: &Path, cid: &str, status: &str, latency: Option<i64>
     Ok(())
 }
 
+/// 候选验证地址已在当前容器上实测成功后，原子保存目标和已验证状态。
+/// `expected_container` 防止长探活的结果落到已被替换的通道实例上。
+pub fn confirm_probe_target(
+    db: &Path,
+    cid: &str,
+    expected_container: Option<&str>,
+    probe_url: &str,
+    latency: Option<i64>,
+) -> anyhow::Result<()> {
+    let conn = Connection::open(db)?;
+    let target = clean_field("probe_url", probe_url);
+    let changed = conn.execute(
+        "UPDATE channels SET probe_url=?1,status='logged_in',latency_ms=?2 \
+         WHERE id=?3 AND container_id IS ?4 AND status IN ('running','logged_in')",
+        rusqlite::params![target, latency, cid, expected_container],
+    )?;
+    anyhow::ensure!(changed == 1, "通道已变更，候选验证结果已丢弃");
+    Ok(())
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub id: i64,
@@ -291,9 +311,11 @@ fn all_rules_with(conn: &Connection) -> anyhow::Result<Vec<Rule>> {
 
 /// 运行时五个规则消费面共用的有效规则集。
 ///
-/// 依次折叠全局 `routing_off`、通道 `routing_enabled`、通道状态(stopped/error 的通道
-/// 规则不生效,避免流量进黑洞;通道回到运行态自动恢复,不改规则自身开关)、规则自身
-/// `enabled`。只改返回项的 `enabled` 值，保留所有元素与 `ORDER BY id` 插入序；过滤仍由
+/// 依次折叠全局 `routing_off`、通道 `routing_enabled`、手动停止(stopped 或停止意图中的通道
+/// 规则不生效,流量走原网络;通道回到运行态自动恢复,不改规则自身开关)、规则自身
+/// `enabled`。出错的通道**不折叠**:订阅、片段、PAC、TUN 路由照常输出,流量进入口,由内层
+/// 入口把目标写成 `REJECT` 阻止([`crate::manager::ordered_rules`]),不落到更宽的规则或直连。
+/// 只改返回项的 `enabled` 值，保留所有元素与 `ORDER BY id` 插入序；过滤仍由
 /// 各消费面原有逻辑完成，避免 mihomo/provider/PAC/TUN 的规则集合和顺序漂移。原始字段由
 /// [`all_rules`] 提供给导出。
 pub fn effective_rules(db: &Path) -> anyhow::Result<Vec<Rule>> {
@@ -312,7 +334,7 @@ pub(crate) fn effective_rules_with(conn: &Connection, off: bool) -> anyhow::Resu
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 OR status IN ('stopped','error') OR id IN (SELECT channel_id FROM channel_stop_intents) ORDER BY id",
+        "SELECT id FROM channels WHERE COALESCE(routing_enabled,1)=0 OR status IN ('stopped') OR id IN (SELECT channel_id FROM channel_stop_intents) ORDER BY id",
     )?;
     let disabled = stmt
         .query_map([], |row| row.get::<_, String>(0))?
@@ -783,7 +805,19 @@ pub(crate) fn update_channel_on(
         for col in ["name", "server", "ec_ver", "username", "probe_url"] {
             if let Some(v) = fields.get(col) {
                 let s = clean_field(col, &value_to_string(v));
-                tx.execute(&format!("UPDATE channels SET {col}=?1 WHERE id=?2"), rusqlite::params![s, cid])?;
+                if col == "probe_url" {
+                    // custom 的已验证状态只绑定当时的目标：URL 真正变化时在同一条
+                    // SQL/同一事务中撤销旧结论，不留「新 URL + 旧 logged_in」的中间快照。
+                    tx.execute(
+                        "UPDATE channels SET probe_url=?1, \
+                         status=CASE WHEN vpn_type='custom' AND COALESCE(probe_url,'')<>?1 AND status='logged_in' THEN 'running' ELSE status END, \
+                         latency_ms=CASE WHEN vpn_type='custom' AND COALESCE(probe_url,'')<>?1 AND status='logged_in' THEN NULL ELSE latency_ms END \
+                         WHERE id=?2",
+                        rusqlite::params![s, cid],
+                    )?;
+                } else {
+                    tx.execute(&format!("UPDATE channels SET {col}=?1 WHERE id=?2"), rusqlite::params![s, cid])?;
+                }
             }
         }
         if let Some(v) = fields.get("password") {
@@ -1104,11 +1138,13 @@ mod tests {
         let raw = all_rules(&db).unwrap();
         let folded = effective_rules(&db).unwrap();
         assert_eq!(folded.iter().map(|r| r.id).collect::<Vec<_>>(), raw.iter().map(|r| r.id).collect::<Vec<_>>());
-        assert_eq!(folded.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 0, 0]);
+        // 出错通道 broken 不再折叠(最后一位),手动停止的 down 仍折叠。
+        assert_eq!(folded.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 0, 1]);
 
         let channels = list_channels(&db).unwrap();
-        let mihomo = crate::manager::build_mihomo_config(
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &folded);
+        let lost: HashSet<String> = ["broken".to_string()].into();
+        let mihomo = crate::manager::build_mihomo_config_with(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &folded, &lost);
         let mihomo_rules: Vec<&str> = mihomo["rules"].as_sequence().unwrap().iter()
             .map(|value| value.as_str().unwrap()).collect();
         let mihomo_text = mihomo_rules.join("\n");
@@ -1122,8 +1158,13 @@ mod tests {
             assert!(!text.contains("10.1.0.0/16"), "paused IP leaked into consumer: {text}");
             assert!(!text.contains("b.com"), "paused domain leaked into consumer: {text}");
             assert!(!text.contains("10.2.0.0/16"), "stopped-channel IP leaked into consumer: {text}");
-            assert!(!text.contains("d.com"), "error-channel domain leaked into consumer: {text}");
         }
+        // 出错通道:外层照常输出,内层入口阻止。
+        for text in [&provider, &snippet, &pac] {
+            assert!(text.contains("d.com"), "error-channel domain missing from outer consumer: {text}");
+        }
+        assert!(mihomo_rules.contains(&"DOMAIN-SUFFIX,d.com,REJECT"), "error-channel domain not rejected: {mihomo_text}");
+        assert!(!mihomo_text.contains("d.com,ch-broken"), "error-channel domain routed into channel: {mihomo_text}");
         assert!(pac.contains("a.com"));
         assert!(pac.contains("[\"10.0.0.0\",\"255.0.0.0\"]"));
         assert!(!pac.contains("10.1.0.0"));
@@ -1137,11 +1178,11 @@ mod tests {
         assert!(routing_off(dir.path()));
         let folded_off = effective_rules(&db).unwrap();
         assert_eq!(folded_off.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![0, 0, 0, 0, 0, 0, 0]);
-        let mihomo = crate::manager::build_mihomo_config(
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &folded_off);
+        let mihomo = crate::manager::build_mihomo_config_with(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &channels, &folded_off, &lost);
         assert_eq!(
             mihomo["rules"].as_sequence().unwrap().iter().map(|value| value.as_str().unwrap()).collect::<Vec<_>>(),
-            vec!["MATCH,DIRECT"]
+            vec!["IP-CIDR,198.18.0.0/15,REJECT,no-resolve", "MATCH,DIRECT"]
         );
         let (v4, v6) = crate::entry::route_sets(&folded_off);
         assert_eq!(v4, vec!["198.19.0.0/30".to_string()]);
@@ -1154,12 +1195,42 @@ mod tests {
         set_routing_off(dir.path(), false).unwrap();
         assert!(!routing_off(dir.path()));
         assert_eq!(all_rules(&db).unwrap(), raw, "kill switch must not mutate raw rules");
-        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 0, 1]);
 
         // 通道回到运行态,规则自动恢复生效——联动是计算出来的,不写规则表。
         set_status(&db, "down", "logged_in").unwrap();
-        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 1, 0]);
+        assert_eq!(effective_rules(&db).unwrap().iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 1, 0, 0, 0, 1, 1]);
         assert_eq!(all_rules(&db).unwrap(), raw, "status fold must not mutate raw rules");
+    }
+
+    #[test]
+    fn error_channel_ip_stays_routed_outside_but_manual_stop_does_not() {
+        // R-08 的 TUN 路由部分 + R-04:出错通道的网段仍进外层(路由、订阅、PAC),内层阻止;
+        // 手动停止与停止意图中的通道一律不输出。
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled,status) VALUES('broken',1,'error')", []).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled,status) VALUES('down',1,'stopped')", []).unwrap();
+        conn.execute("INSERT INTO channels(id,routing_enabled,status) VALUES('leaving',1,'logged_in')", []).unwrap();
+        conn.execute("INSERT INTO channel_stop_intents VALUES('leaving','pending')", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('broken','ip','10.30.0.0/16',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('down','ip','10.2.0.0/16',1)", []).unwrap();
+        conn.execute("INSERT INTO rules(channel_id,kind,pattern,enabled) VALUES('leaving','ip','10.3.0.0/16',1)", []).unwrap();
+        drop(conn);
+
+        let folded = effective_rules(&db).unwrap();
+        assert_eq!(folded.iter().map(|r| r.enabled).collect::<Vec<_>>(), vec![1, 0, 0]);
+        let (v4, _) = crate::entry::route_sets(&folded);
+        assert!(v4.iter().any(|cidr| cidr == "10.30.0.0/16"));
+        assert!(!v4.iter().any(|cidr| cidr == "10.2.0.0/16" || cidr == "10.3.0.0/16"));
+        assert!(crate::webutil::clash_provider_text(&folded).contains("10.30.0.0/16"));
+        assert!(crate::webutil::pac_text(&folded, "7899").contains("10.30.0.0"));
+        let mihomo = crate::manager::build_mihomo_config(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &list_channels(&db).unwrap(), &folded);
+        let lines: Vec<&str> = mihomo["rules"].as_sequence().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(lines, vec!["IP-CIDR,10.30.0.0/16,REJECT,no-resolve", "IP-CIDR,198.18.0.0/15,REJECT,no-resolve", "MATCH,DIRECT"]);
     }
 
     #[test]
@@ -1296,6 +1367,26 @@ mod tests {
         assert_eq!(cfg["username"], "bob");
         let v = serde_json::to_value(&ch).unwrap();
         assert!(v["config"].get("password").is_none());
+    }
+
+    #[test]
+    fn custom_probe_change_atomically_revokes_old_verification_including_null_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        init(&db).unwrap();
+        let key = master_key(dir.path()).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,vpn_type,probe_url,status,latency_ms) VALUES('text','custom','https://old/','logged_in',9)", []).unwrap();
+        conn.execute("INSERT INTO channels(id,vpn_type,probe_url,status,latency_ms) VALUES('null','custom',NULL,'logged_in',8)", []).unwrap();
+        drop(conn);
+        for cid in ["text", "null"] {
+            update_channel(&db, &key, cid, &serde_json::Map::from_iter([
+                ("probe_url".into(), serde_json::json!("https://new/"))
+            ]), &[]).unwrap();
+            let channel = get_channel(&db, cid).unwrap().unwrap();
+            assert_eq!((channel.probe_url.as_str(), channel.status.as_str(), channel.latency_ms),
+                ("https://new/", "running", None));
+        }
     }
 
     #[test]

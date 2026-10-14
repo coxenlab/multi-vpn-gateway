@@ -1,0 +1,76 @@
+{
+  "host_arch": "arm64",
+  "target_image": null,
+  "overall": "fail",
+  "checks": [
+    {
+      "id": "docker_daemon",
+      "layer": "引擎",
+      "title": "守护进程可达",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "image_present",
+      "layer": "镜像",
+      "title": "目标镜像本地就绪",
+      "status": "skip",
+      "detail": "未指定通道类型"
+    },
+    {
+      "id": "vpn_network",
+      "layer": "运行条件",
+      "title": "通道网络存在",
+      "status": "fail",
+      "detail": "网络 vpnnet 不存在",
+      "fix": {
+        "kind": "auto",
+        "action": "create_network",
+        "label": "创建该网络",
+        "params": {
+          "name": "vpnnet"
+        }
+      }
+    },
+    {
+      "id": "disk_space",
+      "layer": "运行条件",
+      "title": "磁盘空间",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "docker_version",
+      "layer": "引擎",
+      "title": "版本",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "id": "host_arch",
+      "layer": "引擎",
+      "title": "宿主架构",
+      "status": "pass",
+      "detail": "arm64"
+    },
+    {
+      "id": "mirror_reachable",
+      "layer": "镜像",
+      "title": "国内镜像源可达",
+      "status": "warn",
+      "detail": "配置的镜像源都不可达,自动拉取可能失败",
+      "fix": {
+        "kind": "tutorial",
+        "action": "switch_registry_mirror",
+        "label": "查看教程"
+      }
+    },
+    {
+      "id": "mihomo_health",
+      "layer": "分流底座",
+      "title": "分流实例",
+      "status": "pass",
+      "detail": "running"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::{store, AppState};
 use crate::api::err_detail;
 
@@ -60,10 +60,7 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
     let mut method = "tunnel";
     if !reachable {
         // 二级:转发重建救不回 → 多半是 mihomo 容器自身异常,重启后按新 IP 重挂转发。
-        let restart_err = match st.docker() {
-            Some(d) => crate::docker::restart(&d, crate::infra::MIHOMO_CONTAINER).await.err(),
-            None => Some(anyhow::anyhow!("docker 连接不可用")),
-        };
+        let restart_err = crate::health::restart_router(&st).await.err();
         if let Some(e) = restart_err {
             let pre = tunnel_err.map(|e| format!("重建转发失败:{e};")).unwrap_or_default();
             crate::events::audit_failed("heal_proxy", "手动修复分流链路失败", json!({
@@ -76,16 +73,6 @@ pub async fn heal_proxy(State(st): State<AppState>) -> Json<Value> {
                 "error": format!("{pre}重启分流路由失败:{e}。建议退出并重新打开 app(将自动重建底座)")}));
         }
         method = "restart";
-        if let Err(e) = crate::tunnel::ensure(&st).await {
-            crate::events::audit_failed("heal_proxy", "手动修复后转发仍未恢复", json!({
-                "target_kind": "system", "target_name": crate::infra::MIHOMO_CONTAINER,
-                "action": "restart", "before": { "reachable": false }, "after": { "reachable": false },
-                "duration_ms": started.elapsed().as_millis() as u64,
-                "result": "failed", "error": e.to_string()
-            }));
-            return Json(json!({"ok": false, "reachable": false,
-                "error": format!("分流路由已重启,但转发仍未恢复:{e}。建议退出并重新打开 app")}));
-        }
         reachable = crate::health::proxy_serves(&st.cfg.mihomo_host_port).await;
     }
     if reachable {
@@ -127,27 +114,23 @@ pub async fn channels(State(st): State<AppState>) -> axum::response::Response {
     };
 
     let mut rules_map: HashMap<String, (Vec<Value>, Vec<Value>)> = HashMap::new();
-    let mut uptime_map: HashMap<String, Option<String>> = HashMap::new();
+    let snapshot = crate::docker::channel_snapshot(st.docker().as_ref()).await.ok();
+    let mut observations = HashMap::new();
     for c in &chans {
         let rules = match store::list_rules(&db, &c.id) {
             Ok(r) => r,
             Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("list_rules {}: {e}", c.id)),
         };
         rules_map.insert(c.id.clone(), split_rules(rules));
-        let up = if c.status != "stopped" {
-            crate::docker::uptime(st.docker().as_ref(), &c.id).await
-        } else {
-            None
-        };
-        uptime_map.insert(c.id.clone(), up);
+        observations.insert(c.id.clone(), crate::docker::observation(snapshot.as_ref(), &c.id));
     }
-    let mut response = build_channels_response(chans, &rules_map, &uptime_map);
+    let mut response = build_channels_response(chans, &rules_map, &observations, &crate::lifecycle::lost_channels(&db));
     for channel in &mut response {
         let cid = channel["id"].as_str().unwrap_or_default().to_string();
         match crate::stop_intents::pending(&db, &cid) {
             Ok(value) => {
                 channel["stop_pending"] = json!(value);
-                if value { channel["status"] = json!("stopped"); channel["configured_status"] = json!("stopped"); channel["latency_ms"] = serde_json::Value::Null; }
+                if value { channel["status"] = json!("stopped"); channel["configured_status"] = json!("stopped"); channel["latency_ms"] = serde_json::Value::Null; channel["blocked"] = json!(false); }
             },
             Err(error) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
         }
@@ -165,18 +148,21 @@ pub async fn channels(State(st): State<AppState>) -> axum::response::Response {
 }
 
 /// 纯函数:把通道 + 预取的 rules/uptime 组装成 /api/channels 输出(对照 main.py channels 路由)。
+/// `blocked`:与内层入口共用同一判据（出错、掉线，custom 未验证）。
 pub fn build_channels_response(
     channels: Vec<store::ChannelPublic>,
     rules_map: &HashMap<String, (Vec<Value>, Vec<Value>)>,
-    uptime_map: &HashMap<String, Option<String>>,
+    observations: &HashMap<String, crate::docker::ContainerObservation>,
+    lost: &HashSet<String>,
 ) -> Vec<Value> {
     channels
         .into_iter()
         .map(|ch| {
             let id = ch.id.clone();
             let (domains, ips) = rules_map.get(&id).cloned().unwrap_or_default();
-            let uptime = uptime_map.get(&id).cloned().flatten();
-            let status = if uptime.is_none() && (ch.status == "running" || ch.status == "logged_in") {
+            let observed = observations.get(&id).cloned().unwrap_or_default();
+            let uptime = observed.uptime;
+            let status = if observed.state == crate::docker::ContainerPresence::Absent && (ch.status == "running" || ch.status == "logged_in") {
                 "down".to_string()
             } else {
                 ch.status.clone()
@@ -185,6 +171,7 @@ pub fn build_channels_response(
             let mut v = serde_json::to_value(&ch).unwrap();
             let o = v.as_object_mut().unwrap();
             o.insert("configured_status".into(), json!(ch.status));
+            o.insert("container_state".into(), json!(observed.state));
             o.insert("status".into(), json!(status));
             o.insert("domains".into(), json!(domains));
             o.insert("ips".into(), json!(ips));
@@ -192,6 +179,7 @@ pub fn build_channels_response(
             o.insert("socks_proxy".into(), json!(format!("ch-{id}")));         // 命门 #7
             o.insert("socks_endpoint".into(), json!(format!("vpn-{id}:1080"))); // 命门 #7
             o.insert("uptime".into(), json!(uptime));
+            o.insert("blocked".into(), json!(crate::manager::channel_blocked(&ch, lost)));
             v
         })
         .collect()
@@ -230,24 +218,61 @@ mod tests {
     }
 
     #[test]
-    fn down_override_when_running_but_no_uptime() {
-        let chans = vec![ch("a", "running"), ch("b", "logged_in"), ch("c", "stopped"), ch("d", "creating")];
+    fn down_override_only_when_container_is_confirmed_absent() {
+        use crate::docker::{ContainerObservation, ContainerPresence};
+        let chans = vec![ch("a", "running"), ch("b", "logged_in"), ch("c", "stopped"), ch("d", "creating"), ch("e", "logged_in"), ch("f", "logged_in")];
         let rules: HashMap<String, (Vec<serde_json::Value>, Vec<serde_json::Value>)> = HashMap::new();
-        let mut up: HashMap<String, Option<String>> = HashMap::new();
-        up.insert("a".into(), None);
-        up.insert("b".into(), Some("3分钟".into()));
-        up.insert("c".into(), None);
-        up.insert("d".into(), None);
+        let mut up = HashMap::new();
+        up.insert("a".into(), ContainerObservation { state: ContainerPresence::Absent, uptime: None });
+        up.insert("b".into(), ContainerObservation { state: ContainerPresence::Running, uptime: Some("3分钟".into()) });
+        up.insert("f".into(), ContainerObservation { state: ContainerPresence::Running, uptime: None });
 
-        let out = build_channels_response(chans, &rules, &up);
+        let out = build_channels_response(chans, &rules, &up, &HashSet::new());
         assert_eq!(out[0]["status"], "down");
         assert_eq!(out[1]["status"], "logged_in");
         assert_eq!(out[1]["uptime"], "3分钟");
         assert_eq!(out[2]["status"], "stopped");
         assert_eq!(out[3]["status"], "creating");  // mid-creation with no uptime does NOT flip to down
+        assert_eq!(out[4]["status"], "logged_in");
+        assert_eq!(out[4]["container_state"], "unknown");
+        assert_eq!(out[5]["status"], "logged_in");
+        assert_eq!(out[5]["container_state"], "running");
         assert_eq!(out[0]["socks_proxy"], "ch-a");
         assert_eq!(out[0]["socks_endpoint"], "vpn-a:1080");
         assert_eq!(out[0]["volume_name"], "vpndata-a");
+    }
+
+    #[test]
+    fn blocked_marks_errored_and_lost_channels_only() {
+        let chans = vec![ch("a", "logged_in"), ch("b", "running"), ch("c", "error"), ch("d", "stopped")];
+        let up = chans.iter().map(|c| (c.id.clone(), crate::docker::ContainerObservation {
+            state: crate::docker::ContainerPresence::Running, uptime: Some("1分钟".into()) })).collect();
+        let lost: HashSet<String> = ["b".to_string()].into();
+        let out = build_channels_response(chans, &HashMap::new(), &up, &lost);
+        let blocked: Vec<bool> = out.iter().map(|c| c["blocked"].as_bool().unwrap()).collect();
+        assert_eq!(blocked, vec![false, true, true, false]);
+    }
+
+    #[test]
+    fn blocked_reports_custom_verification_gate() {
+        let mut waiting = ch("waiting", "running");
+        waiting.vpn_type = "custom".into();
+        waiting.probe_url = "https://intra.example.test/health".into();
+        let mut verified = waiting.clone();
+        verified.id = "verified".into();
+        verified.status = "logged_in".into();
+        let mut no_target = verified.clone();
+        no_target.id = "no-target".into();
+        no_target.probe_url.clear();
+        let mut stopped = no_target.clone();
+        stopped.id = "stopped".into();
+        stopped.status = "stopped".into();
+        let chans = vec![waiting, verified, no_target, stopped];
+        let up = chans.iter().map(|c| (c.id.clone(), crate::docker::ContainerObservation {
+            state: crate::docker::ContainerPresence::Running, uptime: None })).collect();
+        let out = build_channels_response(chans, &HashMap::new(), &up, &HashSet::new());
+        assert_eq!(out.iter().map(|c| c["blocked"].as_bool().unwrap()).collect::<Vec<_>>(),
+            vec![true, false, true, false]);
     }
 
     #[test]

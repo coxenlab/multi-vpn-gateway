@@ -1,0 +1,6 @@
+[Unit]
+Description=Channel login window
+After=tongdao-vnc.service
+[Service]
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 0.0.0.0:8080 127.0.0.1:5901
+Restart=on-failure

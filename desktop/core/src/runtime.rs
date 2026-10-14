@@ -44,16 +44,33 @@ pub async fn can_release(state: &AppState) -> Result<bool> {
     let containers = tokio::time::timeout(std::time::Duration::from_secs(5),
         docker.list_containers(None::<bollard::container::ListContainersOptions<String>>)).await??;
     Ok(containers.iter().all(|container| container.names.as_ref().is_some_and(|names|
-        names.len() == 1 && names[0] == "/mihomo")))
+        names.len() == 1 && (names[0] == "/mihomo" || names[0] == format!("/{}", docker::PROBE_CONTAINER)))))
 }
 
 async fn release(state: &AppState) -> Result<()> {
+    release_with_budget(release_inner(state), std::time::Duration::from_secs(90)).await
+}
+
+async fn release_with_budget(work: impl std::future::Future<Output = Result<()>>, budget: std::time::Duration) -> Result<()> {
+    match tokio::time::timeout(budget, work).await {
+        Ok(result) => result,
+        Err(_) => {
+            crate::ev!(warn, "runtime", "idle_release_timeout", "空闲释放超时，保留现场等待确认", {});
+            Err(anyhow!("空闲释放超时"))
+        }
+    }
+}
+
+async fn release_inner(state: &AppState) -> Result<()> {
     // 已进入 Releasing，应用内新操作只能等待；再读一次避免慢检查后的外部容器变化。
     anyhow::ensure!(can_release(state).await?, "运行环境仍在使用，已取消释放");
     state.lifecycle.runtime().progress("正在释放空闲运行环境…");
+    let docker = state.docker().ok_or_else(|| anyhow!("容器状态不可确认，保留运行环境"))?;
+    docker::stop_probe(&docker, &state.cfg).await?;
     crate::entry::park_for_idle(&state.cfg).await?;
     crate::novnc::drop_all(state).await?;
     crate::tunnel::kill_confirmed(state).await?;
+    crate::health::stop_docker_transport(state).await?;
     // 停止命令结果不明时只读回，不重复发送 stop。
     let result = vm::stop(&state.cfg.vm_profile).await;
     anyhow::ensure!(vm::stopped_confirmed(&state.cfg.vm_profile).await?,
@@ -64,19 +81,43 @@ async fn release(state: &AppState) -> Result<()> {
     Ok(())
 }
 
+fn idle_health_ready(snapshot: &crate::health::HealthSnapshot, now_ms: i64) -> bool {
+    snapshot.gateway_health == crate::health::GatewayHealth::Healthy
+        && snapshot.gateway_checked_at_ms.is_some_and(|checked|
+            (0..=60_000).contains(&now_ms.saturating_sub(checked)))
+}
+
+#[derive(Default)]
+struct IdleErrorLog(std::collections::HashMap<String, std::time::Instant>);
+
+impl IdleErrorLog {
+    fn should_log(&mut self, error: &str, now: std::time::Instant) -> bool {
+        self.0.retain(|_, last| now.saturating_duration_since(*last) < std::time::Duration::from_secs(300));
+        if self.0.contains_key(error) { return false; }
+        self.0.insert(error.to_owned(), now);
+        true
+    }
+}
+
 pub fn spawn_idle(state: AppState) {
     if !state.cfg.managed_vm { return; }
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut errors = IdleErrorLog::default();
         loop {
             tick.tick().await;
             if state.lifecycle.runtime().snapshot().phase == Phase::Closing { break; }
+            if !state.health.lock().map(|snapshot| idle_health_ready(&snapshot, chrono::Utc::now().timestamp_millis())).unwrap_or(false) {
+                continue;
+            }
             let owned = state.clone();
             if let Err(error) = state.lifecycle.runtime().release_if_idle(IDLE_GRACE,
                 || async { can_release(&state).await.map_err(|e| e.to_string()) },
                 move || async move { release(&owned).await.map_err(|e| e.to_string()) }).await {
-                crate::ev!(warn, "runtime", "idle_release_unconfirmed", "空闲释放未确认，保留现场", {"error":error});
+                if errors.should_log(&error, std::time::Instant::now()) {
+                    crate::ev!(warn, "runtime", "idle_release_unconfirmed", "空闲释放未确认，保留现场", {"error":error});
+                }
             }
         }
     });
@@ -90,13 +131,16 @@ pub fn serving(state: &AppState) -> bool {
 pub async fn ensure(state: &AppState) -> Result<()> {
     if !state.cfg.managed_vm { return Ok(()); }
     let _activity = state.lifecycle.runtime().activity().await.map_err(anyhow::Error::msg)?;
-    if serving(state) && vm::status(&state.cfg.vm_profile).await != vm::VmStatus::Running {
+    if serving(state) && vm::status(&state.cfg.vm_profile).await? != vm::VmStatus::Running {
         state.lifecycle.runtime().unavailable("运行环境不可用，正在重新连接");
     }
     let owned = state.clone();
+    let was_serving = serving(state);
     state.lifecycle.runtime().ensure(move || async move {
         start(&owned).await.map_err(|error| error.to_string())
-    }).await.map_err(anyhow::Error::msg)
+    }).await.map_err(anyhow::Error::msg)?;
+    if !was_serving { crate::lifecycle::retry_rebuild_after_recovery(state); }
+    Ok(())
 }
 
 pub async fn start_route(axum::extract::State(state): axum::extract::State<AppState>) -> axum::response::Response {
@@ -125,7 +169,7 @@ async fn start(state: &AppState) -> Result<()> {
             crate::ev!(warn, "runtime", "rosetta_skipped", "已跳过 Rosetta 2，x86 镜像暂不可用", {});
         }
     }
-    if vm::status(&cfg.vm_profile).await != vm::VmStatus::Running {
+    if vm::status(&cfg.vm_profile).await? != vm::VmStatus::Running {
         if !cfg.dev_mode {
             progress("检查内置运行环境镜像…");
             if let Err(error) = crate::vm_image_cache::seed_bundled().await {
@@ -137,16 +181,19 @@ async fn start(state: &AppState) -> Result<()> {
             if let Some(message) = crate::startup_feedback::vm_detail(&detail) { progress(&message); }
             crate::ev!(debug, "runtime", "vm_start_progress", "运行环境启动进度", {"detail":detail});
         }).await?;
+    } else {
+        vm::ensure_guest_dns(&cfg.vm_profile).await?;
     }
     progress("等待容器引擎…");
     // 已运行 VM 的管理链路失败不能据此重启全部通道；保留现场供显式重试/诊断。
     vm::wait_docker_ready(&cfg.vm_profile, 40).await?;
     let connection = docker::connect_at(&cfg.docker_socket().display().to_string()).await?;
     state.set_docker(Some(connection.clone()));
-    docker::create_bridge_network(&connection, &cfg.vpn_net).await?;
+    crate::runtime_network::ensure(&connection, cfg).await?;
     if !crate::health::ensure_egress_guard(state.clone(), true).await {
         return Err(anyhow!("基础网络防护尚未就绪，请重试"));
     }
+    let result: Result<()> = async {
     progress("确认已停用的通道…");
     crate::stop_intents::recover_all(state).await?;
     if let Some(images) = cfg.bundled_images_dir.as_ref().filter(|path| path.is_dir()) {
@@ -176,11 +223,53 @@ async fn start(state: &AppState) -> Result<()> {
     progress("运行环境已就绪");
     crate::ev!(info, "runtime", "runtime_ready", "按需运行环境已就绪", {"profile":cfg.vm_profile});
     Ok(())
+    }.await;
+    if let Err(error) = &result {
+        crate::ev!(warn, "runtime", "startup_failed_after_guard", "运行环境启动未完成；本轮启动守卫已下发，后台继续维护", {"error":error.to_string(),"guard_applied_during_start":true});
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_requires_recent_healthy_sample_and_throttles_each_error() {
+        let mut snapshot = crate::health::HealthSnapshot::default();
+        assert!(!idle_health_ready(&snapshot, 100_000));
+        snapshot.gateway_checked_at_ms = Some(40_000);
+        assert!(idle_health_ready(&snapshot, 100_000));
+        assert!(!idle_health_ready(&snapshot, 100_001));
+        assert!(!idle_health_ready(&snapshot, 39_999));
+        for health in [crate::health::GatewayHealth::VmDown, crate::health::GatewayHealth::TransportDegraded,
+            crate::health::GatewayHealth::ForwardDead, crate::health::GatewayHealth::TransportDead,
+            crate::health::GatewayHealth::ContainerDown] {
+            snapshot.gateway_health = health;
+            assert!(!idle_health_ready(&snapshot, 50_000));
+        }
+        let mut errors = IdleErrorLog::default();
+        let now = std::time::Instant::now();
+        assert!(errors.should_log("docker unavailable", now));
+        assert!(!errors.should_log("docker unavailable", now + std::time::Duration::from_secs(299)));
+        assert!(errors.should_log("different failure", now + std::time::Duration::from_secs(299)));
+        assert!(errors.should_log("docker unavailable", now + std::time::Duration::from_secs(300)));
+        assert!(!errors.should_log("different failure", now + std::time::Duration::from_secs(300)));
+    }
+
+    #[tokio::test]
+    async fn timed_out_release_becomes_failed_and_unblocks_explicit_work() {
+        let coordinator = std::sync::Arc::new(crate::runtime_lifecycle::Coordinator::default());
+        coordinator.ensure(|| async { Ok(()) }).await.unwrap();
+        let result = coordinator.release_if_idle(std::time::Duration::ZERO, || async { Ok(true) },
+            || async { release_with_budget(std::future::pending(), std::time::Duration::from_millis(30))
+                .await.map_err(|e| e.to_string()) }).await;
+        assert!(result.unwrap_err().contains("超时"));
+        assert_eq!(coordinator.snapshot().phase, Phase::Failed);
+        assert!(!coordinator.release_if_idle(std::time::Duration::ZERO,
+            || async { panic!("failure must not silently retry") }, || async { Ok(()) }).await.unwrap());
+        let _activity = tokio::time::timeout(std::time::Duration::from_secs(1), coordinator.activity()).await.unwrap().unwrap();
+    }
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -253,6 +342,8 @@ mod tests {
         assert!(!can_release(&state).await.unwrap(), "initial unconfirmed rules block release");
         confirm_rules(&state);
         assert!(can_release(&state).await.unwrap());
+        *contents.lock().unwrap() = json!([{"Names":["/mihomo"]},{"Names":["/vpncore-probe"]}]);
+        assert!(can_release(&state).await.unwrap(), "the resident probe must not prevent idle release");
         let db = rusqlite::Connection::open(state.cfg.db_path()).unwrap();
         db.execute("INSERT INTO channels(id,name,status,routing_enabled) VALUES('c1','fixture','stopped',0)", []).unwrap();
         for status in ["running", "logged_in", "error", "unknown", "stopped"] {

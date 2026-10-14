@@ -1,0 +1,392 @@
+[
+  {
+    "id": "demo-rd",
+    "name": "华东研发",
+    "vpn_type": "easyconnect",
+    "server": "vpn.rd.example",
+    "ec_ver": "7.6.7",
+    "login_method": "interactive",
+    "username": "zhang.wei",
+    "vnc_password": "vnc-o-rd",
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "http://git.corp.example/",
+    "status": "logged_in",
+    "container_id": "c-demo-rd",
+    "latency_ms": 18,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "logged_in",
+    "domains": [
+      {
+        "id": 1,
+        "channel_id": "demo-rd",
+        "kind": "domain",
+        "pattern": "git.corp.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [
+      {
+        "id": 2,
+        "channel_id": "demo-rd",
+        "kind": "ip",
+        "pattern": "10.20.16.0/24",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-rd",
+    "socks_proxy": "ch-demo-rd",
+    "socks_endpoint": "vpn-demo-rd:1080",
+    "uptime": "4小时12分",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-cloud",
+    "name": "云平台",
+    "vpn_type": "wireguard",
+    "server": "vpn.cloud.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "logged_in",
+    "container_id": "c-demo-cloud",
+    "latency_ms": 24,
+    "config": {
+      "filename": "cloud.conf"
+    },
+    "routing_enabled": true,
+    "configured_status": "logged_in",
+    "domains": [
+      {
+        "id": 3,
+        "channel_id": "demo-cloud",
+        "kind": "domain",
+        "pattern": "console.cloud.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      },
+      {
+        "id": 4,
+        "channel_id": "demo-cloud",
+        "kind": "domain",
+        "pattern": "old-portal.cloud.example",
+        "enabled": 0,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [
+      {
+        "id": 5,
+        "channel_id": "demo-cloud",
+        "kind": "ip",
+        "pattern": "10.30.0.0/16",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-cloud",
+    "socks_proxy": "ch-demo-cloud",
+    "socks_endpoint": "vpn-demo-cloud:1080",
+    "uptime": "1天3小时",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-lab",
+    "name": "实验室",
+    "vpn_type": "openvpn",
+    "server": "vpn.lab.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "logged_in",
+    "container_id": "c-demo-lab",
+    "latency_ms": 12,
+    "config": {
+      "filename": "lab.ovpn"
+    },
+    "routing_enabled": true,
+    "configured_status": "logged_in",
+    "domains": [
+      {
+        "id": 6,
+        "channel_id": "demo-lab",
+        "kind": "domain",
+        "pattern": "a-very-long-internal-service-name.build-cluster.lab.example.test",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [
+      {
+        "id": 7,
+        "channel_id": "demo-lab",
+        "kind": "ip",
+        "pattern": "fd00:10:20:30::/64",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      },
+      {
+        "id": 8,
+        "channel_id": "demo-lab",
+        "kind": "ip",
+        "pattern": "192.0.2.0/24",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-lab",
+    "socks_proxy": "ch-demo-lab",
+    "socks_endpoint": "vpn-demo-lab:1080",
+    "uptime": "38分钟",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-park",
+    "name": "园区办公",
+    "vpn_type": "hillstone",
+    "server": "sc.park.example",
+    "ec_ver": null,
+    "login_method": "byo",
+    "username": "zhang.wei",
+    "vnc_password": "vnc-park",
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "http://oa.park.example/",
+    "status": "running",
+    "container_id": "c-demo-park",
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "running",
+    "domains": [
+      {
+        "id": 9,
+        "channel_id": "demo-park",
+        "kind": "domain",
+        "pattern": "oa.park.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [],
+    "volume_name": "vpndata-demo-park",
+    "socks_proxy": "ch-demo-park",
+    "socks_endpoint": "vpn-demo-park:1080",
+    "uptime": "3分钟",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-dc",
+    "name": "数据中心",
+    "vpn_type": "openvpn",
+    "server": "vpn.dc.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "error",
+    "container_id": "c-demo-dc",
+    "latency_ms": null,
+    "config": {
+      "filename": "dc.ovpn"
+    },
+    "routing_enabled": true,
+    "configured_status": "error",
+    "domains": [],
+    "ips": [
+      {
+        "id": 10,
+        "channel_id": "demo-dc",
+        "kind": "ip",
+        "pattern": "10.40.0.0/16",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-dc",
+    "socks_proxy": "ch-demo-dc",
+    "socks_endpoint": "vpn-demo-dc:1080",
+    "uptime": null,
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": true
+  },
+  {
+    "id": "demo-branch",
+    "name": "新分部",
+    "vpn_type": "wireguard",
+    "server": "vpn.branch.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "running",
+    "container_id": "c-demo-branch",
+    "latency_ms": null,
+    "config": {
+      "filename": "branch.conf"
+    },
+    "routing_enabled": true,
+    "configured_status": "running",
+    "domains": [],
+    "ips": [],
+    "volume_name": "vpndata-demo-branch",
+    "socks_proxy": "ch-demo-branch",
+    "socks_endpoint": "vpn-demo-branch:1080",
+    "uptime": "1分钟",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-vendor",
+    "name": "供应商门户",
+    "vpn_type": "anyconnect",
+    "server": "vpn.vendor.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "supply",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "stopped",
+    "container_id": null,
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "stopped",
+    "domains": [
+      {
+        "id": 11,
+        "channel_id": "demo-vendor",
+        "kind": "domain",
+        "pattern": "portal.vendor.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [],
+    "volume_name": "vpndata-demo-vendor",
+    "socks_proxy": "ch-demo-vendor",
+    "socks_endpoint": "vpn-demo-vendor:1080",
+    "uptime": null,
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-fin",
+    "name": "财务系统",
+    "vpn_type": "easyconnect",
+    "server": "vpn.fin.example",
+    "ec_ver": "7.6.7",
+    "login_method": "interactive",
+    "username": "li.na",
+    "vnc_password": "vnc--fin",
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "stopped",
+    "container_id": null,
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "stopped",
+    "domains": [
+      {
+        "id": 12,
+        "channel_id": "demo-fin",
+        "kind": "domain",
+        "pattern": "erp.fin.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [
+      {
+        "id": 13,
+        "channel_id": "demo-fin",
+        "kind": "ip",
+        "pattern": "10.50.8.0/24",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-fin",
+    "socks_proxy": "ch-demo-fin",
+    "socks_endpoint": "vpn-demo-fin:1080",
+    "uptime": null,
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-long",
+    "name": "一个名字特别特别长、用来检查列表和标题会不会被截断的示例通道",
+    "vpn_type": "openvpn",
+    "server": "a-very-long-server-name-for-truncation.example.test",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "stopped",
+    "container_id": null,
+    "latency_ms": null,
+    "config": {
+      "filename": "long.ovpn"
+    },
+    "routing_enabled": true,
+    "configured_status": "stopped",
+    "domains": [],
+    "ips": [],
+    "volume_name": "vpndata-demo-long",
+    "socks_proxy": "ch-demo-long",
+    "socks_endpoint": "vpn-demo-long:1080",
+    "uptime": null,
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  }
+]

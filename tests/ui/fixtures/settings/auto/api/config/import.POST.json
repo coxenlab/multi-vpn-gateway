@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "reload_status": "applied",
+  "imported": [
+    "新加的示例通道"
+  ],
+  "skipped": [
+    {
+      "name": "总部主线路(示例)",
+      "reason": "同名通道已存在"
+    }
+  ]
+}

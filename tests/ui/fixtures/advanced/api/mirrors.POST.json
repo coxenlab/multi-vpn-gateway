@@ -1,0 +1,6 @@
+{
+  "id": 4,
+  "host": "mirror-c.example.com",
+  "priority": 40,
+  "enabled": 1
+}

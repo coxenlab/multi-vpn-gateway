@@ -1,0 +1,14 @@
+{
+  "date": "2026-09-21",
+  "available": true,
+  "channels": {
+    "demo-rd": {
+      "up": 210000000,
+      "down": 1722000000
+    },
+    "demo-cloud": {
+      "up": 90000000,
+      "down": 1090000000
+    }
+  }
+}

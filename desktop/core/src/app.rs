@@ -38,7 +38,7 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            let new_port = crate::infra::reroll_ui_port(&cfg.data_dir)?;
+            let new_port = crate::infra::reroll_ui_port_for(&cfg.data_dir, &cfg.identity().port_range)?;
             crate::ev!(warn, "boot", "ui_port_rerolled", "UI 端口被占,已重摇并持久化",
                 { "old": cfg.ui_port, "new": new_port });
             cfg.ui_port = new_port;
@@ -62,14 +62,19 @@ pub async fn bootstrap(cfg: Config) -> anyhow::Result<(tokio::net::TcpListener, 
     Ok((listener, state))
 }
 
-/// 在已绑定 listener 上跑 axum 直到关闭。起头 spawn 分流口健康看门狗(bin 与 Tauri 壳共用此入口)。
+/// 在已绑定 listener 上跑 axum 直到关闭。起头 spawn 分流口健康看门狗、通道后台采样、今天流量采样与接管方式循环
+/// (后者只在通道管家正式档起;bin 与 Tauri 壳共用此入口)。
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> anyhow::Result<()> {
+    crate::forward_owner::reclaim_startup(&state).await;
     if !state.cfg.managed_vm {
         crate::stop_intents::recover_all(&state).await?;
         crate::replacement::recover_all(&state).await;
     }
     crate::health::spawn(state.clone());
     crate::runtime::spawn_idle(state.clone());
+    crate::lifecycle::spawn_sampler(state.clone());
+    crate::traffic::spawn(state.clone());
+    crate::takeover::spawn(state.clone());
     let app = crate::server::build_router(state);
     axum::serve(listener, app).await?;
     Ok(())

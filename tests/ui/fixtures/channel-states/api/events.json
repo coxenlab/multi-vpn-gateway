@@ -1,0 +1,46 @@
+{
+  "events": [
+    {
+      "seq": 101,
+      "ts": "2026-09-28T09:00:00Z",
+      "ts_ms": 1790586000000,
+      "level": "info",
+      "src": "watchdog",
+      "event": "heal_done",
+      "msg": "分流口自愈完成",
+      "detail": {}
+    },
+    {
+      "seq": 102,
+      "ts": "2026-09-28T09:05:00Z",
+      "ts_ms": 1790586300000,
+      "level": "info",
+      "src": "watchdog",
+      "event": "recovered",
+      "msg": "通道恢复",
+      "detail": {
+        "outage_ms": 42000,
+        "heal_count": 1,
+        "final_action": "tunnel"
+      }
+    },
+    {
+      "seq": 103,
+      "ts": "2026-09-28T09:10:00Z",
+      "ts_ms": 1790586600000,
+      "level": "warn",
+      "src": "audit",
+      "event": "channel_start",
+      "msg": "启动通道",
+      "detail": {
+        "target_kind": "channel",
+        "target_id": "demo-branch1"
+      }
+    }
+  ],
+  "seq": 103,
+  "dropped": 0,
+  "retained_days": 14,
+  "file": null,
+  "enabled": true
+}

@@ -1,0 +1,14 @@
+/* 连接（20）。取值照原型第四版 screens.js 的连接部分。 */
+
+.cn-head .cn-count { margin-left: 4px; padding-bottom: 5px; }
+.cn-stale { padding-bottom: 5px; font-size: 11.5px; }
+.cn-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.cn-list .tr { grid-template-columns: 78px minmax(0, 1.5fr) minmax(0, 1fr) 90px 120px; }
+/* 选中的行由脚本固定位置，关掉浏览器自己的滚动锚定，免得两边一起调 */
+.cn-scroll { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; position: relative; }
+.cn-scroll .th { position: sticky; top: 0; z-index: 1; background: var(--card); }
+.cn-rows { display: flex; flex-direction: column; }
+.cn-rows .tr { flex: none; }
+.cn-row:hover:not(.sel) { background: var(--fill); }
+.cn-none { padding: 14px; color: var(--ink-3); }

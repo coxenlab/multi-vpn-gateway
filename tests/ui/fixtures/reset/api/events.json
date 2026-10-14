@@ -1,0 +1,19 @@
+{
+  "events": [
+    {
+      "seq": 201,
+      "ts": "2026-09-28T10:00:00Z",
+      "ts_ms": 1790589600000,
+      "level": "warn",
+      "src": "watchdog",
+      "event": "docker_reconnect",
+      "msg": "入口已重建",
+      "detail": {}
+    }
+  ],
+  "seq": 201,
+  "dropped": 0,
+  "retained_days": 14,
+  "file": null,
+  "enabled": true
+}

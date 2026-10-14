@@ -1,0 +1,41 @@
+[
+  {
+    "id": "demo-hq1",
+    "name": "总部主线路(示例)",
+    "vpn_type": "easyconnect",
+    "server": "vpn1.example.test",
+    "ec_ver": "7.6.7",
+    "login_method": "interactive",
+    "username": "alice",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "logged_in",
+    "container_id": "c-hq1000000001",
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "logged_in",
+    "domains": [
+      {
+        "id": 1,
+        "channel_id": "demo-hq1",
+        "kind": "domain",
+        "pattern": "corp.example.test",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [],
+    "volume_name": "vpndata-demo-hq1",
+    "socks_proxy": "ch-demo-hq1",
+    "socks_endpoint": "vpn-demo-hq1:1080",
+    "uptime": null,
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false,
+    "container_state": "unknown"
+  }
+]

@@ -1,4 +1,5 @@
 //! Docker 编排 + mihomo 热加载 + SOCKS5 探活。对照 app/manager.py。
+use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_yaml::Value as Yaml;
@@ -25,8 +26,99 @@ fn cidr_prefix_len(pattern: &str) -> u8 {
         .unwrap_or(128)
 }
 
-/// 命门 #2/#7:纯函数生成 mihomo 配置(读-改-写:保留 base 其它键)。
-pub fn build_mihomo_config(mut base: Yaml, channels: &[ChannelPublic], rules: &[Rule]) -> Yaml {
+/// 内层入口的一条生效规则:已过滤停用、已出口再校验、已按首个命中顺序排好。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderedRule {
+    pub rule_id: i64,
+    pub kind: String,
+    pub pattern: String,
+    pub channel_id: String,
+    pub target: String,
+}
+
+/// 命门 #2:mihomo 是**首个命中**(非最长前缀),故规则须按范围从小到大产出。
+/// 域名桶按标签数**降序**(`corp.example.com` 先于 `example.com`,否则跨通道时宽后缀盖住子域);
+/// IP 桶按前缀长度**降序**(/32 先于 /24)。两桶都是稳定排序,同级保持插入顺序;
+/// 域名桶整体在前,与 IP 分组互不干扰(域名匹配域名连接、IP-CIDR 匹配 IP 连接,二者正交)。
+///
+/// 目标:通道出错(`status == "error"`)、在掉线集合 `lost` 里，或者通用自装通道还没有
+/// 用明确的验证地址通过实际探活时写 `REJECT`,在入口处阻止,
+/// 不落到后面更宽的规则或直连;否则 `ch-{id}`。排序键不看目标,阻止的窄规则仍排在宽规则前。
+/// 手动停止的通道规则已由 [`crate::store::effective_rules`] 折叠为停用,这里不再出现。
+pub fn ordered_rules(channels: &[ChannelPublic], rules: &[Rule], lost: &HashSet<String>) -> Vec<OrderedRule> {
+    let blocked: HashSet<&str> = channels.iter()
+        .filter(|c| channel_blocked(c, lost))
+        .map(|c| c.id.as_str())
+        .collect();
+    let mut out = sorted_rules(rules, true);
+    for r in &mut out {
+        if blocked.contains(r.channel_id.as_str()) || lost.contains(&r.channel_id) {
+            r.target = "REJECT".into();
+        }
+    }
+    out
+}
+
+/// 入口配置、探活返回和规则测试共用的阻止判据。通用自装客户端的 SOCKS 跟随
+/// 容器默认路由，未连 VPN 时也可以通过公网，所以必须有非空验证地址且本次实测成功才能放行。
+/// 对 custom 的明确 NotConnected 会立即回到 `running` 并阻止；探针自身故障不会改状态。
+pub fn channel_blocked(ch: &ChannelPublic, lost: &HashSet<String>) -> bool {
+    ch.status == "error"
+        || lost.contains(&ch.id)
+        || (ch.vpn_type == "custom" && ch.status != "stopped"
+            && (ch.probe_url.is_empty() || ch.status != "logged_in"))
+}
+
+/// 过滤停用、出口再校验并分桶排序,目标一律 `ch-{id}`。`sort_domains` 为假时域名桶保持
+/// 插入顺序(改动前的排法,只给 [`rule_diff`] 对照用)。
+fn sorted_rules(rules: &[Rule], sort_domains: bool) -> Vec<OrderedRule> {
+    let mut domain_out: Vec<(usize, OrderedRule)> = Vec::new();
+    let mut ip_out: Vec<(u8, OrderedRule)> = Vec::new();
+    for r in rules {
+        if r.enabled == 0 {
+            continue;
+        }
+        let Some((kind, pattern)) = crate::webutil::normalize_stored_rule(&r.kind, &r.pattern) else {
+            continue;
+        };
+        let item = OrderedRule {
+            rule_id: r.id,
+            kind,
+            pattern,
+            channel_id: r.channel_id.clone(),
+            target: format!("ch-{}", r.channel_id),
+        };
+        if item.kind == "ip" {
+            ip_out.push((cidr_prefix_len(&item.pattern), item));
+        } else {
+            domain_out.push((item.pattern.split('.').count(), item));
+        }
+    }
+    if sort_domains {
+        domain_out.sort_by_key(|(n, _)| std::cmp::Reverse(*n)); // 稳定降序:标签越多(越具体)越靠前
+    }
+    ip_out.sort_by_key(|(plen, _)| std::cmp::Reverse(*plen)); // 稳定降序:前缀越长(越具体)越靠前
+    domain_out.into_iter().map(|(_, r)| r)
+        .chain(ip_out.into_iter().map(|(_, r)| r))
+        .collect()
+}
+
+/// 命门 #2 的不对称:IP-CIDR 带 no-resolve,DOMAIN-SUFFIX 不带(阻止行同样如此)。
+fn rule_line(r: &OrderedRule) -> String {
+    if r.kind == "ip" {
+        format!("IP-CIDR,{},{},no-resolve", r.pattern, r.target)
+    } else {
+        format!("DOMAIN-SUFFIX,{},{}", r.pattern, r.target)
+    }
+}
+
+/// 命门 #2/#7:纯函数生成 mihomo 配置(读-改-写:保留 base 其它键)。掉线集合为空。
+pub fn build_mihomo_config(base: Yaml, channels: &[ChannelPublic], rules: &[Rule]) -> Yaml {
+    build_mihomo_config_with(base, channels, rules, &HashSet::new())
+}
+
+/// 同 [`build_mihomo_config`],另传掉线集合(`lifecycle::lost_channels`),其中通道的规则写成 `REJECT`。
+pub fn build_mihomo_config_with(mut base: Yaml, channels: &[ChannelPublic], rules: &[Rule], lost: &HashSet<String>) -> Yaml {
     if !base.is_mapping() {
         base = Yaml::Mapping(serde_yaml::Mapping::new());
     }
@@ -40,31 +132,8 @@ pub fn build_mihomo_config(mut base: Yaml, channels: &[ChannelPublic], rules: &[
             udp: true,
         })
         .collect();
-    // 命门 #2:mihomo 是**首个命中**(非最长前缀),故 IP-CIDR 须按前缀长度**降序**产出
-    // ——更具体的绑定(/32)排在宽网段(/24)之前,否则跨通道撞同一私网段时宽段会盖住具体主机
-    // 绑定。同前缀长度保持插入顺序(stable sort);域名保持原序,
-    // 与 IP 分组互不干扰(域名匹配域名连接、IP-CIDR 匹配 IP 连接,二者正交)。
-    let mut domain_out: Vec<String> = Vec::new();
-    let mut ip_out: Vec<(u8, String)> = Vec::new();
-    for r in rules {
-        if r.enabled == 0 {
-            continue;
-        }
-        let Some((kind, pattern)) = crate::webutil::normalize_stored_rule(&r.kind, &r.pattern) else {
-            continue;
-        };
-        if kind == "ip" {
-            ip_out.push((
-                cidr_prefix_len(&pattern),
-                format!("IP-CIDR,{pattern},ch-{},no-resolve", r.channel_id),
-            ));
-        } else {
-            domain_out.push(format!("DOMAIN-SUFFIX,{pattern},ch-{}", r.channel_id));
-        }
-    }
-    ip_out.sort_by_key(|(plen, _)| std::cmp::Reverse(*plen)); // 稳定降序:前缀越长(越具体)越靠前
-    let mut out: Vec<String> = domain_out;
-    out.extend(ip_out.into_iter().map(|(_, text)| text));
+    let mut out: Vec<String> = ordered_rules(channels, rules, lost).iter().map(rule_line).collect();
+    out.push("IP-CIDR,198.18.0.0/15,REJECT,no-resolve".to_string());
     out.push("MATCH,DIRECT".to_string());
 
     if let Yaml::Mapping(m) = &mut base {
@@ -73,6 +142,57 @@ pub fn build_mihomo_config(mut base: Yaml, channels: &[ChannelPublic], rules: &[
         m.insert(Yaml::String("rules".into()), serde_yaml::to_value(&out).unwrap());
     }
     base
+}
+
+/// G-03 差异清单:导出文档里的通道一律当已连接(`error_names` 里的当出错),分别按改动前
+/// (出错通道规则折叠、域名按插入顺序)和现在(出错通道 `REJECT`、域名按标签数)拼内层规则,
+/// 逐条列出位置变化和改为阻止的行;都没有时为空。只读文档,不碰数据库和网络。
+/// 导出不带规则的全局 id,插入顺序按文档里通道、规则的先后近似。
+pub fn rule_diff(export_doc: &serde_json::Value, error_names: &[String]) -> Vec<String> {
+    let mut names = std::collections::HashMap::new();
+    let mut errored = HashSet::new();
+    let mut rules = Vec::new();
+    for (i, entry) in export_doc["channels"].as_array().into_iter().flatten().enumerate() {
+        let id = format!("c{i}");
+        let name = entry["name"].as_str().filter(|s| !s.is_empty()).map(String::from)
+            .unwrap_or_else(|| format!("#{}", i + 1));
+        if error_names.contains(&name) {
+            errored.insert(id.clone());
+        }
+        names.insert(id.clone(), name);
+        // 通道分流关着时两边都折叠。
+        if entry["routing_enabled"] == false || entry["routing_enabled"] == 0 {
+            continue;
+        }
+        for r in entry["rules"].as_array().into_iter().flatten() {
+            let enabled = r["enabled"].as_i64().or_else(|| r["enabled"].as_bool().map(i64::from)).unwrap_or(1);
+            rules.push(Rule {
+                id: rules.len() as i64 + 1, channel_id: id.clone(),
+                kind: r["kind"].as_str().unwrap_or_default().into(),
+                pattern: r["pattern"].as_str().unwrap_or_default().into(),
+                enabled, note: String::new(), locked: 0,
+            });
+        }
+    }
+    let before_rules: Vec<Rule> = rules.iter().filter(|r| !errored.contains(&r.channel_id)).cloned().collect();
+    let before = sorted_rules(&before_rules, false);
+    let after = ordered_rules(&[], &rules, &errored);
+    let text = |r: &OrderedRule| format!("{},{}（{}）",
+        if r.kind == "ip" { "IP-CIDR" } else { "DOMAIN-SUFFIX" }, r.pattern, names[&r.channel_id]);
+    let mut out = Vec::new();
+    // 只在两边都有的规则之间比先后,改为阻止的行插进来造成的整体下移不算位置变化。
+    let common: Vec<(usize, &OrderedRule)> = after.iter().enumerate()
+        .filter(|(_, r)| r.target != "REJECT").collect();
+    for (k, (j, r)) in common.iter().enumerate() {
+        let i = before.iter().position(|b| b.rule_id == r.rule_id).unwrap_or(k);
+        if i != k {
+            out.push(format!("位置变化：{}第 {} 条 → 第 {} 条", text(r), i + 1, j + 1));
+        }
+    }
+    for (j, r) in after.iter().enumerate().filter(|(_, r)| r.target == "REJECT") {
+        out.push(format!("改为阻止：{}第 {} 条", text(r), j + 1));
+    }
+    out
 }
 
 /// mihomo 宿主侧工作副本路径:env MIHOMO_CONFIG_PATH,默认 /cfg/config.yaml(对照 manager.py CFG)。
@@ -120,6 +240,36 @@ pub(crate) fn atomic_write_0600(path: &std::path::Path, content: &[u8]) -> Resul
 /// 同进程排队；config_apply 另持跨进程文件锁。元信息/同内容不重复热加载。
 static REBUILD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+static GUARD_REQUESTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, crate::vm::EgressPolicy>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn guard_changed(previous: &mut Option<crate::vm::EgressPolicy>, desired: &crate::vm::EgressPolicy) -> bool {
+    if previous.as_ref() == Some(desired) { return false; }
+    *previous = Some(desired.clone());
+    true
+}
+
+fn schedule_egress_guard(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::path::Path) {
+    if !cfg.managed_vm || !cfg.host_integrations_allowed() || cfg.identity().tun_config_frozen { return; }
+    let Some(docker) = docker else { return };
+    let desired = match (crate::store::all_rules(db), crate::store::list_channels(db)) {
+        (Ok(rules), Ok(channels)) => crate::vm::egress_policy(&rules, &channels),
+        _ => { crate::ev!(warn, "vm", "egress_snapshot_failed", "规则已保存，出站守卫等待下次核对", {}); return; }
+    };
+    let key = format!("{}:{}", cfg.vm_profile, db.display());
+    let Ok(mut requests) = GUARD_REQUESTS.lock() else { return };
+    let mut previous = requests.get(&key).cloned();
+    if !guard_changed(&mut previous, &desired) { return; }
+    requests.insert(key, desired);
+    drop(requests);
+    let (cfg, docker, db) = (cfg.clone(), docker.clone(), db.to_owned());
+    tokio::spawn(async move {
+        if let Err(e) = crate::health::apply_egress_guard(&cfg, &docker, &db, true).await {
+            crate::ev!(warn, "vm", "egress_guard_failed", "规则已保存，出站守卫等待下次核对", { "error": e.to_string() });
+        }
+    });
+}
+
 /// 热加载候选内容、读回托管规则/代理，再持久化启动文件；失败返回明确的部分完成状态。
 pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::path::Path) -> String {
     let _guard = REBUILD_LOCK.lock().await;
@@ -134,6 +284,7 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
         let cfg_bg = cfg.clone();
         tokio::spawn(async move { crate::entry::tun_sync(&cfg_bg).await });
     }
+    schedule_egress_guard(cfg, docker, db);
     status
 }
 
@@ -141,15 +292,26 @@ pub async fn rebuild(cfg: &Config, docker: Option<&bollard::Docker>, db: &std::p
 
 /// 探活 sidecar 镜像:带 curl + ca-certificates 的自建 oss 镜像(spec §9 首启即内置/docker-load)。
 /// 任意通道类型(含 EC/aTrust)都用它当 socks5h 客户端,与被探的 vpn 容器类型无关。
-const PROBE_IMAGE: &str = "vpnmgr/oss-vpn:latest";
+pub(crate) const PROBE_IMAGE: &str = "vpnmgr/oss-vpn:latest";
 
 /// 命门 #1:唯一登录成功判据。**host-VM 模型**:Rust core 在宿主、够不着 VM 内网 172.x,
 /// 故探活搬进 VM 内常驻探针(`vpnmgr_vpnnet` 上),`curl --socks5-hostname vpn-{id}:1080`
 /// (socks5h 远程解析)打 probe_url。语义不变:容忍自签证书(`-k`)、6s 超时、status<500 才算通。
 /// docker 不可用 / 空 probe_url / 起不来 →(false, None)。
-pub async fn probe(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelPublic) -> (bool, Option<i64>) {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    Connected { latency: Option<i64> },
+    NotConnected,
+    ProbeFailed { reason: String },
+}
+
+impl ProbeOutcome {
+    pub fn failed(reason: impl Into<String>) -> Self { Self::ProbeFailed { reason: reason.into() } }
+}
+
+pub async fn probe(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelPublic) -> ProbeOutcome {
     let first = probe_once(docker, cfg, ch).await;
-    if !first.0 && recover_hagb_dns(docker, ch).await {
+    if first == ProbeOutcome::NotConnected && recover_hagb_dns(docker, ch).await {
         // 修复标记不是登录判据:重走原 probe_url 的 SOCKS5 远端解析。
         return probe_once(docker, cfg, ch).await;
     }
@@ -182,13 +344,13 @@ async fn recover_hagb_dns(docker: Option<&bollard::Docker>, ch: &ChannelPublic) 
     recovered
 }
 
-async fn probe_once(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelPublic) -> (bool, Option<i64>) {
+async fn probe_once(docker: Option<&bollard::Docker>, cfg: &Config, ch: &ChannelPublic) -> ProbeOutcome {
     if ch.probe_url.is_empty() {
-        return (false, None);
+        return ProbeOutcome::failed("没有验证地址");
     }
     let docker = match docker {
         Some(d) => d,
-        None => return (false, None),
+        None => return ProbeOutcome::failed("容器管理连接不可用"),
     };
     let proxy = format!("vpn-{}:1080", ch.id);
     let cmd = vec![
@@ -200,20 +362,22 @@ async fn probe_once(docker: Option<&bollard::Docker>, cfg: &Config, ch: &Channel
     ];
     match crate::docker::run_probe_capture(docker, cfg, PROBE_IMAGE, cmd).await {
         Ok(out) => parse_probe_output(&out),
-        Err(_) => (false, None),
+        Err(_) => ProbeOutcome::failed("探针执行失败"),
     }
 }
 
-/// 解析 `curl -w '%{http_code} %{time_total}'` 输出 →(status<500 且非 000,时延 ms)。
-/// curl 连不上 → http_code=000 →(false, None),保持命门 #1「探不通即未登录」。
-pub fn parse_probe_output(out: &str) -> (bool, Option<i64>) {
+/// 只有格式完整的 curl 结果才是连通结论；exec 错误文本不等于通道不通。
+pub fn parse_probe_output(out: &str) -> ProbeOutcome {
     let mut it = out.split_whitespace();
-    let code: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let secs: f64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    if code == 0 {
-        return (false, None);
+    let code = it.next().and_then(|s| s.parse::<u32>().ok());
+    let secs = it.next().and_then(|s| s.parse::<f64>().ok());
+    match (code, secs, it.next()) {
+        (Some(code), Some(secs), None) if (code == 0 || (100..=599).contains(&code)) && secs.is_finite() && secs >= 0.0 => {
+            if code == 0 || code >= 500 { ProbeOutcome::NotConnected }
+            else { ProbeOutcome::Connected { latency: Some((secs * 1000.0) as i64) } }
+        }
+        _ => ProbeOutcome::failed("探针未返回有效结果"),
     }
-    (code < 500, Some((secs * 1000.0) as i64))
 }
 
 /// 折叠相邻完全相同的行(对照 manager.logs):重复 n>1 次时,首行后插
@@ -253,9 +417,24 @@ pub async fn channel_plan(state: &crate::AppState, docker: &bollard::Docker, ch:
     channel_plan_with_image(state, docker, ch, vnc_pwd, None).await
 }
 
+/// full-init 容器的宿主前置条件。正式 App（lite/with-vm）都走 managed VM；非托管
+/// 只留给明确预装过同名策略的开发验证，避免悄悄用 `unconfined` 运行。
+pub async fn ensure_full_init_host(cfg: &Config, spec: &crate::registry::AdapterSpec) -> Result<()> {
+    if !spec.systemd { return Ok(()); }
+    if cfg.managed_vm {
+        return crate::vm::ensure_generic_apparmor(&cfg.vm_profile).await;
+    }
+    anyhow::ensure!(
+        std::env::var("VPNMGR_GENERIC_APPARMOR_PRELOADED").as_deref() == Ok("1"),
+        "非托管开发模式不会安装 AppArmor 策略；请先预装 tongdao-generic，并设置 VPNMGR_GENERIC_APPARMOR_PRELOADED=1"
+    );
+    Ok(())
+}
+
 pub async fn channel_plan_with_image(state: &crate::AppState, docker: &bollard::Docker, ch: &ChannelPublic, vnc_pwd: &str, image: Option<&str>) -> Result<crate::adapters::ContainerPlan> {
     let cfg = &state.cfg;
     let spec = crate::registry::get(&ch.vpn_type)?;
+    ensure_full_init_host(cfg, &spec).await?;
     let mac = ch.mac.clone().unwrap_or_default();
     let mut plan = crate::adapters::build_run_kwargs(
         &ch.id, &mac, ch.ec_ver.as_deref(), &spec, vnc_pwd, &cfg.vpn_net,
@@ -270,9 +449,13 @@ pub async fn channel_plan_with_image(state: &crate::AppState, docker: &bollard::
     }
 
     let dns = if spec.runtime == "oss" {
-        crate::docker::container_ip_on_net(docker, crate::infra::MIHOMO_CONTAINER, &cfg.vpn_net)
-            .await
-            .map(|ip| vec![ip])
+        let actual = crate::docker::container_ip_on_net(docker, crate::infra::MIHOMO_CONTAINER, &cfg.vpn_net).await;
+        if cfg.identity().colima_home_rel.is_some() {
+            let expected = crate::runtime_network::ensure(docker, cfg).await?;
+            anyhow::ensure!(actual.is_some() && actual == expected,
+                "分流组件 DNS 尚未就绪，请先恢复运行环境");
+        }
+        actual.map(|ip| vec![ip])
     } else {
         None
     };
@@ -619,7 +802,7 @@ mod tests {
         assert!(!texts.iter().any(|t| t.contains("10.0.0.0/8")), "换行脏条被跳过");
         assert!(texts.iter().any(|t| t == "DOMAIN-SUFFIX,corp.example.com,ch-a"), "干净条仍在");
         assert_eq!(texts.last().unwrap(), "MATCH,DIRECT");
-        assert_eq!(texts.len(), 2, "只剩 1 条干净域名 + MATCH,DIRECT 兜底");
+        assert_eq!(texts.len(), 3, "干净域名 + 占位段拒绝 + MATCH,DIRECT 兜底");
     }
 
     #[test]
@@ -634,7 +817,7 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &[ch("a")], &rules);
         let text: Vec<&str> = cfg["rules"].as_sequence().unwrap().iter()
             .map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(text, vec!["DOMAIN-SUFFIX,äbc.中国,ch-a", "MATCH,DIRECT"]);
+        assert_eq!(text, vec!["DOMAIN-SUFFIX,äbc.中国,ch-a", "IP-CIDR,198.18.0.0/15,REJECT,no-resolve", "MATCH,DIRECT"]);
     }
 
     #[test]
@@ -680,6 +863,195 @@ mod tests {
         assert!(pos("10.20.30.40/32") < pos("10.20.30.0/24"));
         assert!(pos("10.20.30.0/24") < pos("10.0.0.0/8"));
         assert_eq!(texts.last().unwrap(), "MATCH,DIRECT");
+    }
+
+    /// 按 mihomo 首个命中语义,返回某域名命中的 DOMAIN-SUFFIX 行的目标。
+    fn first_domain_hit(texts: &[String], host: &str) -> Option<String> {
+        texts.iter().find_map(|t| {
+            let mut parts = t.split(',');
+            if parts.next()? != "DOMAIN-SUFFIX" {
+                return None;
+            }
+            let suffix = parts.next()?;
+            let target = parts.next()?;
+            (host == suffix || host.ends_with(&format!(".{suffix}"))).then(|| target.to_string())
+        })
+    }
+
+    #[test]
+    fn mihomo_config_domain_rules_most_specific_first() {
+        // R-01:先加 example.com(甲),再加 corp.example.com(乙);子域必须排在前面才会走乙。
+        let rules = vec![
+            rule("a", "domain", "example.com", 1),
+            rule("b", "domain", "corp.example.com", 1),
+        ];
+        let cfg = build_mihomo_config(
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), &[ch("a"), ch("b")], &rules);
+        let texts: Vec<String> = cfg["rules"].as_sequence().unwrap().iter()
+            .map(|v| v.as_str().unwrap().to_string()).collect();
+        assert_eq!(texts, vec![
+            "DOMAIN-SUFFIX,corp.example.com,ch-b",
+            "DOMAIN-SUFFIX,example.com,ch-a",
+            "IP-CIDR,198.18.0.0/15,REJECT,no-resolve",
+            "MATCH,DIRECT",
+        ]);
+        assert_eq!(first_domain_hit(&texts, "a.corp.example.com").as_deref(), Some("ch-b"));
+        assert_eq!(first_domain_hit(&texts, "corp.example.com").as_deref(), Some("ch-b"));
+        assert_eq!(first_domain_hit(&texts, "www.example.com").as_deref(), Some("ch-a"));
+    }
+
+    #[test]
+    fn ordered_rules_same_level_keeps_insertion_order() {
+        // R-03:同级保持插入顺序;通配前缀和大写、结尾点按规范化后的标签数计。
+        let mut rules = vec![
+            rule("a", "domain", "b.example.test", 1),
+            rule("b", "ip", "10.1.0.0/16", 1),
+            rule("b", "domain", "example.test", 1),
+            rule("c", "domain", "*.corp.example", 1),
+            rule("a", "domain", "a.example.test", 1),
+            rule("c", "domain", "Deep.B.Example.Test.", 1),
+            rule("b", "domain", "off.example.test", 0),
+            rule("c", "ip", "10.1.2.0/24", 1),
+        ];
+        for (i, r) in rules.iter_mut().enumerate() {
+            r.id = (i + 1) as i64;
+        }
+        let none = HashSet::new();
+        let got: Vec<(i64, String, String, String)> = ordered_rules(&[], &rules, &none).into_iter()
+            .map(|r| (r.rule_id, r.kind, r.pattern, r.target))
+            .collect();
+        let want = |id: i64, kind: &str, pattern: &str, target: &str| {
+            (id, kind.to_string(), pattern.to_string(), target.to_string())
+        };
+        assert_eq!(got, vec![
+            want(6, "domain", "deep.b.example.test", "ch-c"),
+            want(1, "domain", "b.example.test", "ch-a"),
+            want(5, "domain", "a.example.test", "ch-a"),
+            want(3, "domain", "example.test", "ch-b"),
+            want(4, "domain", "corp.example", "ch-c"),
+            want(8, "ip", "10.1.2.0/24", "ch-c"),
+            want(2, "ip", "10.1.0.0/16", "ch-b"),
+        ]);
+        let first = ordered_rules(&[], &rules, &none).remove(0);
+        assert_eq!(first.channel_id, "c");
+    }
+
+    /// 按 mihomo 首个命中语义,返回某 IPv4 地址命中的 IP-CIDR 行的目标。
+    fn first_ip_hit(texts: &[String], addr: &str) -> Option<String> {
+        let addr: std::net::IpAddr = addr.parse().unwrap();
+        texts.iter().find_map(|t| {
+            let mut parts = t.split(',');
+            if parts.next()? != "IP-CIDR" {
+                return None;
+            }
+            let net: ipnet::IpNet = parts.next()?.parse().ok()?;
+            let target = parts.next()?;
+            net.contains(&addr).then(|| target.to_string())
+        })
+    }
+
+    #[test]
+    fn errored_or_lost_channel_rules_rejected_in_place() {
+        // R-05:/16 绑出错的通道、/8 绑正常通道;/16 仍排在前面,命中即阻止,不落到 /8 或直连。
+        let mut broken = ch("broken");
+        broken.status = "error".into();
+        let rules = vec![
+            rule("ok", "ip", "10.0.0.0/8", 1),
+            rule("broken", "ip", "10.30.0.0/16", 1),
+            rule("broken", "domain", "corp.example.test", 1),
+            rule("ok", "domain", "example.test", 1),
+        ];
+        let lines = |channels: &[ChannelPublic], lost: &HashSet<String>| -> Vec<String> {
+            build_mihomo_config_with(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), channels, &rules, lost)["rules"]
+                .as_sequence().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
+        };
+        let errored = lines(&[ch("ok"), broken], &HashSet::new());
+        assert_eq!(errored, vec![
+            "DOMAIN-SUFFIX,corp.example.test,REJECT",
+            "DOMAIN-SUFFIX,example.test,ch-ok",
+            "IP-CIDR,10.30.0.0/16,REJECT,no-resolve",
+            "IP-CIDR,10.0.0.0/8,ch-ok,no-resolve",
+            "IP-CIDR,198.18.0.0/15,REJECT,no-resolve",
+            "MATCH,DIRECT",
+        ]);
+        assert_eq!(first_ip_hit(&errored, "10.30.2.4").as_deref(), Some("REJECT"));
+        assert_eq!(first_ip_hit(&errored, "10.40.2.4").as_deref(), Some("ch-ok"));
+        assert_eq!(first_domain_hit(&errored, "a.corp.example.test").as_deref(), Some("REJECT"));
+        assert_eq!(first_domain_hit(&errored, "www.example.test").as_deref(), Some("ch-ok"));
+        // 运行态但在掉线集合里,写法相同;集合为空时照常走通道。
+        let lost: HashSet<String> = ["broken".to_string()].into();
+        assert_eq!(lines(&[ch("ok"), ch("broken")], &lost), errored);
+        let normal = lines(&[ch("ok"), ch("broken")], &HashSet::new());
+        assert_eq!(first_ip_hit(&normal, "10.30.2.4").as_deref(), Some("ch-broken"));
+        assert_eq!(build_mihomo_config(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            &[ch("ok"), ch("broken")], &rules)["rules"].as_sequence().unwrap().len(), normal.len());
+    }
+
+    #[test]
+    fn custom_rules_stay_rejected_until_explicit_target_is_verified() {
+        let rules = vec![rule("byo", "domain", "intra.example.test", 1)];
+        let lines = |ch: ChannelPublic| -> Vec<String> {
+            build_mihomo_config(Yaml::Null, &[ch], &rules)["rules"].as_sequence().unwrap()
+                .iter().map(|v| v.as_str().unwrap().to_string()).collect()
+        };
+        let mut custom = ch("byo");
+        custom.vpn_type = "custom".into();
+        custom.status = "running".into();
+        custom.probe_url = "https://intra.example.test/health".into();
+        assert_eq!(lines(custom.clone())[0], "DOMAIN-SUFFIX,intra.example.test,REJECT");
+
+        custom.status = "logged_in".into();
+        assert_eq!(lines(custom.clone())[0], "DOMAIN-SUFFIX,intra.example.test,ch-byo");
+
+        custom.probe_url.clear();
+        assert_eq!(lines(custom)[0], "DOMAIN-SUFFIX,intra.example.test,REJECT");
+
+        let mut legacy = ch("byo");
+        legacy.status = "running".into();
+        assert_eq!(lines(legacy)[0], "DOMAIN-SUFFIX,intra.example.test,ch-byo",
+            "other adapter status semantics must stay unchanged");
+    }
+
+    fn export_doc(channels: serde_json::Value) -> serde_json::Value {
+        json!({"kind": "vpnmgr-export", "version": 1, "channels": channels})
+    }
+
+    #[test]
+    fn rule_diff_lists_domain_moves_and_rejects_only() {
+        let rules = |items: &[(&str, &str)]| -> serde_json::Value {
+            items.iter().map(|(kind, pattern)| json!({"kind": kind, "pattern": pattern, "enabled": 1, "note": "", "locked": 0}))
+                .collect()
+        };
+        // 两者都没有:同级域名、IP 桶本来就排过,输出为空。
+        let plain = export_doc(json!([
+            {"name": "甲", "routing_enabled": true, "rules": rules(&[("domain", "a.example.test"), ("ip", "10.1.0.0/16")])},
+            {"name": "乙", "routing_enabled": true, "rules": rules(&[("domain", "b.example.test"), ("ip", "10.1.2.0/24")])},
+        ]));
+        assert!(rule_diff(&plain, &[]).is_empty());
+        assert!(rule_diff(&json!({}), &[]).is_empty());
+
+        // 域名顺序变化:先加的宽后缀被挪到子域之后。
+        let moved = export_doc(json!([
+            {"name": "甲", "routing_enabled": true, "rules": rules(&[("domain", "example.com")])},
+            {"name": "乙", "routing_enabled": true, "rules": rules(&[("domain", "corp.example.com"), ("ip", "10.2.0.0/16")])},
+        ]));
+        assert_eq!(rule_diff(&moved, &[]), vec![
+            "位置变化：DOMAIN-SUFFIX,corp.example.com（乙）第 2 条 → 第 1 条",
+            "位置变化：DOMAIN-SUFFIX,example.com（甲）第 1 条 → 第 2 条",
+        ]);
+
+        // 出错通道变成 REJECT:其余规则相对顺序不变,不报位置变化;停用规则和分流关着的通道不出现。
+        let errored = export_doc(json!([
+            {"name": "甲", "routing_enabled": true, "rules": rules(&[("domain", "a.example.test"), ("ip", "10.1.0.0/16")])},
+            {"name": "丙", "routing_enabled": true, "rules": [
+                {"kind": "ip", "pattern": "10.1.3.0/24", "enabled": 1},
+                {"kind": "domain", "pattern": "off.example.test", "enabled": 0}]},
+            {"name": "丁", "routing_enabled": false, "rules": rules(&[("domain", "d.example.test")])},
+        ]));
+        assert_eq!(rule_diff(&errored, &["丙".to_string(), "丁".to_string()]), vec![
+            "改为阻止：IP-CIDR,10.1.3.0/24（丙）第 2 条",
+        ]);
+        assert!(rule_diff(&errored, &[]).is_empty());
     }
 
     #[test]
@@ -730,28 +1102,56 @@ mod tests {
         let cfg = build_mihomo_config(base, &[], &[]);
         assert!(cfg.get("dns").is_some());
         let rules_seq = cfg.get("rules").unwrap().as_sequence().unwrap();
-        assert_eq!(rules_seq.len(), 1);
+        assert_eq!(rules_seq.len(), 2);
+    }
+
+    #[test]
+    fn egress_policy_changes_trigger_once_and_ignore_input_order() {
+        let mut channel = ch("a");
+        channel.server = "203.0.113.7".into();
+        channel.status = "stopped".into();
+        let mut rules = vec![rule("a", "ip", "192.0.2.5/24", 1), rule("a", "ip", "10.0.0.0/8", 0)];
+        let desired = crate::vm::egress_policy(&rules, &[channel.clone()]);
+        assert_eq!(desired.bound, vec!["192.0.2.0/24", "198.18.0.0/15"]);
+        assert_eq!(desired.gateways, vec!["203.0.113.7/32"]);
+        let mut previous = None;
+        assert!(guard_changed(&mut previous, &desired));
+        rules.reverse();
+        assert!(!guard_changed(&mut previous, &crate::vm::egress_policy(&rules, &[channel.clone()])));
+        rules[0].enabled = 1;
+        assert!(guard_changed(&mut previous, &crate::vm::egress_policy(&rules, &[channel.clone()])));
+        channel.server = "vpn.example.test".into();
+        let no_gateway = crate::vm::egress_policy(&rules, &[channel]);
+        assert!(no_gateway.gateways.is_empty());
+        assert!(guard_changed(&mut previous, &no_gateway));
+        assert!(guard_changed(&mut previous, &crate::vm::egress_policy(&[], &[])));
+    }
+
+    #[test]
+    fn unbound_fake_addresses_are_rejected_before_direct() {
+        let cfg = build_mihomo_config(Yaml::Null, &[], &[]);
+        let lines: Vec<String> = cfg["rules"].as_sequence().unwrap().iter().map(|v| v.as_str().unwrap().into()).collect();
+        assert_eq!(lines, ["IP-CIDR,198.18.0.0/15,REJECT,no-resolve", "MATCH,DIRECT"]);
+        assert_eq!(first_ip_hit(&lines, "198.19.128.1").as_deref(), Some("REJECT"));
     }
 
     // ── Task 3: probe + log dedup ──────────────────────────────────────────
     #[tokio::test]
-    async fn probe_empty_url_is_false() {
-        let c = ch("a"); // probe_url 空 → 不碰 docker 直接 false
+    async fn probe_empty_url_is_unavailable() {
+        let c = ch("a"); // probe_url 空 → 不碰 docker，不能做连通判定
         let cfg = Config::from_getter(|_| None);
-        let (ok, ms) = probe(None, &cfg, &c).await;
-        assert!(!ok);
-        assert!(ms.is_none());
+        assert!(matches!(probe(None, &cfg, &c).await, ProbeOutcome::ProbeFailed { .. }));
     }
 
     #[test]
     fn probe_output_parsing() {
         // 命门 #1 语义:<500 算通 + 时延;000(连不上)→ false/None;4xx 也算通(内网门户常 401/403)
-        assert_eq!(parse_probe_output("200 0.234"), (true, Some(234)));
-        assert_eq!(parse_probe_output("302 1.5"), (true, Some(1500)));
-        assert_eq!(parse_probe_output("403 0.1"), (true, Some(100)));
-        assert_eq!(parse_probe_output("500 0.2"), (false, Some(200)));
-        assert_eq!(parse_probe_output("000 0.000"), (false, None));
-        assert_eq!(parse_probe_output(""), (false, None));
+        assert_eq!(parse_probe_output("200 0.234"), ProbeOutcome::Connected { latency: Some(234) });
+        assert_eq!(parse_probe_output("302 1.5"), ProbeOutcome::Connected { latency: Some(1500) });
+        assert_eq!(parse_probe_output("403 0.1"), ProbeOutcome::Connected { latency: Some(100) });
+        assert_eq!(parse_probe_output("500 0.2"), ProbeOutcome::NotConnected);
+        assert_eq!(parse_probe_output("000 0.000"), ProbeOutcome::NotConnected);
+        assert!(matches!(parse_probe_output(""), ProbeOutcome::ProbeFailed { .. }));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+{
+  "proxies": [
+    {
+      "name": "ch-demo-hq1",
+      "alive": true,
+      "type": "Socks5"
+    },
+    {
+      "name": "ch-demo-hq2",
+      "alive": true,
+      "type": "Socks5"
+    }
+  ]
+}

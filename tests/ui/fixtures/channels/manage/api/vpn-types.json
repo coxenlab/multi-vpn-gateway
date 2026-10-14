@@ -1,0 +1,395 @@
+[
+  {
+    "key": "easyconnect",
+    "label": "EasyConnect",
+    "desc": "深信服 EasyConnect",
+    "runtime": "hagb",
+    "versioned": true,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless",
+      "gui"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "url",
+        "required": false,
+        "secret": false
+      },
+      {
+        "key": "username",
+        "label": "账号",
+        "type": "text",
+        "required": false,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "atrust",
+    "label": "aTrust",
+    "desc": "深信服 aTrust，在登录窗口手动登录",
+    "runtime": "hagb",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "gui"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "url",
+        "required": false,
+        "secret": false
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "anyconnect",
+    "label": "Cisco AnyConnect",
+    "desc": "Cisco AnyConnect，账号密码自动登录",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "url",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "username",
+        "label": "账号",
+        "type": "text",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "globalprotect",
+    "label": "GlobalProtect",
+    "desc": "Palo Alto GlobalProtect，账号密码自动登录（不支持 SAML / SSO）",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "url",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "username",
+        "label": "账号",
+        "type": "text",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "fortinet-oc",
+    "label": "Fortinet (openconnect)",
+    "desc": "Fortinet SSL VPN（openconnect），账号密码自动登录",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "url",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "username",
+        "label": "账号",
+        "type": "text",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "juniper",
+    "label": "Juniper / Pulse (nc)",
+    "desc": "Juniper Network Connect，账号密码自动登录",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "url",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "username",
+        "label": "账号",
+        "type": "text",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "pulse",
+    "label": "Pulse / Ivanti",
+    "desc": "Pulse / Ivanti Secure，账号密码自动登录",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "url",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "username",
+        "label": "账号",
+        "type": "text",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "openfortivpn",
+    "label": "openfortivpn",
+    "desc": "Fortinet SSL VPN（openfortivpn），账号密码自动登录",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "server",
+        "label": "网关地址",
+        "type": "text",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "username",
+        "label": "账号",
+        "type": "text",
+        "required": true,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "openvpn",
+    "label": "OpenVPN",
+    "desc": "上传 .ovpn 配置文件，可选账号密码",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "config_file",
+        "label": ".ovpn 配置",
+        "type": "file",
+        "required": true,
+        "secret": true
+      },
+      {
+        "key": "username",
+        "label": "账号(可选)",
+        "type": "text",
+        "required": false,
+        "secret": false
+      },
+      {
+        "key": "password",
+        "label": "密码(可选)",
+        "type": "password",
+        "required": false,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "wireguard",
+    "label": "WireGuard",
+    "desc": "上传 WireGuard .conf 配置文件",
+    "runtime": "oss",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "headless"
+    ],
+    "inputs": [
+      {
+        "key": "config_file",
+        "label": "wg .conf",
+        "type": "file",
+        "required": true,
+        "secret": true
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "custom",
+    "label": "自定义 / BYO",
+    "desc": "自带客户端：在远程桌面里自行安装任意 Linux VPN 客户端",
+    "runtime": "byo",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "byo"
+    ],
+    "inputs": [
+      {
+        "key": "package",
+        "label": "安装包(可选,.deb/.rpm/.run/.AppImage)",
+        "type": "file",
+        "required": false,
+        "secret": false
+      }
+    ],
+    "notice": null
+  },
+  {
+    "key": "hillstone",
+    "label": "Hillstone Secure Connect",
+    "desc": "山石网科 Secure Connect，已预装客户端，在登录窗口手动登录",
+    "runtime": "byo",
+    "versioned": false,
+    "arch": [
+      "amd64",
+      "arm64"
+    ],
+    "login_modes": [
+      "byo"
+    ],
+    "inputs": [],
+    "notice": "容器已预装 Hillstone Secure Connect 官方 Linux 客户端(5.7.x,x86_64)。 起容器后在登录窗口里填网关地址(host:port)、账号密码,按需完成短信/证书验证; 客户端记住的网关落在数据卷,重建通道不丢。官方无 arm64 构建,Apple Silicon 上客户端本身 经转译运行(桌面与 VNC 栈原生),GUI 响应稍慢。登录成功最终只认 SOCKS5 探活。"
+  }
+]

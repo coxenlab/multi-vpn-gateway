@@ -20,23 +20,25 @@
         每家 VPN 一个容器 ── SOCKS5 出口 ──▶ 企业内网
 ```
 
-- **登录**：EasyConnect / aTrust 等有界面的客户端在浏览器里的 noVNC 窗口中登录；OpenConnect、OpenVPN、WireGuard 等无界面客户端用保存的凭据自动登录。
+- **登录**：EasyConnect / aTrust 等有界面的客户端在登录窗口（noVNC）中手动登录；OpenConnect、OpenVPN、WireGuard 等无界面客户端用保存的凭据自动登录。
 - **是否连上**：以经 SOCKS5 访问内网验证地址的结果为准，不以「窗口打开了」为准。
-- **没有 Clash**：也可以把系统或浏览器代理指向本工具（PAC 或系统代理），命中规则的走 VPN，其余直连。
+- **没有 Clash**：由虚拟网卡和系统代理接管，命中规则的走 VPN，其余直连。
 
 ## 安装
 
-### macOS 桌面版（推荐）
+### macOS 应用「通道管家」（推荐）
 
-1. 到 [最新 Release](https://github.com/coxenlab/multi-vpn-gateway/releases/latest) 下载 `.dmg`：`lite`（推荐）首次启动时下载 VM 镜像；`with-vm` 已内置 VM 镜像，体积更大。
-2. 打开 `.dmg`，把 `vpnmgr.app` 拖进「应用程序」。
+1. 到 [最新 Release](https://github.com/coxenlab/multi-vpn-gateway/releases/latest) 下载 `.dmg`：`with-vm`（推荐）已内置 Linux VM 镜像；`lite` 体积小，首次启动时在线下载 VM 镜像。
+2. 打开 `.dmg`，把 `Tongdao.app` 拖进「应用程序」。
 3. 安装包只做了 ad-hoc 签名、未经 Apple 公证，首次打开会被拦截，需要先去掉隔离属性：
 
    ```bash
-   xattr -dr com.apple.quarantine /Applications/vpnmgr.app
+   xattr -dr com.apple.quarantine /Applications/Tongdao.app
    ```
 
-需要 Apple Silicon、macOS 14 及以上。应用自带 Linux VM，不用另装 Docker。应用会安装一个以 root 运行的助手程序，用于配置路由入口和系统代理，请先核对 Release 里的 SHA-256。从源码构建见 [`desktop/native/README.md`](./desktop/native/README.md)。
+需要 Apple Silicon、macOS 14 及以上。应用自带 Linux VM，不用另装 Docker。应用会安装一个以 root 运行的助手程序，用于配置虚拟网卡和系统代理，请先核对 Release 里的 SHA-256。
+
+1.3.x 的旧应用 `vpnmgr.app` 可以和通道管家并存；搬通道配置用旧应用「设置 → 备份 → 导出」，再在通道管家里导入。从源码构建见 [`desktop/tongdao/README.md`](./desktop/tongdao/README.md)。
 
 ### Docker Compose（自行部署）
 
@@ -49,20 +51,15 @@ docker compose down   # 停止
 
 端口只绑 `127.0.0.1`，具体见 `.env`：`UI_PORT` 是管理界面，`MIHOMO_PORT` 给 Clash 接。
 
-### 预装客户端镜像
-
-[容器镜像下载](./downloads/containers/README.md) 提供 Hillstone Secure Connect 的 Linux arm64 镜像包和导入说明。
-
 ## 支持的 VPN
 
-| 类型 | 登录方式 | 客户端 |
+| 类型 | 登录方式 | 说明 |
 |---|---|---|
-| EasyConnect / aTrust | 浏览器中登录 | 上游 [hagb](https://github.com/Hagb/docker-easyconnect) 镜像 |
+| EasyConnect / aTrust | 在登录窗口中登录 | 上游 [hagb](https://github.com/Hagb/docker-easyconnect) 镜像 |
 | 开源协议 | 自动登录 | AnyConnect、GlobalProtect、Fortinet、Juniper / Pulse、openfortivpn、OpenVPN、WireGuard |
-| Hillstone Secure Connect | 浏览器中登录 | 预装镜像，见上 |
-| 自定义 | 浏览器中登录 | 一台 Linux 桌面，自己装任意 VPN 客户端；尽力而为 |
+| 通用安装 | 在登录窗口中登录 | 把厂商官方 Linux 安装包（`.deb`，或脚本 / AppImage）拖进来，在容器里安装并打开客户端，例如山石 Secure Connect |
 
-自定义类型适合「自带 tun、只做网络认证」的普通 Linux 客户端；依赖 systemd 守护进程、硬件令牌 / 智能卡，或只有 Windows / macOS 版的客户端不支持。
+通用安装适合「自带 tun、只做网络认证」的 Linux 客户端；RPM 包、硬件令牌 / 智能卡，以及只有 Windows / macOS 版的客户端不支持。
 
 ## 安全
 

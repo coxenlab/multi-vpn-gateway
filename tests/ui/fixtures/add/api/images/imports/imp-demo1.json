@@ -1,0 +1,4 @@
+{"__sequence__": [
+  {"id": "imp-demo1", "preview": null, "status": "loading", "progress": "正在核对运行环境中的镜像…", "error": null},
+  {"id": "imp-demo1", "preview": null, "status": "done", "progress": "镜像已导入并核对，可用于创建通道", "error": null}
+]}

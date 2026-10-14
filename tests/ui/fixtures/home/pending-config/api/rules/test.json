@@ -1,0 +1,21 @@
+{
+  "q": "corp.example.test",
+  "kind": "domain",
+  "normalized": "corp.example.test",
+  "result": "channel",
+  "rule": {
+    "id": 1,
+    "kind": "domain",
+    "pattern": "corp.example.test"
+  },
+  "channel": {
+    "id": "demo-hq1",
+    "name": "总部主线路(示例)",
+    "status": "logged_in"
+  },
+  "reachable": {
+    "ok": true,
+    "latency_ms": 42,
+    "port": 443
+  }
+}

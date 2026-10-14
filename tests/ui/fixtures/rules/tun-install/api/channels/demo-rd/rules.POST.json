@@ -1,0 +1,57 @@
+{
+  "reload_status": "reloaded",
+  "domains": [
+    {
+      "id": 3,
+      "channel_id": "demo-rd",
+      "kind": "domain",
+      "pattern": "git.corp.example",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    },
+    {
+      "id": 11,
+      "channel_id": "demo-rd",
+      "kind": "domain",
+      "pattern": "wiki.corp.example",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    }
+  ],
+  "ips": [
+    {
+      "id": 2,
+      "channel_id": "demo-rd",
+      "kind": "ip",
+      "pattern": "10.20.16.0/24",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    },
+    {
+      "id": 12,
+      "channel_id": "demo-rd",
+      "kind": "ip",
+      "pattern": "10.20.18.0/24",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    },
+    {
+      "id": 13,
+      "channel_id": "demo-rd",
+      "kind": "ip",
+      "pattern": "10.20.16.40/32",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    }
+  ],
+  "added": {
+    "domain": 1,
+    "ip": 2
+  },
+  "rejected": []
+}

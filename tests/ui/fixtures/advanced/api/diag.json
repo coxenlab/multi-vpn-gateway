@@ -1,0 +1,95 @@
+{
+  "channels": [
+    {
+      "id": "demo-hq1",
+      "state": "running",
+      "restart_count": 0,
+      "uptime_secs": 8100,
+      "exit_code": null,
+      "crash_loop": false,
+      "tunnel_up": null,
+      "tunnel_iface": null,
+      "wg_handshake_age": null,
+      "ec_client_alive": true,
+      "ec_kick_age": null
+    },
+    {
+      "id": "demo-hq2",
+      "state": "running",
+      "restart_count": 0,
+      "uptime_secs": 7300,
+      "exit_code": null,
+      "crash_loop": false,
+      "tunnel_up": null,
+      "tunnel_iface": null,
+      "wg_handshake_age": null,
+      "ec_client_alive": true,
+      "ec_kick_age": 1500
+    },
+    {
+      "id": "demo-branch1",
+      "state": "running",
+      "restart_count": 1,
+      "uptime_secs": 620,
+      "exit_code": null,
+      "crash_loop": false,
+      "tunnel_up": true,
+      "tunnel_iface": "tun0",
+      "wg_handshake_age": null,
+      "ec_client_alive": null,
+      "ec_kick_age": null
+    },
+    {
+      "id": "demo-new1",
+      "state": "running",
+      "restart_count": 0,
+      "uptime_secs": 300,
+      "exit_code": null,
+      "crash_loop": false,
+      "tunnel_up": true,
+      "tunnel_iface": "wg0",
+      "wg_handshake_age": 900,
+      "ec_client_alive": null,
+      "ec_kick_age": null
+    },
+    {
+      "id": "demo-factory1",
+      "state": "running",
+      "restart_count": 14,
+      "uptime_secs": 70,
+      "exit_code": null,
+      "crash_loop": true,
+      "tunnel_up": null,
+      "tunnel_iface": null,
+      "wg_handshake_age": null,
+      "ec_client_alive": false,
+      "ec_kick_age": null
+    },
+    {
+      "id": "demo-wh1",
+      "state": "running",
+      "restart_count": 0,
+      "uptime_secs": 1800,
+      "exit_code": null,
+      "crash_loop": false,
+      "tunnel_up": false,
+      "tunnel_iface": null,
+      "wg_handshake_age": null,
+      "ec_client_alive": null,
+      "ec_kick_age": null
+    },
+    {
+      "id": "demo-old1",
+      "state": "exited",
+      "restart_count": 0,
+      "uptime_secs": null,
+      "exit_code": 0,
+      "crash_loop": false,
+      "tunnel_up": null,
+      "tunnel_iface": null,
+      "wg_handshake_age": null,
+      "ec_client_alive": null,
+      "ec_kick_age": null
+    }
+  ]
+}

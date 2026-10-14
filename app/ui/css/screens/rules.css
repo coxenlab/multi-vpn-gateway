@@ -1,0 +1,64 @@
+/* 规则（16）、流向图（17）、测试地址（18）、添加规则（19）。取值照原型第四版 screens.js 的规则部分。 */
+
+.rl-head .seg { margin-left: 8px; }
+.rl-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rl-scroll { overflow: auto; margin: -6px; padding: 6px; }
+.rl-none { padding: 14px; color: var(--ink-3); }
+
+/* 列表 */
+.rl-list .tr { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.3fr) 50px; }
+.rl-rows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.rl-rows .tr { flex: none; }
+.rl-row:hover:not(.sel) { background: var(--fill); }
+.rl-row .cell.r { display: flex; justify-content: flex-end; }
+.rl-list .fate { max-width: 100%; }
+.rl-addr { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.rl-addr .cell { flex: 0 1 auto; }
+.rl-note { flex: 0 10 auto; }
+.rl-sel { display: flex; align-items: center; gap: 12px; padding: 5px 8px 5px 14px; margin: 2px 0 4px; border-radius: 10px; background: var(--brand-soft); }
+.rl-sel b { font-weight: 600; color: var(--brand-ink); }
+.rl-foot { padding: 10px 14px 4px; font-size: 11.5px; }
+.rl-warn { display: flex; gap: 7px; align-items: flex-start; padding: 8px 10px; margin-bottom: 8px; border-radius: 10px; background: var(--wait-bg); color: var(--wait-ink); font-size: 11.5px; line-height: 1.5; }
+.rl-warn svg { flex: none; margin-top: 1px; }
+.rl-warn > span { flex: 1; min-width: 0; }
+.rl-warn > .btn { flex: none; align-self: center; }
+/* 流向图上，说明在看板上方 */
+.rl-scroll > .rl-warn { margin-bottom: 16px; }
+
+/* 流向图：分组看板 */
+.rl-grid { align-items: start; }
+.rl-fhead { display: flex; align-items: center; gap: 11px; margin-bottom: 10px; }
+.rl-fhead .two > span { font-weight: 600; font-size: 13px; }
+.rl-rnote { font-size: 11px; flex: 0 10 auto; }
+.row.rl-off .mono { color: var(--ink-3); }
+.rl-direct { margin-top: 16px; display: flex; align-items: center; gap: 11px; padding: 14px 20px; }
+.rl-direct .two > span { font-weight: 600; }
+
+/* 测试地址 */
+.rl-q { width: 320px; height: 32px; gap: 8px; color: var(--ink-2); }
+.rl-q:focus-within { box-shadow: 0 0 0 3.5px rgba(84, 87, 230, .2), inset 0 0 0 1.5px var(--brand); }
+.rl-q input { -webkit-appearance: none; appearance: none; flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--ink); font-size: 12.5px; }
+.rl-q input::placeholder { color: var(--ink-3); }
+.rl-test { flex: 1; min-height: 0; display: flex; gap: 16px; }
+.rl-tboard { flex: 1; min-width: 0; }
+.rl-side { width: 276px; flex: none; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.rl-grow { flex: 1; }
+.rl-res { display: flex; align-items: center; gap: 12px; margin: 6px 0 2px; }
+.rl-res-t { font-size: 14.5px; font-weight: 700; }
+.rl-side .rl-warn { margin: 10px 0 0; }
+/* 结果卡窄：按钮换到说明下面一行 */
+.rl-side .rl-warn { flex-wrap: wrap; }
+.rl-side .rl-warn > span { flex-basis: calc(100% - 21px); }
+.rl-side .rl-warn > .btn { margin-left: 21px; }
+.rl-why { margin-top: 8px; }
+.rl-wait { padding: 6px 0 2px; }
+.rl-side .verdict.panel { flex: none; }
+
+/* 添加规则 */
+.rl-ft0 { margin-top: 0; }
+.rl-area { height: 104px; }
+.rl-picks { display: flex; gap: 8px; flex-wrap: wrap; }
+.rl-pick { height: 36px; padding: 0 12px 0 8px; border-radius: 11px; font-size: 12.5px; max-width: 220px; }
+.rl-pick.on { box-shadow: inset 0 0 0 1.5px var(--brand); }
+.rl-count { font-size: 11.5px; }
+.rl-msg .verdict { margin: 0 0 14px; }

@@ -1,0 +1,80 @@
+{
+  "events": [
+    {
+      "seq": 101,
+      "ts": "2026-09-28T09:00:00Z",
+      "ts_ms": 1790586000000,
+      "level": "info",
+      "src": "watchdog",
+      "event": "heal_done",
+      "msg": "分流口自愈完成",
+      "detail": {}
+    },
+    {
+      "seq": 102,
+      "ts": "2026-09-28T09:05:00Z",
+      "ts_ms": 1790586300000,
+      "level": "info",
+      "src": "watchdog",
+      "event": "recovered",
+      "msg": "通道恢复",
+      "detail": {
+        "outage_ms": 42000,
+        "heal_count": 1,
+        "final_action": "tunnel"
+      }
+    },
+    {
+      "seq": 103,
+      "ts": "2026-09-28T09:10:00Z",
+      "ts_ms": 1790586600000,
+      "level": "warn",
+      "src": "audit",
+      "event": "channel_start",
+      "msg": "启动通道",
+      "detail": {
+        "target_kind": "channel",
+        "target_id": "demo-branch1"
+      }
+    },
+    {
+      "seq": 104,
+      "ts": "2026-09-28T09:20:00Z",
+      "ts_ms": 1790587200000,
+      "level": "warn",
+      "src": "watchdog",
+      "event": "wake_detected",
+      "msg": "检测到睡眠唤醒",
+      "detail": {
+        "wall_gap_s": 3600
+      }
+    },
+    {
+      "seq": 105,
+      "ts": "2026-09-28T09:25:00Z",
+      "ts_ms": 1790587500000,
+      "level": "info",
+      "src": "manager",
+      "event": "dns_cache_recovered",
+      "msg": "通道域名代理已恢复",
+      "detail": {
+        "cid": "demo-hq1"
+      }
+    },
+    {
+      "seq": 106,
+      "ts": "2026-09-28T09:26:00Z",
+      "ts_ms": 1790587560000,
+      "level": "warn",
+      "src": "watchdog",
+      "event": "heal_failed",
+      "msg": "修复失败",
+      "detail": {}
+    }
+  ],
+  "seq": 106,
+  "dropped": 0,
+  "retained_days": 14,
+  "file": null,
+  "enabled": true
+}

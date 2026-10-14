@@ -56,6 +56,11 @@ fn network_for(config: &str, networks: &str) -> Result<(String, bool)> {
     Ok((names[0].into(), interfaces.len() > 1))
 }
 
+/// 纯:该 profile 所在运行环境根目录下的 lima 目录(网络定义、出站进程 pid 都在这里)。
+fn lima_dir(home: &Path, profile: &str) -> PathBuf {
+    crate::vm::colima_home_in(home, profile).join("_lima")
+}
+
 fn process_matches(command: &str, pid_file: &Path) -> bool {
     let Some((exe, args)) = command.trim().split_once(" usernet ") else { return false; };
     if Path::new(exe).file_name().and_then(|s| s.to_str()) != Some("limactl") { return false; }
@@ -148,7 +153,7 @@ impl Sampler {
 
     async fn collect(&mut self, home: &Path, profile: &str, result: &mut Snapshot) -> Result<()> {
         ensure!(valid_name(profile), "invalid_profile");
-        let lima = home.join(".colima/_lima");
+        let lima = lima_dir(home, profile);
         let cfg = small_file(&lima.join(format!("colima-{profile}/lima.yaml"))).await?;
         let networks = small_file(&lima.join("_config/networks.yaml")).await?;
         let (network, multiple_interfaces) = network_for(&cfg, &networks)?;
@@ -214,6 +219,17 @@ mod tests {
         assert!(process_matches("/app space/limactl usernet -p /test space/usernet.pid --listen /x", pid_file));
         assert!(!process_matches("/bin/limactl hostagent -p /test space/usernet.pid", pid_file));
         assert!(!process_matches("/bin/limactl usernet -p /other/usernet.pid", pid_file));
+    }
+
+    #[test]
+    fn lima_dir_follows_identity_root() {
+        let home = Path::new("/Users/x");
+        assert_eq!(lima_dir(home, "vpnmgr"), PathBuf::from("/Users/x/.colima/_lima"));
+        for profile in ["tongdao", "tongdao-dev"] {
+            let dir = lima_dir(home, profile);
+            assert_eq!(dir, PathBuf::from("/Users/x/.tongdao/colima/_lima"));
+            assert!(!dir.to_string_lossy().contains("/.colima"));
+        }
     }
 
     #[test]

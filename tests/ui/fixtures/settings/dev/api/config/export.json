@@ -1,0 +1,60 @@
+{
+  "kind": "vpnmgr-export",
+  "version": 1,
+  "exported_at": "2026-09-29T08:00:00",
+  "channels": [
+    {
+      "name": "分部文件服务(示例)",
+      "vpn_type": "openvpn",
+      "server": "",
+      "ec_ver": "",
+      "login_method": "headless",
+      "username": "",
+      "probe_url": "",
+      "routing_enabled": true,
+      "config": {
+        "config_file": "client\nremote vpn2.example.test 1194\n",
+        "password": "example-secret"
+      },
+      "rules": [
+        {
+          "kind": "domain",
+          "pattern": "files.example.test",
+          "enabled": 1,
+          "note": "",
+          "locked": 0
+        }
+      ]
+    },
+    {
+      "name": "总部主线路(示例)",
+      "vpn_type": "easyconnect",
+      "server": "vpn1.example.test",
+      "ec_ver": "7.6.7",
+      "login_method": "interactive",
+      "username": "alice",
+      "probe_url": "",
+      "routing_enabled": true,
+      "config": {
+        "server": "vpn1.example.test",
+        "username": "alice"
+      },
+      "rules": [
+        {
+          "kind": "domain",
+          "pattern": "corp.example.test",
+          "enabled": 1,
+          "note": "",
+          "locked": 0
+        },
+        {
+          "kind": "ip",
+          "pattern": "10.20.0.0/16",
+          "enabled": 1,
+          "note": "",
+          "locked": 0
+        }
+      ]
+    }
+  ]
+}

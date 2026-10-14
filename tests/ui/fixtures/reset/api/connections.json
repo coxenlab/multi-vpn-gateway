@@ -1,0 +1,61 @@
+{
+  "__sequence__": [
+    {
+      "connections": [
+        {
+          "id": "conn-r001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50101"
+          },
+          "upload": 2048000,
+          "download": 5192000,
+          "start": "2026-09-28T08:10:00.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        }
+      ],
+      "downloadTotal": 5242880,
+      "uploadTotal": 2097664
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-r001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50101"
+          },
+          "upload": 2079000,
+          "download": 5273000,
+          "start": "2026-09-28T08:10:00.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        }
+      ],
+      "downloadTotal": 5324800,
+      "uploadTotal": 2129152
+    },
+    {
+      "connections": [],
+      "downloadTotal": 128,
+      "uploadTotal": 64
+    }
+  ]
+}

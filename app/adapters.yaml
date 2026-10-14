@@ -198,14 +198,17 @@ adapters:
   # 不注入凭据(无 connect);登录成功唯一判据仍是 SOCKS5 探活(命门 #1)。尽力而为。
   custom:
     label: 自定义 / BYO
-    desc: 自带客户端：在远程桌面里自行安装任意 Linux VPN 客户端
+    desc: 自带官方 Debian 安装包，或在登录窗口运行厂商 Linux 安装程序
     runtime: byo
+    # 官方 GUI VPN 常依赖 systemd 管理其 root 守护进程。宿主仅为该通用容器加载
+    # tongdao-generic AppArmor，并给私有 cgroup namespace；其他适配器不继承。
+    systemd: true
     image: "vpnmgr/byo-desktop:latest"
     versioned: false
     arch: [amd64, arm64]
     login_modes: [byo]
     inputs:
-      - {key: package, label: "安装包(可选,.deb/.rpm/.run/.AppImage)", type: file, required: false}
+      - {key: package, label: "安装包(可选,.deb/.run/.AppImage)", type: file, required: false}
     env:
       USE_NOVNC: "1"
       PASSWORD: "{vnc_password}"
@@ -248,3 +251,4 @@ adapters:
     sysctls: {}
     dns_opts: [no-aaaa]   # 守护进程 DNS 代理丢 AAAA(见 custom 注释),2026-09-09 实测
     shm_size_mb: 512
+

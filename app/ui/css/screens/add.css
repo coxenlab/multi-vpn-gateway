@@ -1,0 +1,24 @@
+/* 添加通道弹层（界面 09–14）。公共部分（.drop .ft .types .file .verdict .form .morerow）在 components.css */
+
+/* 弹层本身只接收打开时的焦点（不在 Tab 顺序里），不画焦点框 */
+.sheet.add:focus { outline: none; }
+
+/* 名字、验证地址：原型里是 40px 高、14px 字、12px 圆角的大输入框 */
+.add .add-name { display: block; width: 100%; height: 40px; font-size: 14px; border-radius: 12px; }
+
+/* 表单行里的输入框没有边框，和原型的 .fr > .grow 一样只是一行字 */
+.add .fr > input.grow { height: 48px; padding: 0; border: 0; background: transparent; outline: none; }
+.add .fr > input.grow::placeholder { color: var(--ink-3); }
+.add .fr > .btn { flex: none; }
+
+.add .add-gap { margin-top: 12px; }
+.add .sh-b > .verdict:first-child { margin-top: 0; }
+.add .morerow svg { flex: none; }
+.add .add-chev { display: inline-flex; }
+.add .add-more > .ft:first-child { margin-top: 6px; }
+.add .add-more > .form + .ft { margin-top: 18px; }
+
+.add .add-err { margin: 12px 2px 0; color: var(--bad-ink); font-size: 12px; }
+
+/* 类型清单还在读取时的占位格 */
+.add .type.add-skel { background: var(--fill); box-shadow: none; }

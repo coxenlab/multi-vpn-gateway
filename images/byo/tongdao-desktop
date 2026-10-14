@@ -1,0 +1,85 @@
+#!/usr/bin/python3
+"""Supervise the desktop and verify a real application window, not just VNC."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import time
+
+RUNTIME = Path(os.environ['XDG_RUNTIME_DIR'])
+STATUS = RUNTIME / 'startup.json'
+APPS = Path.home() / '.local/share/tongdao/apps'
+
+
+def status(phase, message):
+    temporary = STATUS.with_suffix('.tmp')
+    temporary.write_text(json.dumps({'phase': phase, 'message': message}, ensure_ascii=False))
+    temporary.replace(STATUS)
+
+
+def windows():
+    result = subprocess.run(['wmctrl', '-lp'], capture_output=True, text=True, timeout=3)
+    if result.returncode:
+        return set()
+    visible = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or not parts[2].isdigit() or parts[2] == '0':
+            continue
+        try:
+            process = Path('/proc', parts[2], 'comm').read_text().strip()
+        except OSError:
+            continue
+        if process not in ('fluxbox', 'pcmanfm', 'xmessage'):
+            visible.add(parts[0])
+    return visible
+
+
+def diagnose(log):
+    text = log.lower()
+    if 'no usable sandbox' in text or 'suid sandbox' in text or 'operation not permitted' in text:
+        return '客户端安全沙箱或系统权限不兼容，请查看启动日志；未自动关闭沙箱。'
+    if 'error while loading shared libraries' in text:
+        return '客户端缺少运行库，请查看启动日志中的库名。'
+    if 'running as root' in text:
+        return '客户端仍以管理员身份启动，桌面用户配置未生效。'
+    return '未检测到客户端窗口，请查看启动日志；安装包可能需要其他系统环境或手动启动。'
+
+
+def main():
+    status('starting', '正在启动客户端窗口…')
+    for _ in range(100):
+        if Path('/tmp/.X11-unix/X0').exists():
+            break
+        time.sleep(.1)
+    desktop = subprocess.Popen(['fluxbox'])
+    subprocess.run(['gnome-keyring-daemon', '--start', '--components=secrets'], check=False)
+    apps = sorted(APPS.glob('*.desktop'))
+    if not apps:
+        status('manual', '尚无可自动启动的客户端，请在文件管理器中完成安装。')
+        subprocess.Popen(['pcmanfm', str(Path.home() / 'Downloads')])
+        return desktop.wait()
+    time.sleep(1)
+    baseline = windows()
+    log_path = RUNTIME / 'startup.log'
+    with log_path.open('w') as log:
+        launchers = [subprocess.Popen(['gio', 'launch', str(app)], stdout=log, stderr=log) for app in apps]
+        deadline = time.monotonic() + 45
+        visible_since = None
+        while desktop.poll() is None and time.monotonic() < deadline:
+            visible = windows() - baseline
+            visible_since = (visible_since or time.monotonic()) if visible else None
+            if visible_since and time.monotonic() - visible_since >= 3:
+                status('ready', '客户端窗口已打开，请完成登录；内网连通性尚未验证。')
+                return desktop.wait()
+            if all(p.poll() not in (None, 0) for p in launchers):
+                break
+            time.sleep(.5)
+    message = diagnose(log_path.read_text(errors='replace')[-16384:])
+    status('failed', message)
+    subprocess.Popen(['xmessage', '-center', '-buttons', 'OK:0', '客户端窗口启动失败\n' + message])
+    return desktop.wait()
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

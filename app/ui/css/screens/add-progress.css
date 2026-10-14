@@ -1,0 +1,9 @@
+/* 添加通道 · 正在连接（15）。四步的样子沿用公共的 .steps4，这里只补失败和停住两种标记 */
+.ap .s4 > div:nth-child(2) { min-width: 0; }
+.s4.fail .mk { background: var(--bad); }
+.s4.fail .mk::after { content: ""; width: 10px; height: 2px; border-radius: 1px; background: var(--on-brand); }
+.s4.fail > div > span { color: var(--bad-ink); }
+.s4.hold .mk { background: var(--wait-bg); box-shadow: inset 0 0 0 2px var(--wait); }
+.s4.hold .mk::after { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--wait); }
+.ap-sheet:focus { outline: none; }
+.ap-sheet .sh-b { overflow: visible; }

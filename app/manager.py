@@ -353,7 +353,7 @@ def build_mihomo_config(base, chs, rules):
         for c in chs
     ]
     base["proxy-groups"] = []
-    # enabled 规则拆两桶:domain 桶保持输入序(ORDER BY id)整体在前;ip 桶按 CIDR
+    # enabled 规则拆两桶:domain 桶按标签数降序、同级保持输入序(ORDER BY id),整体在前;ip 桶按 CIDR
     # 前缀长度全局降序、同长度稳定保序(sorted 稳定)。输出:domain 全部→ip 全部→MATCH 恒最后。
     # 与 Rust 侧 build_mihomo_config 排序语义逐字一致(golden fixture 钉死)。
     # 命门:IP-CIDR 带 no-resolve、DOMAIN-SUFFIX 不带——有意不对称,勿修平。
@@ -368,9 +368,11 @@ def build_mihomo_config(base, chs, rules):
         kind, pattern = normalized
         item = dict(r, kind=kind, pattern=pattern)
         (ips if kind == "ip" else domains).append(item)
+    domains = sorted(domains, key=lambda r: len(r["pattern"].split(".")), reverse=True)
     ips = sorted(ips, key=lambda r: _cidr_prefix_len(r["pattern"]), reverse=True)
     out = [f"DOMAIN-SUFFIX,{r['pattern']},ch-{r['channel_id']}" for r in domains]
     out += [f"IP-CIDR,{r['pattern']},ch-{r['channel_id']},no-resolve" for r in ips]
+    out.append("IP-CIDR,198.18.0.0/15,REJECT,no-resolve")
     out.append("MATCH,DIRECT")
     base["rules"] = out
     return base

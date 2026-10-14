@@ -1,0 +1,26 @@
+{
+  "__sequence__": [
+    {
+      "status": "running",
+      "connected": false,
+      "latency_ms": null,
+      "checked_at": null,
+      "stale": false,
+      "replacement": null,
+      "blocked": false,
+      "awaiting_target": false,
+      "target": "10.60.0.10"
+    },
+    {
+      "status": "logged_in",
+      "connected": true,
+      "latency_ms": 41,
+      "checked_at": 1779999990000,
+      "stale": false,
+      "replacement": null,
+      "blocked": false,
+      "awaiting_target": false,
+      "target": "10.60.0.10"
+    }
+  ]
+}

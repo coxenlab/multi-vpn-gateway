@@ -1,0 +1,43 @@
+/* 总览（01）与首次使用（02）。取值照原型第四版 screens.js 的总览。 */
+
+.home-top { grid-template-columns: 1.3fr 1fr 1fr; }
+.home-top > .card { height: 178px; }
+.home-speed .chart-b { height: 76px; }
+
+.home-bottom { grid-template-columns: 1fr 1.25fr; margin-top: 16px; flex: 1; min-height: 0; }
+/* 卡片本身不滚，里面一层滚：内容没溢出时不出滚动条，溢出时用系统默认的滚动条，落在卡片内边距里，不压圆角 */
+.home-bottom > .card { display: flex; flex-direction: column; }
+.home-scroll { flex: 1; min-height: 0; overflow: auto; margin-right: -12px; padding-right: 12px; }
+
+/* 需要处理 */
+.home-todos .todo .two span { font-weight: 600; }
+.todo.bad > svg { color: var(--bad); }
+.home-none { color: var(--ink-3); padding: 10px 0 4px; }
+
+/* 已自动处理 */
+.home-auto > .lb { margin: 18px 0 2px; }
+.home-when { width: 40px; flex: none; }
+
+/* 通道卡片 */
+.home-ch { color: inherit; text-decoration: none; cursor: default; min-height: 62px; }
+.home-ch.short { min-height: 54px; }
+.home-ch b { font-weight: 600; }
+.home-ch-main { flex: 1; min-width: 0; }
+.home-ch-line { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.home-ch-line .dim, .home-ch-line .num { font-size: 11.5px; white-space: nowrap; }
+
+/* 首次使用：只有一个动作，顶栏的分流标记和添加按钮都不显示 */
+body.home-first #route-chip, body.home-first #top-add { display: none !important; }
+.home-art { margin-bottom: 14px; }
+.home-art svg { display: block; }
+.home-art path { stroke-width: 6; stroke-linecap: round; }
+.home-art .main { stroke: var(--brand); }
+.home-art .soft { stroke: color-mix(in srgb, var(--brand) 50%, var(--card)); }
+.home-art circle { fill: var(--card); }
+.home-art circle.end { stroke-width: 4; }
+.home-art circle.src { stroke: var(--ink); stroke-width: 5; }
+
+/* 接管网络的一句建议：不算需要处理，用中性底色 */
+.todo.tip { background: var(--fill); }
+.todo.tip > svg { color: var(--ink-3); }
+.home-none + .todo.tip { margin-top: 4px; }

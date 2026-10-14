@@ -1,0 +1,14 @@
+{
+  "__delay_ms__": 400,
+  "__body__": {
+    "status": "logged_in",
+    "connected": true,
+    "latency_ms": 65,
+    "checked_at": 1779999994000,
+    "stale": false,
+    "replacement": null,
+    "blocked": false,
+    "awaiting_target": false,
+    "target": "erp.example.test"
+  }
+}

@@ -1,0 +1,58 @@
+/* 通道管家 · 基础：窗口底色、侧栏、顶栏、页面骨架。 */
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 12.5px/1.45 var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; overflow: hidden;
+  background:
+    radial-gradient(700px 480px at 0% 0%, var(--bg-a) 0%, transparent 70%),
+    radial-gradient(760px 520px at 100% 100%, var(--bg-b) 0%, transparent 70%),
+    radial-gradient(600px 400px at 100% 0%, var(--bg-c) 0%, transparent 70%),
+    var(--bg);
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.mono { font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; }
+.dim { color: var(--ink-2); }
+.dim3 { color: var(--ink-3); }
+.sp { flex: 1; }
+
+/* 整个窗口：侧栏和内容同一层底色，没有分隔线 */
+.app { height: 100%; display: flex; }
+
+/* 侧栏：顶部 50px 留给系统红绿灯，不放可点元素 */
+.sb { width: 196px; flex: none; display: flex; flex-direction: column; padding: 0 14px 16px; gap: 2px; }
+.sb-lights { height: 50px; flex: none; -webkit-app-region: drag; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 13.5px; padding: 4px 8px 18px; letter-spacing: .01em; }
+.logo { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(140deg, var(--logo-a), var(--logo-b)); color: var(--on-brand); display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 3px 8px rgba(84, 87, 230, .35); }
+.sb-i { height: 38px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border-radius: 10px; border: 0; background: transparent; width: 100%; text-align: left; cursor: default; font-size: 13px; color: var(--ink); text-decoration: none; }
+.sb-i svg { color: var(--ink-2); flex: none; }
+.sb-i:hover { background: rgba(30, 32, 70, .04); }
+.sb-i.on { background: rgba(30, 32, 70, .075); font-weight: 600; }
+.sb-i.on svg { color: var(--brand); }
+.sb-sp { flex: 1; }
+
+/* 主区 */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.top { height: 50px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 24px 0 8px; -webkit-app-region: drag; }
+.top button, .top a, .top input, .top select, .top .chipb { -webkit-app-region: no-drag; }
+.chipb { height: 28px; display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; border-radius: 14px; background: rgba(30, 32, 70, .06); font-size: 11.5px; color: var(--ink); white-space: nowrap; }
+.chipb i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.chipb.warn i { background: var(--wait); }
+.chipb.bad i { background: var(--bad); }
+.chipb.off i { background: var(--off); }
+.notice { position: fixed; right: 24px; bottom: 24px; z-index: 60; width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.notice > .todo { margin: 0; pointer-events: auto; box-shadow: 0 8px 30px rgba(30, 32, 70, .16); }
+.toast { display: flex; align-items: flex-start; gap: 10px; padding: 14px 12px 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: 0 8px 30px rgba(30, 32, 70, .16); pointer-events: auto; }
+.toast > svg { flex: none; margin-top: 1px; color: var(--brand); }
+.toast.bad > svg { color: var(--bad); }
+.toast.ok > svg { color: var(--ok); }
+.toast-text { flex: 1; min-width: 0; overflow-wrap: anywhere; max-height: min(160px, 20vh); overflow: auto; line-height: 1.6; }
+.toast-close { flex: none; border: 0; border-radius: 6px; background: transparent; color: var(--ink-2); font-size: 19px; line-height: 22px; width: 24px; cursor: pointer; }
+.toast-close:hover { background: var(--fill); }
+.page { flex: 1; min-height: 0; padding: 0 24px 22px 8px; display: flex; flex-direction: column; }
+.h1 { font-size: 26px; font-weight: 750; letter-spacing: -.02em; margin: 0 0 4px; line-height: 1.2; }
+.h1sub { color: var(--ink-2); margin: 0 0 16px; font-size: 12.5px; }
+.hrow { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 14px; }
+.hrow .h1 { margin: 0; }

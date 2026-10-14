@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全问题 / Security issue
+    url: https://github.com/coxenlab/multi-vpn-gateway/security/advisories/new
+    about: 请私下报告，不要开公开 Issue / Please report privately, not in a public issue

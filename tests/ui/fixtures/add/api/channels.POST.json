@@ -1,0 +1,14 @@
+{
+  "id": "demo-add1",
+  "name": "园区办公",
+  "vpn_type": "wireguard",
+  "server": "",
+  "ec_ver": "",
+  "login_method": "headless",
+  "username": "",
+  "probe_url": "",
+  "status": "running",
+  "routing_enabled": true,
+  "domains": [],
+  "ips": []
+}

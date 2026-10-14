@@ -1,0 +1,21 @@
+{
+  "mode": "auto",
+  "effective": "clash",
+  "allowed": true,
+  "clash_running": true,
+  "system_proxy_ok": false,
+  "other_app": {
+    "tun": false,
+    "system_proxy": false
+  },
+  "tun": {
+    "installed": true,
+    "enabled": false
+  },
+  "system_proxy": {
+    "enabled": false,
+    "ours": false
+  },
+  "domains_via": "clash",
+  "action": null
+}

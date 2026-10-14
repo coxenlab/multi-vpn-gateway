@@ -1,0 +1,21 @@
+{
+  "q": "git.corp.example",
+  "kind": "domain",
+  "normalized": "git.corp.example",
+  "result": "channel",
+  "rule": {
+    "id": 3,
+    "kind": "domain",
+    "pattern": "git.corp.example"
+  },
+  "channel": {
+    "id": "demo-rd",
+    "name": "华东研发",
+    "status": "logged_in"
+  },
+  "reachable": {
+    "ok": true,
+    "latency_ms": 18,
+    "port": 443
+  }
+}

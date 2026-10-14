@@ -1,0 +1,35 @@
+{
+  "id": "demo-cloud",
+  "name": "云平台",
+  "vpn_type": "wireguard",
+  "server": "vpn.cloud.example",
+  "ec_ver": null,
+  "login_method": "headless",
+  "username": "",
+  "vnc_password": null,
+  "mac": null,
+  "novnc_port": null,
+  "probe_url": "",
+  "status": "logged_in",
+  "container_id": "c-demo-cloud",
+  "latency_ms": 24,
+  "config": {
+    "filename": "cloud.conf"
+  },
+  "routing_enabled": true,
+  "stop_pending": false,
+  "replacement": null,
+  "saved": true,
+  "deferred": false,
+  "config_application": {
+    "applied_generation": 3,
+    "available": true,
+    "desired_generation": 3,
+    "desired_revision": 21,
+    "last_error": null,
+    "pending": false,
+    "scope": "managed_rules_proxies",
+    "source_revision": 21,
+    "verified_at": 1789999988000
+  }
+}

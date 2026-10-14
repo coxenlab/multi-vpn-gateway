@@ -43,21 +43,16 @@ impl Controller {
         fetch.await.unwrap_or_default()
     }
 
-    pub async fn connections(&self) -> Value {
-        let fetch = async {
-            let r = self
+    pub async fn connections(&self) -> anyhow::Result<Value> {
+        let value = self
                 .client
                 .get(format!("{}/connections", self.base))
                 .bearer_auth(&self.secret)
                 .timeout(Duration::from_secs(5))
                 .send()
-                .await
-                .ok()?;
-            r.json::<Value>().await.ok()
-        };
-        fetch
-            .await
-            .unwrap_or_else(|| json!({"connections": [], "downloadTotal": 0, "uploadTotal": 0}))
+                .await?.error_for_status()?.json::<Value>().await?;
+        anyhow::ensure!(value["connections"].is_array() && value["uploadTotal"].is_number() && value["downloadTotal"].is_number(), "连接数据格式不完整");
+        Ok(value)
     }
 }
 
@@ -111,7 +106,6 @@ mod tests {
         let c = Controller::new("http://127.0.0.1:1".into(), "".into());
         assert!(!c.alive().await);
         assert!(c.proxies().await.is_empty());
-        let conns = c.connections().await;
-        assert_eq!(conns["connections"], serde_json::json!([]));
+        assert!(c.connections().await.is_err());
     }
 }

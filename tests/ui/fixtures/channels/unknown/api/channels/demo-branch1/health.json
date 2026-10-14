@@ -1,0 +1,8 @@
+{
+  "status": "running",
+  "connected": null,
+  "probe_failed": true,
+  "probe_reason": "runtime_unknown",
+  "latency_ms": null,
+  "blocked": false
+}

@@ -1,0 +1,11 @@
+{
+  "status": "logged_in",
+  "connected": true,
+  "latency_ms": 18,
+  "checked_at": 1779999990000,
+  "stale": false,
+  "replacement": null,
+  "blocked": false,
+  "awaiting_target": false,
+  "target": "http://git.corp.example/"
+}

@@ -1,0 +1,59 @@
+{
+  "id": "demo-plant",
+  "name": "工厂线路",
+  "vpn_type": "easyconnect",
+  "server": "plant.example.test",
+  "ec_ver": "7.6.7",
+  "login_method": "interactive",
+  "username": "",
+  "vnc_password": null,
+  "mac": null,
+  "novnc_port": null,
+  "probe_url": "",
+  "status": "error",
+  "container_id": null,
+  "latency_ms": null,
+  "config": {},
+  "routing_enabled": true,
+  "configured_status": "error",
+  "domains": [
+    {
+      "id": 105,
+      "channel_id": "demo-plant",
+      "kind": "domain",
+      "pattern": "mes.example.test",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    },
+    {
+      "id": 106,
+      "channel_id": "demo-plant",
+      "kind": "domain",
+      "pattern": "wms.example.test",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    }
+  ],
+  "ips": [
+    {
+      "id": 107,
+      "channel_id": "demo-plant",
+      "kind": "ip",
+      "pattern": "10.50.8.0/24",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    }
+  ],
+  "volume_name": "vpndata-demo-plant",
+  "socks_proxy": "ch-demo-plant",
+  "socks_endpoint": "vpn-demo-plant:1080",
+  "uptime": null,
+  "stop_pending": false,
+  "replacement": null,
+  "blocked": true,
+  "saved": true,
+  "deferred": false
+}

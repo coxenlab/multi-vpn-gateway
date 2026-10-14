@@ -1,0 +1,5164 @@
+{
+  "__sequence__": [
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 635989,
+      "uploadTotal": 23610
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 1500886,
+      "uploadTotal": 39086
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 2255332,
+      "uploadTotal": 68639
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 3142368,
+      "uploadTotal": 104995
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 3418363,
+      "uploadTotal": 137809
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 3725424,
+      "uploadTotal": 154163
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 4372962,
+      "uploadTotal": 205851
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 4731811,
+      "uploadTotal": 228566
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 5574146,
+      "uploadTotal": 286056
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 6368164,
+      "uploadTotal": 317096
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 9899778,
+      "uploadTotal": 331331
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 10963907,
+      "uploadTotal": 357232
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 11342391,
+      "uploadTotal": 374886
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 11878533,
+      "uploadTotal": 426060
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 12292030,
+      "uploadTotal": 465976
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 13145386,
+      "uploadTotal": 495851
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 13911220,
+      "uploadTotal": 510864
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 14802871,
+      "uploadTotal": 532750
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 15696054,
+      "uploadTotal": 565274
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 16237635,
+      "uploadTotal": 605380
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 16912692,
+      "uploadTotal": 631768
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 17915296,
+      "uploadTotal": 677319
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 18389628,
+      "uploadTotal": 716891
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 19133816,
+      "uploadTotal": 770897
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 21954618,
+      "uploadTotal": 796718
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 23135585,
+      "uploadTotal": 814385
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 23776982,
+      "uploadTotal": 862727
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 24162887,
+      "uploadTotal": 898197
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 24440525,
+      "uploadTotal": 942271
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 25414513,
+      "uploadTotal": 981776
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 26494971,
+      "uploadTotal": 1008835
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 29217421,
+      "uploadTotal": 1049364
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 30014120,
+      "uploadTotal": 1083261
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 31060489,
+      "uploadTotal": 1140605
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 31755623,
+      "uploadTotal": 1184484
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 32053865,
+      "uploadTotal": 1230155
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 32915108,
+      "uploadTotal": 1289823
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 33944155,
+      "uploadTotal": 1315483
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 35775234,
+      "uploadTotal": 1359578
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 36036894,
+      "uploadTotal": 1393739
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 36438220,
+      "uploadTotal": 1411359
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 36734816,
+      "uploadTotal": 1460234
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 37098982,
+      "uploadTotal": 1484119
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 37714293,
+      "uploadTotal": 1537947
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 38031651,
+      "uploadTotal": 1571507
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 40334037,
+      "uploadTotal": 1625909
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 41360545,
+      "uploadTotal": 1679380
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 41867829,
+      "uploadTotal": 1711314
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 42452249,
+      "uploadTotal": 1765755
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 43611670,
+      "uploadTotal": 1784999
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 44020839,
+      "uploadTotal": 1808132
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 44484841,
+      "uploadTotal": 1843410
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 46901516,
+      "uploadTotal": 1868021
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 47145445,
+      "uploadTotal": 1900130
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 47739928,
+      "uploadTotal": 1939314
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 48894902,
+      "uploadTotal": 1984457
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 49629773,
+      "uploadTotal": 2026101
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 50518925,
+      "uploadTotal": 2040692
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 51622476,
+      "uploadTotal": 2090130
+    },
+    {
+      "connections": [
+        {
+          "id": "conn-0001",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.9",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50001"
+          },
+          "upload": 1037,
+          "download": 20511,
+          "start": "2026-09-28T08:26:37.000Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0002",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "corp.example.test",
+            "destinationIP": "10.20.3.10",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50002"
+          },
+          "upload": 1074,
+          "download": 21022,
+          "start": "2026-09-28T08:26:35.500Z",
+          "chains": [
+            "ch-demo-hq1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "corp.example.test"
+        },
+        {
+          "id": "conn-0003",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "erp.example.test",
+            "destinationIP": "10.20.9.4",
+            "destinationPort": "443",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50003"
+          },
+          "upload": 1111,
+          "download": 21533,
+          "start": "2026-09-28T08:26:34.000Z",
+          "chains": [
+            "ch-demo-hq2"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "erp.example.test"
+        },
+        {
+          "id": "conn-0004",
+          "metadata": {
+            "network": "tcp",
+            "type": "Socks5",
+            "host": "files.example.test",
+            "destinationIP": "10.30.1.2",
+            "destinationPort": "80",
+            "sourceIP": "10.0.0.9",
+            "sourcePort": "50004"
+          },
+          "upload": 1148,
+          "download": 22044,
+          "start": "2026-09-28T08:26:32.500Z",
+          "chains": [
+            "ch-demo-branch1"
+          ],
+          "rule": "DomainSuffix",
+          "rulePayload": "files.example.test"
+        }
+      ],
+      "downloadTotal": 54861073,
+      "uploadTotal": 2140427
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "status": "running",
+  "connected": false,
+  "latency_ms": null,
+  "checked_at": 1789999988000,
+  "stale": false,
+  "replacement": {
+    "can_restore": true,
+    "phase": "awaiting_login"
+  },
+  "blocked": false,
+  "awaiting_target": false,
+  "target": "http://oa.hq.example/"
+}

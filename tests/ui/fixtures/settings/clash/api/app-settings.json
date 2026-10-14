@@ -1,0 +1,6 @@
+{
+  "launch_at_login": false,
+  "auto_connect": true,
+  "keep_running_on_close": true,
+  "resume_channels": []
+}

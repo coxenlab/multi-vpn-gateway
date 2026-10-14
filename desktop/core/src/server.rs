@@ -36,9 +36,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/channels/:cid/login/viewers/:viewer", axum::routing::put(api::renew_login_viewer).delete(api::release_login_viewer))
         .route("/api/channels/:cid/upload", axum::routing::post(api::upload)
             .layer(axum::extract::DefaultBodyLimit::max(crate::installer_upload::BODY_LIMIT)))
+        .route("/api/channels/:cid/install", get(api::install_status))
+        .route("/api/channels/:cid/startup", get(api::startup_status))
         .route("/api/channels/:cid/note", get(api::note_get).put(api::note_put))
         .route("/api/channels/:cid/status", get(api::status))
         .route("/api/channels/:cid/health", get(api::channel_health))
+        .route("/api/channels/:cid/verify-target", axum::routing::post(api::verify_target))
         .route("/api/channels/:cid/rules", axum::routing::post(api::add_rules))
         .route("/api/rules", axum::routing::patch(api::patch_rules))
         .route(
@@ -89,6 +92,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/config/import", axum::routing::post(api::config_import)
             .layer(axum::extract::DefaultBodyLimit::max(api::CONFIG_IMPORT_LIMIT)))
         .route("/api/config/retry", axum::routing::post(api::config_retry))
+        .route("/api/rules/test", get(crate::rule_test::test))
+        .route("/api/channels/:cid/cause", get(crate::causes::cause))
+        .route("/api/channels/:cid/config-file", axum::routing::put(crate::channel_file::put))
+        .route("/api/traffic/today", get(crate::traffic::today))
+        .route("/api/channels/:cid/latency", get(crate::lifecycle::latency))
+        .route("/api/app-settings", get(crate::app_settings::get).put(crate::app_settings::put))
+        .route("/api/takeover", get(crate::takeover::get).put(crate::takeover::put))
         .route_layer(axum::middleware::from_fn_with_state(state.clone(), crate::runtime::track_request))
         .fallback_service(static_svc)
         .with_state(state)
@@ -149,7 +159,7 @@ mod tests {
         let docker = Router::new().fallback(axum::routing::put(move |request: Request<Body>| {
             let seen = seen.clone();
             async move {
-                assert!(request.uri().path().ends_with("/containers/vpn-upload/archive"));
+                assert!(request.uri().path().ends_with("/containers/original/archive"));
                 assert!(request.uri().query().unwrap_or_default().split('&').any(|part| part == "path=%2Froot"));
                 let body = axum::body::to_bytes(request.into_body(), 4 * 1024 * 1024).await.unwrap();
                 let mut archive = tar::Archive::new(std::io::Cursor::new(body));
@@ -207,6 +217,39 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst),3);
         assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".tmp")));
         server.abort(); let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn generic_install_status_is_explicit_and_never_stays_stale_running() {
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,vpn_type,status) VALUES('custom','custom','custom','running')", []).unwrap();
+        conn.execute("INSERT INTO channels(id,name,vpn_type,status) VALUES('legacy','legacy','hillstone','running')", []).unwrap();
+        let pending = crate::installer_upload::queued("client.deb".into());
+        crate::installer_upload::persist_queued(dir.path(), "custom", &pending).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let response = app.clone().oneshot(Request::get("/api/channels/custom/install").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(value["phase"], "interrupted");
+        assert!(value["log"].as_str().unwrap().contains("不会自动重装"));
+        assert_eq!(app.oneshot(Request::get("/api/channels/legacy/install").body(Body::empty()).unwrap()).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn startup_status_does_not_infer_readiness_without_a_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute("INSERT INTO channels(id,name,vpn_type,status) VALUES('custom','custom','custom','running')", []).unwrap();
+        conn.execute("INSERT INTO channels(id,name,vpn_type,status) VALUES('legacy','legacy','hillstone','running')", []).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        for (id, expected) in [("custom", StatusCode::SERVICE_UNAVAILABLE), ("legacy", StatusCode::BAD_REQUEST), ("missing", StatusCode::NOT_FOUND)] {
+            assert_eq!(app.clone().oneshot(Request::get(format!("/api/channels/{id}/startup"))
+                .body(Body::empty()).unwrap()).await.unwrap().status(), expected);
+        }
     }
 
     #[tokio::test]
@@ -427,7 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn channels_route_strips_secrets_and_down_overrides() {
+    async fn channels_route_strips_secrets_and_preserves_status_when_unknown() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("vpnmgr.db");
         crate::store::init(&db).unwrap();
@@ -453,9 +496,65 @@ mod tests {
         assert!(ch.get("password_enc").is_none());
         assert!(ch["config"].get("password").is_none());
         assert_eq!(ch["config"]["server"], "vpn.x.com");
-        assert_eq!(ch["status"], "down");
+        assert_eq!(ch["status"], "running");
+        assert_eq!(ch["container_state"], "unknown");
         assert_eq!(ch["domains"][0]["pattern"], "x.com");
         assert_eq!(ch["socks_proxy"], "ch-abc");
+    }
+
+    #[tokio::test]
+    async fn channel_list_uses_one_request_and_failure_is_not_a_missing_container() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let fail = Arc::new(AtomicBool::new(false));
+        let count = Arc::new(AtomicUsize::new(0));
+        let flag = fail.clone(); let calls = count.clone();
+        let fake = Router::new().fallback(axum::routing::get(move |request: Request<Body>| {
+            let flag = flag.clone(); let calls = calls.clone();
+            async move {
+                assert!(request.uri().path().ends_with("/containers/json"), "must not inspect or exec per channel");
+                calls.fetch_add(1, Ordering::SeqCst);
+                if flag.load(Ordering::SeqCst) {
+                    (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({"message":"fixture unavailable"})))
+                } else {
+                    (StatusCode::OK, axum::Json(serde_json::json!([
+                        {"Names":["/vpn-a"], "State":"running", "Status":"Up 3 minutes"},
+                        {"Names":["/vpn-b"], "State":"exited", "Status":"Exited (0)"}
+                    ])))
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for cid in ["a", "b", "c"] {
+            conn.execute("INSERT INTO channels(id,name,status) VALUES(?1,?1,'logged_in')", [cid]).unwrap();
+        }
+        let state = state_with_db(dir.path());
+        state.set_docker(Some(bollard::Docker::connect_with_http(&format!("http://{address}"), 2, bollard::API_DEFAULT_VERSION).unwrap()));
+        let app = build_router(state);
+        let get = |app: Router, path: &'static str| async move {
+            let response = app.oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+            let code = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 65536).await.unwrap();
+            (code, serde_json::from_slice::<serde_json::Value>(&bytes).unwrap())
+        };
+        let (_, channels) = get(app.clone(), "/api/channels").await;
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        for ch in channels.as_array().unwrap() {
+            if ch["id"] == "a" { assert_eq!(ch["container_state"], "running"); assert_eq!(ch["uptime"], "3分钟"); }
+            else { assert_eq!(ch["container_state"], "absent"); assert_eq!(ch["status"], "down"); }
+        }
+        fail.store(true, Ordering::SeqCst);
+        let (code, channels) = get(app.clone(), "/api/channels").await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(channels.as_array().unwrap().iter().all(|c| c["container_state"] == "unknown" && c["status"] == "logged_in" && c["uptime"].is_null()));
+        assert_eq!(get(app.clone(), "/api/channels/a/cause").await.1["code"], "runtime_unknown");
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        assert_eq!(get(app, "/api/connections").await.0, StatusCode::SERVICE_UNAVAILABLE);
+        task.abort(); let _ = task.await;
     }
 
     #[tokio::test]
@@ -1266,5 +1365,265 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8_lossy(&body);
         assert!(html.contains("<html"), "index.html should be served at /");
+    }
+
+    #[tokio::test]
+    async fn rules_test_route_resolves_single_input_and_rejects_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (id, status) in [("up", "logged_in"), ("wait", "running"), ("bad", "error")] {
+            conn.execute("INSERT INTO channels(id,name,status) VALUES(?1,?1,?2)", rusqlite::params![id, status]).unwrap();
+        }
+        crate::store::add_rule(&db, "up", "domain", "corp.example.test").unwrap();
+        crate::store::add_rule(&db, "wait", "ip", "10.20.0.0/16").unwrap();
+        crate::store::add_rule(&db, "bad", "ip", "10.40.0.0/16").unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let get = |q: &'static str| {
+            let app = app.clone();
+            async move {
+                let resp = app.oneshot(Request::get(format!("/api/rules/test?q={q}")).body(Body::empty()).unwrap()).await.unwrap();
+                let status = resp.status();
+                let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+                (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap())
+            }
+        };
+
+        // 已连接通道:没有 docker 时无法检测，不把执行故障误报为不通。
+        let (status, v) = get("wiki.corp.example.test").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["kind"], "domain");
+        assert_eq!(v["normalized"], "wiki.corp.example.test");
+        assert_eq!(v["result"], "channel");
+        assert_eq!(v["rule"]["pattern"], "corp.example.test");
+        assert_eq!(v["channel"], serde_json::json!({"id": "up", "name": "up", "status": "logged_in"}));
+        assert!(v["reachable"].is_null());
+
+        // 待登录、出错、未命中:reachable 为 null。
+        let (_, v) = get("10.20.3.4").await;
+        assert_eq!((v["result"].as_str(), v["channel"]["id"].as_str()), (Some("channel"), Some("wait")));
+        assert!(v["reachable"].is_null());
+        let (_, v) = get("10.40.3.4").await;
+        assert_eq!((v["result"].as_str(), v["channel"]["status"].as_str()), (Some("blocked"), Some("error")));
+        assert!(v["reachable"].is_null());
+        let (_, v) = get("other.example.test").await;
+        assert_eq!(v["result"], "direct");
+        assert!(v["rule"].is_null() && v["channel"].is_null() && v["reachable"].is_null());
+
+        // 网段、多个地址、换行、空输入:400。
+        for q in ["10.0.0.0%2F8", "a.example.test%2Cb.example.test", "a.example.test%0Ab.example.test", ""] {
+            let (status, v) = get(q).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{q}");
+            assert!(v["detail"].is_string(), "{q}");
+        }
+        let resp = app.clone().oneshot(Request::get("/api/rules/test").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn changing_custom_probe_target_rolls_back_when_gate_cannot_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        std::env::set_var("MIHOMO_CONFIG_PATH", dir.path().join("m.yaml"));
+        rusqlite::Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,vpn_type,login_method,probe_url,status) VALUES('byo','BYO','custom','byo','https://old.example.test/','logged_in')", []).unwrap();
+        crate::store::add_rule(&db, "byo", "domain", "intra.example.test").unwrap();
+        let app = build_router(state_with_db(dir.path()));
+
+        let response = app.oneshot(Request::builder().method("PATCH")
+            .uri("/api/channels/byo").header("content-type", "application/json")
+            .body(Body::from(r#"{"probe_url":"https://new.example.test/"}"#)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let channel = crate::store::get_channel(&db, "byo").unwrap().unwrap();
+        assert_eq!((channel.probe_url.as_str(), channel.status.as_str(), channel.latency_ms),
+            ("https://old.example.test/", "logged_in", None));
+        let snapshot = crate::config_apply_store::snapshot(&db, false).unwrap();
+        let config = crate::manager::build_mihomo_config_with(serde_yaml::Value::Null,
+            &snapshot.channels, &snapshot.rules, &crate::lifecycle::lost_channels(&db));
+        let lines: Vec<&str> = config["rules"].as_sequence().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(lines.contains(&"DOMAIN-SUFFIX,intra.example.test,ch-byo"), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn cause_route_reports_stopped_runtime_down_and_pull_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (id, status) in [("cause-off", "stopped"), ("cause-pull", "error"), ("cause-other", "error")] {
+            conn.execute("INSERT INTO channels(id,name,vpn_type,status) VALUES(?1,?1,'wireguard',?2)", rusqlite::params![id, status]).unwrap();
+        }
+        crate::events::audit_failed("channel_create", "通道创建失败", serde_json::json!({
+            "target_kind": "channel", "target_id": "cause-pull", "result": "failed",
+            "error": "拉取镜像 vpnmgr/oss-vpn:latest 失败(所有镜像源):mirror.example.test: timeout",
+        }));
+        let get = |app: Router, cid: &'static str| async move {
+            let resp = app.oneshot(Request::get(format!("/api/channels/{cid}/cause")).body(Body::empty()).unwrap()).await.unwrap();
+            let status = resp.status();
+            let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+            (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap())
+        };
+        let app = build_router(state_with_db(dir.path()));
+        assert_eq!(get(app.clone(), "cause-off").await, (StatusCode::OK, serde_json::json!({"code": null, "action": null, "at": null})));
+        let (_, v) = get(app.clone(), "cause-pull").await;
+        assert_eq!((v["code"].as_str(), v["action"].as_str()), (Some("image_pull_failed"), Some("retry")));
+        assert!(v["at"].is_i64());
+        // 没有 docker:诊断拿不到,不猜。
+        assert_eq!(get(app.clone(), "cause-other").await.1, serde_json::json!({"code": "runtime_unknown", "action": "view_logs", "at": null}));
+        assert_eq!(get(app, "cause-none").await.0, StatusCode::NOT_FOUND);
+        // 托管运行环境还没起来:运行环境没起来排在最前,GET 也不会把它拉起。
+        let mut state = state_with_db(dir.path());
+        Arc::make_mut(&mut state.cfg).managed_vm = true;
+        let runtime = state.lifecycle.runtime().clone();
+        let (_, v) = get(build_router(state), "cause-pull").await;
+        assert_eq!((v["code"].as_str(), v["action"].as_str()), (Some("runtime_down"), Some("restart_runtime")));
+        assert_eq!(runtime.snapshot().start_attempt, 0);
+    }
+
+    #[tokio::test]
+    async fn config_file_route_encrypts_content_and_rejects_other_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (id, vtype) in [("wg", "wireguard"), ("ovpn", "openvpn"), ("ec", "easyconnect"), ("busy", "wireguard")] {
+            conn.execute("INSERT INTO channels(id,name,vpn_type,status) VALUES(?1,?1,?2,'error')", rusqlite::params![id, vtype]).unwrap();
+        }
+        let key = crate::store::master_key(dir.path()).unwrap();
+        crate::replacement_store::begin(&db, &key, "busy", "pending", &serde_json::json!({"kind": "initial"})).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let put = |cid: &'static str, body: serde_json::Value| {
+            let app = app.clone();
+            async move {
+                app.oneshot(Request::put(format!("/api/channels/{cid}/config-file")).header("content-type", "application/json")
+                    .body(Body::from(body.to_string())).unwrap()).await.unwrap().status()
+            }
+        };
+        let content = "[Interface]\nPrivateKey = cfgfile-marker-7f3a\nAddress = 10.66.0.2/32\n\n[Peer]\nEndpoint = vpn.example.test:51820\nAllowedIPs = 10.66.0.0/16\n";
+        assert_eq!(put("wg", serde_json::json!({"content": content, "filename": "example.conf"})).await, StatusCode::OK);
+        assert_eq!(put("ovpn", serde_json::json!({"content": "remote vpn.example.test 1194\n", "filename": "example.ovpn"})).await, StatusCode::OK);
+        // 新文件加密落库,解密回来原样。
+        let raw = crate::store::get_config_raw(&db, "wg").unwrap();
+        assert!(raw.contains("config_file") && !raw.contains("cfgfile-marker-7f3a"));
+        assert_eq!(crate::store::get_config(&db, &key, "wg").unwrap()["config_file"], content);
+        // 事件里查不到内容,只有长度和文件名。
+        let (events, _) = crate::events::snapshot(0, usize::MAX, &Default::default());
+        let ours: Vec<_> = events.iter().filter(|e| e.event == "channel_config_file" && e.detail["target_id"] == "wg").collect();
+        assert_eq!(ours.len(), 1);
+        assert_eq!(ours[0].detail["filename"], "example.conf");
+        assert_eq!(ours[0].detail["after"]["length"], content.chars().count());
+        assert!(events.iter().all(|e| !serde_json::to_string(e).unwrap().contains("cfgfile-marker-7f3a")));
+        // 非文件型类型、空内容、类型不对的字段:400;通道不存在:404;替换未完成:409。
+        assert_eq!(put("ec", serde_json::json!({"content": content})).await, StatusCode::BAD_REQUEST);
+        assert_eq!(put("wg", serde_json::json!({"content": "  \n"})).await, StatusCode::BAD_REQUEST);
+        assert_eq!(put("wg", serde_json::json!({})).await, StatusCode::BAD_REQUEST);
+        assert_eq!(put("wg", serde_json::json!({"content": content, "filename": 1})).await, StatusCode::BAD_REQUEST);
+        assert_eq!(put("none", serde_json::json!({"content": content})).await, StatusCode::NOT_FOUND);
+        assert_eq!(put("busy", serde_json::json!({"content": content})).await, StatusCode::CONFLICT);
+        assert!(!crate::store::get_config_raw(&db, "busy").unwrap().contains("config_file"));
+        assert_eq!(crate::store::get_config(&db, &key, "wg").unwrap()["config_file"], content);
+        // 不重建:状态和容器都没动。
+        let ch = crate::store::get_channel(&db, "wg").unwrap().unwrap();
+        assert_eq!((ch.status.as_str(), ch.container_id), ("error", None));
+    }
+
+    #[tokio::test]
+    async fn traffic_today_and_latency_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("vpnmgr.db");
+        crate::store::init(&db).unwrap();
+        rusqlite::Connection::open(&db).unwrap()
+            .execute("INSERT INTO channels(id,name,vpn_type,status) VALUES('lat','lat','wireguard','running')", []).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let get = |uri: &'static str| {
+            let app = app.clone();
+            async move {
+                let resp = app.oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
+                let status = resp.status();
+                let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+                (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default())
+            }
+        };
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        // 还没采样过:不可用,流量为空。
+        assert_eq!(get("/api/traffic/today").await,
+            (StatusCode::OK, serde_json::json!({"date": today, "available": false, "channels": {}})));
+        let mut saved = crate::traffic::Today::default();
+        crate::traffic::accumulate(&mut saved, &serde_json::json!({"connections": [
+            {"id": "x1", "chains": ["ch-lat"], "upload": 12, "download": 34}]}), &today);
+        crate::traffic::save(&crate::traffic::file_path(dir.path()), &saved).unwrap();
+        // 连接累计值只在文件里,不出接口。
+        assert_eq!(get("/api/traffic/today").await.1,
+            serde_json::json!({"date": today, "available": true, "channels": {"lat": {"up": 12, "down": 34}}}));
+        assert_eq!(get("/api/channels/lat/latency").await, (StatusCode::OK, serde_json::json!({"points": []})));
+        assert_eq!(get("/api/channels/none/latency").await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn app_settings_routes_merge_and_forbid_login_item_in_dev_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+        let app = build_router(state_with_db(dir.path()));
+        let call = |req: Request<Body>| {
+            let app = app.clone();
+            async move {
+                let resp = app.oneshot(req).await.unwrap();
+                let status = resp.status();
+                let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+                (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default())
+            }
+        };
+        let put = |body: serde_json::Value| Request::put("/api/app-settings")
+            .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+        let defaults = serde_json::json!({"launch_at_login": false, "auto_connect": false, "keep_running_on_close": true, "resume_channels": []});
+        assert_eq!(call(Request::get("/api/app-settings").body(Body::empty()).unwrap()).await, (StatusCode::OK, defaults));
+        // 只传部分字段:合并,返回全部。
+        let (status, body) = call(put(serde_json::json!({"auto_connect": true}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!({"launch_at_login": false, "auto_connect": true, "keep_running_on_close": true, "resume_channels": []}));
+        let (_, body) = call(put(serde_json::json!({"resume_channels": ["c1"]}))).await;
+        assert_eq!((body["auto_connect"].clone(), body["resume_channels"].clone()), (serde_json::json!(true), serde_json::json!(["c1"])));
+        // 开发模式:改动开机时自动打开返回 403,设置不变。
+        assert_eq!(call(put(serde_json::json!({"launch_at_login": true}))).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(call(put(serde_json::json!({"keep_running_on_close": 0}))).await.0, StatusCode::BAD_REQUEST);
+        let (_, body) = call(Request::get("/api/app-settings").body(Body::empty()).unwrap()).await;
+        assert_eq!(body, serde_json::json!({"launch_at_login": false, "auto_connect": true, "keep_running_on_close": true, "resume_channels": ["c1"]}));
+    }
+
+    #[tokio::test]
+    async fn takeover_routes_report_without_detecting_and_forbid_changes_in_dev_mode() {
+        let call = |app: Router, req: Request<Body>| async move {
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+            (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default())
+        };
+        let get = || Request::get("/api/takeover").body(Body::empty()).unwrap();
+        let put = |body: serde_json::Value| Request::put("/api/takeover")
+            .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+        let idle = |mode: &str| serde_json::json!({
+            "detected_at": null,
+            "mode": mode, "effective": "none", "allowed": false, "clash_running": false, "system_proxy_ok": false,
+            "other_app": {"tun": false, "system_proxy": false},
+            "want": {"tun": mode == "tun", "system_proxy": false}, "tun": {"installed": false, "enabled": false},
+            "system_proxy": {"enabled": false, "ours": false},
+            "domains_via": if mode == "tun" { "none" } else { "system_proxy" }, "action": null,
+        });
+        // 旧身份:方式是 manual,后台不管;开发版通道管家:默认只开虚拟网卡。两者都不检测、PUT 一律 403、不写设置。
+        for profile in [None, Some("tongdao-verify-k11")] {
+            let dir = tempfile::tempdir().unwrap();
+            crate::store::init(&dir.path().join("vpnmgr.db")).unwrap();
+            let mut state = state_with_db(dir.path());
+            if let Some(profile) = profile { Arc::make_mut(&mut state.cfg).vm_profile = profile.into(); }
+            let app = build_router(state);
+            let mode = if profile.is_some() { "tun" } else { "manual" };
+            assert_eq!(call(app.clone(), get()).await, (StatusCode::OK, idle(mode)));
+            assert_eq!(call(app.clone(), put(serde_json::json!({"mode": "tun"}))).await.0, StatusCode::FORBIDDEN);
+            assert_eq!(call(app.clone(), put(serde_json::json!({"system_proxy_ok": true}))).await.0, StatusCode::FORBIDDEN);
+            assert!(!crate::takeover::file_path(dir.path()).exists());
+            assert_eq!(call(app, get()).await, (StatusCode::OK, idle(mode)));
+        }
     }
 }

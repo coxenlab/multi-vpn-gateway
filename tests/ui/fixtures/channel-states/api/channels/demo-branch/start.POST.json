@@ -1,0 +1,6 @@
+{
+  "__status__": 500,
+  "__body__": {
+    "detail": "start failed: wg-quick exited 1"
+  }
+}

@@ -168,6 +168,13 @@ async fn ensure_with_retries(state: &AppState) -> Result<()> {
 }
 
 async fn try_ensure(state: &AppState) -> Result<()> {
+    let record_path = state.cfg.data_dir.join("forward.pid");
+    if state.tunnel.lock().await.is_none() {
+        let ports: Vec<u16> = std::iter::once(Some(&state.cfg.mihomo_host_port))
+            .chain(std::iter::once(state.cfg.mihomo_ctrl_port.as_ref()))
+            .flatten().filter_map(|port| port.parse().ok()).filter(|port| *port != 0).collect();
+        crate::forward_owner::reclaim(&record_path, &state.cfg.vm_profile, Some(&ports)).await?;
+    }
     if crate::health::proxy_serves(&state.cfg.mihomo_host_port).await {
         crate::ev!(debug, "tunnel", "tunnel_ensure_skip", "SSH 转发已可用,无需重建", {});
         return Ok(());
@@ -177,17 +184,20 @@ async fn try_ensure(state: &AppState) -> Result<()> {
     if !cfg.exists() {
         return Err(anyhow!("ssh.config 不存在:{}(VM 未初始化?)", cfg.display()));
     }
-    kill(state).await; // 先回收旧进程,否则新 ssh 绑不上同一个宿主端口
+    kill_confirmed(state).await?; // 先确认旧进程退出,否则新 ssh 绑不上同一个宿主端口
     let mut cmd = Command::new("ssh");
     let forward_summary = fwds.iter()
         .map(|f| format!("127.0.0.1:{}->{}", f.host_port, f.guest))
         .collect::<Vec<_>>().join(",");
     let started = std::time::Instant::now();
-    cmd.args(forward_args(&cfg.display().to_string(), &state.cfg.vm_profile, &fwds))
+    let args = forward_args(&cfg.display().to_string(), &state.cfg.vm_profile, &fwds);
+    cmd.args(&args)
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| anyhow!("拉起 SSH 转发失败: {e}"))?;
+    crate::forward_owner::record(&record_path, child.id().ok_or_else(|| anyhow!("转发进程已退出"))?,
+        &args, &fwds.iter().map(|f| f.host_port).collect::<Vec<_>>()).await?;
     stderr_reset();
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {

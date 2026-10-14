@@ -1,0 +1,80 @@
+{
+  "kind": "vpnmgr-export",
+  "version": 1,
+  "exported_at": "2026-09-28T09:00:00",
+  "channels": [
+    {
+      "name": "总部主线路(示例)",
+      "vpn_type": "easyconnect",
+      "server": "https://vpn.example.test",
+      "ec_ver": "7.6.7",
+      "login_method": "interactive",
+      "username": "demo-user",
+      "probe_url": "",
+      "routing_enabled": true,
+      "config": {"server": "https://vpn.example.test", "username": "demo-user"},
+      "rules": [
+        {"kind": "domain", "pattern": "corp.example.test", "enabled": 1, "note": "", "locked": 0},
+        {"kind": "ip", "pattern": "10.20.0.0/16", "enabled": 1, "note": "", "locked": 0}
+      ]
+    },
+    {
+      "name": "总部备用线路(示例)",
+      "vpn_type": "atrust",
+      "server": "https://vpn2.example.test",
+      "ec_ver": "",
+      "login_method": "interactive",
+      "username": "",
+      "probe_url": "https://erp.example.test/",
+      "routing_enabled": true,
+      "config": {"server": "https://vpn2.example.test"},
+      "rules": [
+        {"kind": "domain", "pattern": "erp.example.test", "enabled": 1, "note": "", "locked": 0}
+      ]
+    },
+    {
+      "name": "分部文件服务(示例)",
+      "vpn_type": "openvpn",
+      "server": "",
+      "ec_ver": "",
+      "login_method": "headless",
+      "username": "",
+      "probe_url": "",
+      "routing_enabled": true,
+      "config": {"config_file": "client\ndev tun\nproto udp\nremote 192.0.2.10 1194\n"},
+      "rules": [
+        {"kind": "domain", "pattern": "files.example.test", "enabled": 1, "note": "", "locked": 0},
+        {"kind": "ip", "pattern": "10.30.0.0/16", "enabled": 0, "note": "", "locked": 0}
+      ]
+    },
+    {
+      "name": "仓库网关线路(示例)",
+      "vpn_type": "fortinet-oc",
+      "server": "https://gw.example.test",
+      "ec_ver": "",
+      "login_method": "headless",
+      "username": "demo-user",
+      "probe_url": "https://wms.example.test/",
+      "routing_enabled": true,
+      "config": {"server": "https://gw.example.test", "username": "demo-user", "password": "example-password"},
+      "rules": [
+        {"kind": "domain", "pattern": "wms.example.test", "enabled": 1, "note": "", "locked": 0},
+        {"kind": "ip", "pattern": "10.40.0.0/16", "enabled": 1, "note": "", "locked": 0}
+      ]
+    },
+    {
+      "name": "测试通道(示例)",
+      "vpn_type": "wireguard",
+      "server": "",
+      "ec_ver": "",
+      "login_method": "headless",
+      "username": "",
+      "probe_url": "",
+      "routing_enabled": true,
+      "config": {"config_file": "[Interface]\nAddress = 10.99.0.2/32\n\n[Peer]\nEndpoint = 192.0.2.20:51820\nAllowedIPs = 192.0.2.0/24\n"},
+      "rules": [
+        {"kind": "ip", "pattern": "192.0.2.0/24", "enabled": 1, "note": "", "locked": 0}
+      ]
+    }
+  ]
+}

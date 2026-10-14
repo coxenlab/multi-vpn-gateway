@@ -1,0 +1,12 @@
+[Unit]
+Description=Channel desktop and installed applications
+Requires=tongdao-display.service
+After=tongdao-display.service
+[Service]
+User=desktop
+Group=desktop
+RuntimeDirectory=tongdao-desktop
+RuntimeDirectoryMode=0700
+Environment=DISPLAY=:0 HOME=/home/desktop XDG_RUNTIME_DIR=/run/tongdao-desktop
+ExecStart=/usr/bin/dbus-run-session -- /usr/local/bin/tongdao-desktop
+Restart=on-failure

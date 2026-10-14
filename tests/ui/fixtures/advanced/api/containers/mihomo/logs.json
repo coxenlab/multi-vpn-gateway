@@ -1,0 +1,6 @@
+{
+  "lines": [
+    "2026-09-28T09:40:00Z INF [TCP] 127.0.0.1:52011 --> corp.example.test:443 match DomainSuffix(corp.example.test) using ch-demo-hq1",
+    "2026-09-28T09:40:02Z WRN [TCP] dial ch-demo-factory1 error: connect refused"
+  ]
+}

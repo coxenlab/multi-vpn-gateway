@@ -1,0 +1,12 @@
+{
+  "status": "running",
+  "connected": false,
+  "latency_ms": null,
+  "checked_at": null,
+  "stale": true,
+  "replacement": null,
+  "blocked": false,
+  "awaiting_target": false,
+  "target": "corp.example.test",
+  "runtime_idle": true
+}

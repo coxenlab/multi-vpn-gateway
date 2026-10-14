@@ -1,4 +1,5 @@
 pub mod config;
+pub mod identity;
 pub mod store;
 pub mod config_apply_store;
 pub mod config_apply;
@@ -6,6 +7,7 @@ pub mod replacement_store;
 pub mod replacement_docker;
 pub mod replacement;
 pub mod docker;
+pub mod runtime_network;
 pub mod vm;
 pub mod vm_image_cache;
 pub mod infra;
@@ -28,6 +30,7 @@ pub mod health;
 pub mod runtime_info;
 pub mod usernet;
 pub mod tunnel;
+pub(crate) mod forward_owner;
 pub mod novnc;
 pub mod events;
 pub mod shutdown;
@@ -43,6 +46,13 @@ pub mod upgrade_switch;
 pub mod image_archive;
 pub mod image_import;
 pub mod installer_upload;
+pub mod verify_target;
+pub mod rule_test;
+pub mod causes;
+pub mod channel_file;
+pub mod traffic;
+pub mod app_settings;
+pub mod takeover;
 
 use std::sync::Arc;
 

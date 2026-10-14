@@ -51,7 +51,7 @@ async fn run() -> anyhow::Result<()> {
     cfg.validate()?;
     if cfg.managed_vm {
         cfg.validate()?;
-        vpnmgr_core::infra::ensure_params(&cfg.data_dir)?;
+        vpnmgr_core::infra::ensure_params_for(&cfg.data_dir, &cfg.identity().port_range)?;
         cfg = Config::load();
     }
     let (listener, state) = app::bootstrap(cfg).await?;

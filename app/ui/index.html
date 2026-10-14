@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>通道管家</title>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/screens/home.css">
+<link rel="stylesheet" href="css/screens/channels.css">
+<link rel="stylesheet" href="css/screens/channel-states.css">
+<link rel="stylesheet" href="css/screens/login.css">
+<link rel="stylesheet" href="css/screens/add.css">
+<link rel="stylesheet" href="css/screens/add-progress.css">
+<link rel="stylesheet" href="css/screens/rules.css">
+<link rel="stylesheet" href="css/screens/conns.css">
+<link rel="stylesheet" href="css/screens/settings.css">
+<link rel="stylesheet" href="css/screens/advanced.css">
+</head>
+<body>
+<div class="app">
+  <nav class="sb" aria-label="主导航">
+    <div class="sb-lights" aria-hidden="true"></div>
+    <div class="brand"><span class="logo"><span data-ic="channels" data-size="16" data-sw="1.7"></span></span>通道管家</div>
+    <a class="sb-i" href="#/home" data-nav="home" title="总览"><span data-ic="home" data-size="18" data-sw="1.5"></span><span>总览</span></a>
+    <a class="sb-i" href="#/channels" data-nav="channels" title="通道"><span data-ic="channels" data-size="18" data-sw="1.5"></span><span>通道</span></a>
+    <a class="sb-i" href="#/rules" data-nav="rules" title="规则"><span data-ic="rules" data-size="18" data-sw="1.5"></span><span>规则</span></a>
+    <a class="sb-i" href="#/conns" data-nav="conns" title="连接"><span data-ic="conns" data-size="18" data-sw="1.5"></span><span>连接</span></a>
+    <div class="sb-sp"></div>
+    <a class="sb-i" href="#/settings" data-nav="settings" title="设置"><span data-ic="gear" data-size="18" data-sw="1.5"></span><span>设置</span></a>
+  </nav>
+  <section class="main">
+    <header class="top" id="top">
+      <span class="sp"></span>
+      <span class="chipb" id="route-chip" role="status" hidden></span>
+      <button class="btn pri" id="top-add" type="button"><span data-ic="plus" data-size="14" data-sw="1.6"></span>添加通道</button>
+    </header>
+    <div class="notice" id="notice" hidden></div>
+    <main class="page" id="page"></main>
+  </section>
+</div>
+<div id="sheet-root"></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

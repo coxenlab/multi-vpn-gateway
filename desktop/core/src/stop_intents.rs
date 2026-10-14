@@ -76,7 +76,9 @@ pub async fn recover_all(state:&AppState)->Result<()> {
     // 遍历已有通道并在锁内重读意图，涵盖 Docker 接通前刚接受的停止请求。
     for channel in store::list_channels(&state.cfg.db_path())? {
         let _guard=state.lifecycle.mutate(&channel.id).await?;
-        apply(state,&channel.id).await?;
+        if let Err(error) = apply(state,&channel.id).await {
+            crate::ev!(warn, "runtime", "stop_recovery_pending", "通道停止尚未确认，保留停止意图并继续恢复其他通道", {"channel_id":channel.id,"error":error.to_string()});
+        }
     }
     Ok(())
 }
@@ -151,12 +153,44 @@ mod tests {
                 }
             });
             let server = tokio::spawn(async move {axum::serve(listener,router).await.unwrap();});
-            let result = recover_all(&state).await;
+            let _guard = state.lifecycle.mutate("c1").await.unwrap();
+            let result = apply(&state,"c1").await;
             let expected = matches!(mode,"success"|"lost_ack"|"missing");
             assert_eq!(result.is_ok(),expected,"{mode}: {result:?}");
             assert_eq!(pending(&db,"c1").unwrap(),!expected,"{mode}");
             assert_eq!(observed.lock().unwrap().1, u32::from(matches!(mode,"success"|"lost_ack"|"still_running")),"{mode}");
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn recovery_preserves_failed_intent_and_continues_other_channels() {
+        let (_dir, state) = state().await;
+        let db = state.cfg.db_path();
+        Connection::open(&db).unwrap().execute(
+            "INSERT INTO channels(id,name,vpn_type,status,container_id) VALUES('c2','second','easyconnect','running',?1)", [&"b".repeat(64)]).unwrap();
+        for cid in ["c1", "c2"] {
+            request(&db, cid).unwrap();
+            store::add_rule(&db, cid, "domain", &format!("{cid}.example")).unwrap();
+        }
+        let original_ticket = ticket(&db, "c1").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        state.set_docker(Some(bollard::Docker::connect_with_http(
+            &format!("http://{}", listener.local_addr().unwrap()), 2, bollard::API_DEFAULT_VERSION).unwrap()));
+        let router = axum::Router::new().fallback(|request: Request<Body>| async move {
+            assert_eq!(request.method(), "GET");
+            if request.uri().path().contains("vpn-c1") {
+                (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"message":"unavailable"})))
+            } else {
+                (StatusCode::NOT_FOUND, axum::Json(json!({"message":"missing"})))
+            }
+        });
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+        recover_all(&state).await.unwrap();
+        assert_eq!(ticket(&db, "c1").unwrap(), original_ticket);
+        assert!(!pending(&db, "c2").unwrap());
+        assert!(store::effective_rules(&db).unwrap().iter().all(|rule| rule.enabled == 0));
+        assert_eq!(state.lifecycle.runtime().snapshot().start_attempt, 0);
+        server.abort();
     }
 }

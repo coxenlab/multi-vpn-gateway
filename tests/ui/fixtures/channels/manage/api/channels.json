@@ -1,0 +1,218 @@
+[
+  {
+    "id": "demo-rd",
+    "name": "华东研发",
+    "vpn_type": "easyconnect",
+    "server": "vpn.rd.example",
+    "ec_ver": "7.6.7",
+    "login_method": "interactive",
+    "username": "zhang.wei",
+    "vnc_password": "vnc-o-rd",
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "http://git.corp.example/",
+    "status": "logged_in",
+    "container_id": "c-demo-rd",
+    "latency_ms": 18,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "logged_in",
+    "domains": [
+      {
+        "id": 1,
+        "channel_id": "demo-rd",
+        "kind": "domain",
+        "pattern": "git.corp.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [
+      {
+        "id": 2,
+        "channel_id": "demo-rd",
+        "kind": "ip",
+        "pattern": "10.20.16.0/24",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-rd",
+    "socks_proxy": "ch-demo-rd",
+    "socks_endpoint": "vpn-demo-rd:1080",
+    "uptime": "4小时12分",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-hq",
+    "name": "总部办公",
+    "vpn_type": "easyconnect",
+    "server": "vpn.hq.example",
+    "ec_ver": "7.6.7",
+    "login_method": "interactive",
+    "username": "li.na",
+    "vnc_password": "vnc-o-rd",
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "http://oa.hq.example/",
+    "status": "running",
+    "container_id": "c-demo-hq",
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "running",
+    "domains": [
+      {
+        "id": 20,
+        "channel_id": "demo-hq",
+        "kind": "domain",
+        "pattern": "oa.hq.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [],
+    "volume_name": "vpndata-demo-hq",
+    "socks_proxy": "ch-demo-hq",
+    "socks_endpoint": "vpn-demo-hq:1080",
+    "uptime": "3分",
+    "stop_pending": false,
+    "replacement": {
+      "can_restore": true,
+      "phase": "awaiting_login"
+    },
+    "blocked": false
+  },
+  {
+    "id": "demo-cloud",
+    "name": "云平台",
+    "vpn_type": "wireguard",
+    "server": "vpn.cloud.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "logged_in",
+    "container_id": "c-demo-cloud",
+    "latency_ms": 24,
+    "config": {
+      "filename": "cloud.conf"
+    },
+    "routing_enabled": false,
+    "configured_status": "logged_in",
+    "domains": [
+      {
+        "id": 3,
+        "channel_id": "demo-cloud",
+        "kind": "domain",
+        "pattern": "console.cloud.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      },
+      {
+        "id": 4,
+        "channel_id": "demo-cloud",
+        "kind": "domain",
+        "pattern": "old-portal.cloud.example",
+        "enabled": 0,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [
+      {
+        "id": 5,
+        "channel_id": "demo-cloud",
+        "kind": "ip",
+        "pattern": "10.30.0.0/16",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-cloud",
+    "socks_proxy": "ch-demo-cloud",
+    "socks_endpoint": "vpn-demo-cloud:1080",
+    "uptime": "1天3小时",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-branch",
+    "name": "新分部",
+    "vpn_type": "wireguard",
+    "server": "vpn.branch.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "running",
+    "container_id": "c-demo-branch",
+    "latency_ms": null,
+    "config": {
+      "filename": "branch.conf"
+    },
+    "routing_enabled": true,
+    "configured_status": "running",
+    "domains": [],
+    "ips": [],
+    "volume_name": "vpndata-demo-branch",
+    "socks_proxy": "ch-demo-branch",
+    "socks_endpoint": "vpn-demo-branch:1080",
+    "uptime": "1分钟",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  },
+  {
+    "id": "demo-vendor",
+    "name": "供应商门户",
+    "vpn_type": "anyconnect",
+    "server": "vpn.vendor.example",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "supply",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "stopped",
+    "container_id": null,
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "stopped",
+    "domains": [
+      {
+        "id": 11,
+        "channel_id": "demo-vendor",
+        "kind": "domain",
+        "pattern": "portal.vendor.example",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "ips": [],
+    "volume_name": "vpndata-demo-vendor",
+    "socks_proxy": "ch-demo-vendor",
+    "socks_endpoint": "vpn-demo-vendor:1080",
+    "uptime": null,
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  }
+]

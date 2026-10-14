@@ -11,6 +11,7 @@
 //! 命门 #7:容器名 `mihomo`(docker 内嵌 DNS 别名),oss 容器据此当解析器、rebuild 据此投递配置。
 
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
@@ -56,9 +57,15 @@ pub struct InfraParams {
     /// `#[serde(default)]`:旧 infra.json 无此字段 → 反序列化为 0,ensure_params 据此补生成并回写。
     #[serde(default)]
     pub ui_port: u16,
+    /// Host DNS listener for the new TUN entry; allocated lazily after activation gates.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tun_dns_port: u16,
     /// external-controller bearer 密钥。
     pub secret: String,
 }
+
+fn is_zero(port: &u16) -> bool { *port == 0 }
+static PARAMS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 把模板里的 `__SECRET__` 换成实际密钥(对照 start.sh 的 sed 渲染)。
 pub fn render_base_config(secret: &str) -> String {
@@ -71,12 +78,12 @@ fn random_secret() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 在 20000-60000 取一个当前空闲、未占用过的高位端口(对照 gen_env.free_high_port)。
-fn free_high_port(used: &mut Vec<u16>) -> Result<u16> {
+/// 在 `range`(按身份,旧身份 20000-59999)取一个当前空闲、未占用过的端口(对照 gen_env.free_high_port)。
+fn free_high_port(used: &mut Vec<u16>, range: &RangeInclusive<u16>) -> Result<u16> {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     for _ in 0..500 {
-        let p = rng.gen_range(20000..60000);
+        let p = rng.gen_range(range.clone());
         if used.contains(&p) {
             continue;
         }
@@ -94,36 +101,12 @@ fn free_high_port(used: &mut Vec<u16>) -> Result<u16> {
 /// 否则用持久化值)。同时设 `MIHOMO_CONFIG_PATH` 为宿主侧工作副本(`<data_dir>/config.yaml`),
 /// rebuild 读它当 base、写回它,再 put_archive 投递进容器。
 pub fn ensure_params(data_dir: &Path) -> Result<InfraParams> {
-    std::fs::create_dir_all(data_dir)?;
-    let pf = data_dir.join("infra.json");
-    let (mut params, mut dirty): (InfraParams, bool) = if pf.exists() {
-        (
-            serde_json::from_str(&std::fs::read_to_string(&pf)?)
-                .map_err(|e| anyhow!("解析 {}: {e}", pf.display()))?,
-            false,
-        )
-    } else {
-        let mut used = Vec::new();
-        (
-            InfraParams {
-                mihomo_host_port: free_high_port(&mut used)?,
-                mihomo_ctrl_port: free_high_port(&mut used)?,
-                ui_port: free_high_port(&mut used)?,
-                secret: random_secret(),
-            },
-            true,
-        )
-    };
-    // 旧 infra.json(serde default → ui_port=0):补一个随机高位、避开已有 mihomo 端口,回写持久化。
-    if params.ui_port == 0 {
-        let mut used = vec![params.mihomo_host_port, params.mihomo_ctrl_port];
-        params.ui_port = free_high_port(&mut used)?;
-        dirty = true;
-    }
-    if dirty {
-        write_0600(&pf, &serde_json::to_string_pretty(&params)?)?;
-    }
+    ensure_params_for(data_dir, &crate::identity::VPNMGR.port_range)
+}
 
+/// 同 [`ensure_params`],首次生成的端口取自 `range`(按身份,见 `Config::identity`)。
+pub fn ensure_params_for(data_dir: &Path, range: &RangeInclusive<u16>) -> Result<InfraParams> {
+    let params = load_or_init_params(data_dir, range)?;
     set_env_if_unset("UI_PORT", &params.ui_port.to_string());
     set_env_if_unset("MIHOMO_HOST_PORT", &params.mihomo_host_port.to_string());
     set_env_if_unset("MIHOMO_CTRL_PORT", &params.mihomo_ctrl_port.to_string());
@@ -136,14 +119,85 @@ pub fn ensure_params(data_dir: &Path) -> Result<InfraParams> {
     Ok(params)
 }
 
+/// 读回 `infra.json`;没有就生成并持久化(旧文件缺 ui_port 时补上)。不碰 env。
+fn load_or_init_params(data_dir: &Path, range: &RangeInclusive<u16>) -> Result<InfraParams> {
+    let _guard = PARAMS_LOCK.lock().unwrap();
+    load_or_init_params_locked(data_dir, range)
+}
+
+fn load_or_init_params_locked(data_dir: &Path, range: &RangeInclusive<u16>) -> Result<InfraParams> {
+    std::fs::create_dir_all(data_dir)?;
+    let pf = data_dir.join("infra.json");
+    let (mut params, mut dirty): (InfraParams, bool) = if pf.exists() {
+        (
+            serde_json::from_str(&std::fs::read_to_string(&pf)?)
+                .map_err(|e| anyhow!("解析 {}: {e}", pf.display()))?,
+            false,
+        )
+    } else {
+        let mut used = Vec::new();
+        (
+            InfraParams {
+                mihomo_host_port: free_high_port(&mut used, range)?,
+                mihomo_ctrl_port: free_high_port(&mut used, range)?,
+                ui_port: free_high_port(&mut used, range)?,
+                tun_dns_port: 0,
+                secret: random_secret(),
+            },
+            true,
+        )
+    };
+    // 旧 infra.json(serde default → ui_port=0):补一个随机高位、避开已有 mihomo 端口,回写持久化。
+    if params.ui_port == 0 {
+        let mut used = vec![params.mihomo_host_port, params.mihomo_ctrl_port, params.tun_dns_port];
+        params.ui_port = free_high_port(&mut used, range)?;
+        dirty = true;
+    }
+    if dirty {
+        write_0600(&pf, &serde_json::to_string_pretty(&params)?)?;
+    }
+    Ok(params)
+}
+
+/// DNS needs both TCP and UDP on the same loopback port. Preserve it across rule
+/// updates: changing it restarts the entry engine and invalidates resolver files.
+pub fn ensure_tun_dns_port(data_dir: &Path, range: &RangeInclusive<u16>) -> Result<u16> {
+    let _guard = PARAMS_LOCK.lock().unwrap();
+    let mut params = load_or_init_params_locked(data_dir, range)?;
+    let used = [params.mihomo_host_port, params.mihomo_ctrl_port, params.ui_port];
+    if params.tun_dns_port != 0 {
+        anyhow::ensure!(range.contains(&params.tun_dns_port) && !used.contains(&params.tun_dns_port),
+            "已保存的 TUN DNS 端口无效或与入口端口冲突");
+        return Ok(params.tun_dns_port);
+    }
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    for _ in 0..500 {
+        let port = rng.gen_range(range.clone());
+        if used.contains(&port) || port < 1024 { continue; }
+        let Ok(_tcp) = std::net::TcpListener::bind(("127.0.0.1", port)) else { continue };
+        let Ok(_udp) = std::net::UdpSocket::bind(("127.0.0.1", port)) else { continue };
+        params.tun_dns_port = port;
+        write_0600(&data_dir.join("infra.json"), &serde_json::to_string_pretty(&params)?)?;
+        return Ok(port);
+    }
+    Err(anyhow!("找不到同时可用于 TCP/UDP 的 TUN DNS 端口"))
+}
+
 /// UI 口被别的进程占了时重摇一个空闲高位口并回写 infra.json(红队 F6:一次随机后写死,
 /// 「重试这一步」永远撞同一个被占端口)。返回新端口;调用方负责同步 env 与 Config。
 pub fn reroll_ui_port(data_dir: &Path) -> Result<u16> {
+    reroll_ui_port_for(data_dir, &crate::identity::VPNMGR.port_range)
+}
+
+/// 同 [`reroll_ui_port`],新端口取自 `range`(按身份)。
+pub fn reroll_ui_port_for(data_dir: &Path, range: &RangeInclusive<u16>) -> Result<u16> {
+    let _guard = PARAMS_LOCK.lock().unwrap();
     let pf = data_dir.join("infra.json");
     let mut params: InfraParams = serde_json::from_str(&std::fs::read_to_string(&pf)?)
         .map_err(|e| anyhow!("解析 {}: {e}", pf.display()))?;
-    let mut used = vec![params.mihomo_host_port, params.mihomo_ctrl_port, params.ui_port];
-    params.ui_port = free_high_port(&mut used)?;
+    let mut used = vec![params.mihomo_host_port, params.mihomo_ctrl_port, params.ui_port, params.tun_dns_port];
+    params.ui_port = free_high_port(&mut used, range)?;
     write_0600(&pf, &serde_json::to_string_pretty(&params)?)?;
     Ok(params.ui_port)
 }
@@ -155,19 +209,7 @@ fn set_env_if_unset(k: &str, v: &str) {
 }
 
 fn write_0600(path: &Path, content: &str) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    f.write_all(content.as_bytes())?;
-    f.flush()?;
-    f.sync_all()?;
-    Ok(())
+    crate::manager::atomic_write_0600(path, content.as_bytes())
 }
 
 /// 容器是否还带着宿主端口映射(旧形态标记)。任何错误 → false(不误触发重建)。
@@ -224,14 +266,16 @@ fn mihomo_container_config(cfg: &Config, image_id: &str) -> ContainerConfig<Stri
 /// 配置投递:先 create(不 start)使卷挂载就绪 → put_archive 基础配置到 `/cfg/config.yaml` →
 /// start。mihomo 启动即读到带 external-controller/secret 的配置,控制 API 立刻在对的端口/密钥上起来。
 /// 启动后由调用方紧随 `manager::rebuild` 把 DB 里的通道/规则并入(命门 #2/#3)。
-/// 首启把打包内置的镜像 tarball docker-load 进 VM。当前只 `vpnmgr/oss-vpn`(自建、registry 拉不到,
-/// 只能 load;byo-desktop 1.15GB 暂不内置 → 用户首次用 byo 时再按需取)。`images_dir` = 打包后的
-/// `Contents/Resources/images`;幂等(镜像已在则跳过)。缺文件/dev 未打包时静默跳过,载入错误交调用方处理。
+/// 首启把打包内置的镜像 tarball docker-load 进 VM。`vpnmgr/oss-vpn` 和
+/// `vpnmgr/byo-desktop` 都是发布必需的自建镜像，不能依赖不存在的公共仓库；`images_dir` =
+/// 打包后的 `Contents/Resources/images`;幂等(镜像已在则跳过)。缺文件/dev 未打包时静默跳过,
+/// 载入错误交调用方处理（正式发布由 build-release.py 保证三份归档齐全）。
 pub async fn ensure_bundled_images(docker: &Docker, images_dir: &Path) -> Result<()> {
     // (镜像名, tarball 文件名)。mihomo 也内置:第 05 步「下载分流内核」从此离线,
     // 镜像源只剩建 EC/aTrust 通道时才需要(红队推演 B1:两个可用源都死时首启锁死)。
     for (image, file) in [
         ("vpnmgr/oss-vpn:latest", "oss-vpn.tar.gz"),
+        ("vpnmgr/byo-desktop:latest", "byo-desktop.tar.gz"),
         (MIHOMO_IMAGE, "mihomo.tar.gz"),
     ] {
         let tarball = images_dir.join(file);
@@ -316,13 +360,17 @@ where
 }
 
 pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
-    docker::create_bridge_network(docker, &cfg.vpn_net).await?;
+    let dns_ip = crate::runtime_network::ensure(docker, cfg).await?;
     ensure_mihomo_image_with_progress(docker, cfg, |_| {}).await?;
 
     // 旧版遗留的「publish 端口」容器必须重建:只要它还 publish,lima 就一直霸占宿主
     // 分流口,app 自持的 SSH 转发绑不上(见 [`crate::tunnel`])。升级后首启走这一次重建。
     let recreated_old_publish = if container_running(docker, MIHOMO_CONTAINER).await {
         if !container_publishes_ports(docker, MIHOMO_CONTAINER).await {
+            if let Some(expected) = dns_ip.as_ref() {
+                anyhow::ensure!(docker::container_ip_on_net(docker, MIHOMO_CONTAINER, &cfg.vpn_net)
+                    .await.as_ref() == Some(expected), "分流组件的 DNS 地址与运行环境不一致，请停止分流组件后重试");
+            }
             return Ok(()); // 已在跑且形态正确,别打扰(保活既有连接;rebuild 仍会刷新规则)
         }
         true
@@ -353,7 +401,16 @@ pub async fn ensure_mihomo(docker: &Docker, cfg: &Config) -> Result<()> {
     let delivered = std::fs::read_to_string(host_path)
         .unwrap_or_else(|_| render_base_config(&cfg.mihomo_secret));
 
-    let config = mihomo_container_config(cfg, &image_id);
+    let mut config = mihomo_container_config(cfg, &image_id);
+    if let Some(ip) = dns_ip {
+        config.networking_config = Some(bollard::container::NetworkingConfig {
+            endpoints_config: [(cfg.vpn_net.clone(), bollard::models::EndpointSettings {
+                ipam_config: Some(bollard::models::EndpointIpamConfig {
+                    ipv4_address: Some(ip), ..Default::default()
+                }), ..Default::default()
+            })].into_iter().collect(),
+        });
+    }
     docker
         .create_container(
             Some(CreateContainerOptions { name: MIHOMO_CONTAINER.to_string(), platform: None }),
@@ -396,6 +453,41 @@ pub async fn wait_mihomo_ctrl(cfg: &Config) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn bundled_generic_desktop_archive_is_loaded_into_runtime() {
+        use axum::{body::{Body, to_bytes}, http::{Method, StatusCode}, response::IntoResponse, Router};
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempfile::tempdir().unwrap();
+        let payload = b"synthetic byo docker archive";
+        std::fs::write(dir.path().join("byo-desktop.tar.gz"), payload).unwrap();
+        let loaded = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let observed = loaded.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let observed = observed.clone();
+            async move {
+                if request.method() == Method::GET {
+                    return StatusCode::NOT_FOUND.into_response();
+                }
+                assert_eq!(request.method(), Method::POST);
+                assert!(request.uri().path().ends_with("/images/load"));
+                let body = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+                observed.lock().unwrap().push(body.to_vec());
+                (StatusCode::OK, Body::from("{\"stream\":\"Loaded image\"}\n")).into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let docker = Docker::connect_with_http(
+            &format!("http://{}", listener.local_addr().unwrap()), 120, bollard::API_DEFAULT_VERSION
+        ).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+
+        ensure_bundled_images(&docker, dir.path()).await.unwrap();
+        server.abort();
+        let _ = server.await;
+        assert_eq!(*loaded.lock().unwrap(), vec![payload.to_vec()]);
+    }
+
     #[test]
     fn render_replaces_secret_placeholder() {
         let out = render_base_config("deadbeef");
@@ -415,8 +507,8 @@ mod tests {
     #[test]
     fn free_ports_are_distinct() {
         let mut used = Vec::new();
-        let a = free_high_port(&mut used).unwrap();
-        let b = free_high_port(&mut used).unwrap();
+        let a = free_high_port(&mut used, &crate::identity::VPNMGR.port_range).unwrap();
+        let b = free_high_port(&mut used, &crate::identity::VPNMGR.port_range).unwrap();
         assert_ne!(a, b);
         assert!((20000..60000).contains(&a));
         assert!((20000..60000).contains(&b));
@@ -442,6 +534,52 @@ mod tests {
             std::env::var("MIHOMO_CTRL_URL").unwrap(),
             format!("http://127.0.0.1:{}", p1.mihomo_ctrl_port)
         );
+    }
+
+    #[test]
+    fn params_for_range_stay_in_range() {
+        let range = crate::identity::TONGDAO.port_range.clone();
+        let dir = tempfile::tempdir().unwrap();
+        // 不走 ensure_params_for:它会改进程 env,和并行的测试互相干扰。
+        let p = load_or_init_params(dir.path(), &range).unwrap();
+        for port in [p.mihomo_host_port, p.mihomo_ctrl_port, p.ui_port] {
+            assert!(range.contains(&port), "{port}");
+        }
+        assert_eq!(load_or_init_params(dir.path(), &range).unwrap().ui_port, p.ui_port);
+        let ui = reroll_ui_port_for(dir.path(), &range).unwrap();
+        assert!(range.contains(&ui) && ui != p.ui_port && ui != p.mihomo_host_port && ui != p.mihomo_ctrl_port);
+    }
+
+    #[test]
+    fn tun_dns_port_is_dual_protocol_persistent_and_excluded_from_ui_reroll() {
+        let dir = tempfile::tempdir().unwrap(); let range = crate::identity::TONGDAO.port_range.clone();
+        let before = load_or_init_params(dir.path(), &range).unwrap();
+        assert!(!std::fs::read_to_string(dir.path().join("infra.json")).unwrap().contains("tun_dns_port"));
+        let port = ensure_tun_dns_port(dir.path(), &range).unwrap();
+        assert!(range.contains(&port));
+        assert!(![before.ui_port, before.mihomo_ctrl_port, before.mihomo_host_port].contains(&port));
+        // Reuse is deliberate even when the running engine now owns the port.
+        let _tcp = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let _udp = std::net::UdpSocket::bind(("127.0.0.1", port)).unwrap();
+        assert_eq!(ensure_tun_dns_port(dir.path(), &range).unwrap(), port);
+        assert_ne!(reroll_ui_port_for(dir.path(), &range).unwrap(), port);
+        let after = load_or_init_params(dir.path(), &range).unwrap();
+        assert_eq!(after.secret, before.secret); assert_eq!(after.tun_dns_port, port);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(dir.path().join("infra.json")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn tun_dns_allocation_rejects_udp_collision_and_invalid_saved_port() {
+        let dir = tempfile::tempdir().unwrap(); let range = crate::identity::TONGDAO.port_range.clone();
+        let mut params = load_or_init_params(dir.path(), &range).unwrap();
+        let udp = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let busy = udp.local_addr().unwrap().port();
+        assert!(ensure_tun_dns_port(dir.path(), &(busy..=busy)).is_err());
+        params.tun_dns_port = params.ui_port;
+        write_0600(&dir.path().join("infra.json"), &serde_json::to_string(&params).unwrap()).unwrap();
+        assert!(ensure_tun_dns_port(dir.path(), &range).is_err());
+        assert_eq!(load_or_init_params(dir.path(), &range).unwrap().tun_dns_port, params.ui_port);
     }
 
     #[test]

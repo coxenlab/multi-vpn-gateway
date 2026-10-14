@@ -214,9 +214,7 @@ impl Watchdog {
             }
             GatewayHealth::TransportDegraded => {
                 // 降级稳态:分流口活着、docker 不可达 = 分流可用,容器管理不可用。
-                // 不折腾(清 gave_up,否则只有 Healthy 能清 → 永久错误红横幅)。
-                self.fail_streak = 0;
-                self.gave_up = false;
+                // 管理链路尚未恢复，保留重试预算；只有 Healthy 才结束本轮故障。
                 Action::None
             }
             // VM/容器层面的问题不在本模块自愈范围。
@@ -473,12 +471,10 @@ async fn vm_side_probe(state: &AppState) -> String {
 
 /// 看门狗 / 启动共用:取 VPN 网段后下发 VM 层守卫;失败只记事件(看门狗下一拍再试)。
 pub async fn ensure_egress_guard(state: crate::AppState, force: bool) -> bool {
-    let result = async {
-        let docker = state.docker().ok_or_else(|| anyhow::anyhow!("Docker 连接不可用"))?;
-        let subnet = crate::docker::network_subnet(&docker, &state.cfg.vpn_net).await
-            .ok_or_else(|| anyhow::anyhow!("取不到 VPN 网段"))?;
-        crate::vm::ensure_egress_guard(&state.cfg.vm_profile, &subnet, force).await
-    }.await;
+    let result = match state.docker() {
+        Some(docker) => apply_egress_guard(&state.cfg, &docker, &state.cfg.db_path(), force).await,
+        None => Err(anyhow::anyhow!("Docker 连接不可用")),
+    };
     let applied = result.is_ok();
     if let Ok(mut snap) = state.health.lock() {
         snap.egress_guard_checked_at = Some(chrono::Utc::now().to_rfc3339());
@@ -489,6 +485,28 @@ pub async fn ensure_egress_guard(state: crate::AppState, force: bool) -> bool {
             "VM 私网出站守卫未下发:不可达目标可能持续占用出站连接", { "error": e.to_string() });
     }
     applied
+}
+
+// 锁覆盖读库到下发：排队的旧任务读取最新规则，不能在新快照之后覆盖回旧快照。
+static GUARD_APPLY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub(crate) async fn apply_egress_guard(cfg: &crate::config::Config, docker: &bollard::Docker,
+    db: &std::path::Path, force: bool) -> anyhow::Result<()> {
+    let _lock = GUARD_APPLY_LOCK.lock().await;
+    let info = crate::docker::network_inspect_with_timeout(docker, &cfg.vpn_net, Duration::from_secs(10)).await?;
+    let subnet = info.ipam.as_ref().and_then(|i| i.config.as_ref())
+        .and_then(|items| items.iter().filter_map(|i| i.subnet.as_ref())
+            .find(|s| s.parse::<ipnet::Ipv4Net>().is_ok()))
+        .ok_or_else(|| anyhow::anyhow!("取不到 VPN 网段"))?;
+    let mut policy = crate::vm::EgressPolicy::default();
+    if !cfg.identity().tun_config_frozen {
+        policy = crate::vm::egress_policy(&crate::store::all_rules(db)?, &crate::store::list_channels(db)?);
+        policy.bridge = crate::docker::network_bridge(&info);
+        if policy.bridge.is_none() {
+            crate::ev!(warn, "vm", "egress_bridge_unknown", "无法识别 VPN 网桥，守卫暂按源网段匹配", {});
+        }
+    }
+    crate::vm::ensure_egress_guard(&cfg.vm_profile, subnet, &policy, force).await
 }
 
 /// VM 出站(usernet)探活:经**独立** SSH 从 VM 内对稳定公网锚点发真实 TCP 建连
@@ -528,27 +546,66 @@ async fn vm_egress_probe(state: &AppState) -> Option<bool> {
     }
 }
 
-/// 传输层自愈(看门狗一级 / 手动修复共用):重建 app 自持的 SSH 转发,
-/// 再把 docker.sock 也经隧道救回、换上新连接 → 下一拍 ping 通,状态收敛回 Healthy。
+/// 传输层自愈(看门狗一级 / 手动修复共用):先确认 Docker 管理链路，
+/// 仅在不可达时建立受管备援，再按实际容器信息重建分流转发。
 ///
 /// 与旧版的关键差别:隧道重建失败**如实抛错**。旧版会拿「端口能 connect」当成功佐证,
 /// 而僵死转发恰好满足那个条件 → 反复误报「已修复」(2026-08-04 事故)。
 pub async fn heal_transport(state: &AppState) -> anyhow::Result<()> {
-    crate::tunnel::ensure(state).await?;
-    // docker.sock 同船获救(实测 2026-07-02:lima 用户在 docker 组,免 sudo 直转)。
-    // 失败不算致命——分流口已通,docker 留给下拍原生 sock 重连或重开 app。
-    let sock = state.cfg.data_dir.join("docker-tun.sock");
-    match crate::vm::spawn_docker_sock_tunnel(&state.cfg.vm_profile, &sock).await {
-        Ok(()) => match tokio::time::timeout(Duration::from_secs(5), crate::docker::connect_at(&sock.display().to_string())).await {
-            Ok(Ok(d)) => {
-                state.set_docker(Some(d));
-                crate::ev!(info, "watchdog", "docker_reconnect", "Docker 已经隧道连接恢复", { "via": "tunnel_sock" });
-            }
-            Ok(Err(e)) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker 隧道连接失败", { "via": "tunnel_sock", "error": e.to_string() }); }
-            Err(_) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker 隧道连接超时", { "via": "tunnel_sock" }); }
-        },
-        Err(e) => { crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker socket 隧道建立失败", { "via": "tunnel_sock", "error": e.to_string() }); }
+    let docker_alive = match state.docker() {
+        Some(docker) => matches!(tokio::time::timeout(Duration::from_secs(2), docker.ping()).await, Ok(Ok(_))),
+        None => false,
+    };
+    if !docker_alive {
+        if let Err(error) = restore_docker_transport(state).await {
+            crate::ev!(warn, "watchdog", "docker_reconnect_failed", "Docker 管理链路恢复失败", {"error":error.to_string()});
+        }
     }
+    crate::tunnel::ensure(state).await
+}
+
+async fn restore_docker_transport(state: &AppState) -> anyhow::Result<()> {
+    let mut owned = state.lifecycle.docker_tunnel.lock().await;
+    let sock = state.cfg.data_dir.join("docker-tun.sock");
+    replace_docker_child(&mut owned, crate::vm::spawn_docker_sock_tunnel(&state.cfg.vm_profile, &sock)).await?;
+    let connected = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(status) = owned.as_mut().unwrap().try_wait()? {
+                anyhow::bail!("Docker 备援隧道已退出: {status}");
+            }
+            if let Ok(Ok(docker)) = tokio::time::timeout(Duration::from_secs(2),
+                crate::docker::connect_at(&sock.display().to_string())).await {
+                return Ok(docker);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }).await.unwrap_or_else(|_| Err(anyhow::anyhow!("Docker 备援隧道就绪超时")));
+    match connected {
+        Ok(docker) => {
+            state.set_docker(Some(docker));
+            crate::ev!(info, "watchdog", "docker_reconnect", "Docker 管理链路已恢复", {"via":"tunnel_sock"});
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(child) = owned.as_mut() { crate::tunnel::stop_child_confirmed(child).await?; }
+            *owned = None;
+            Err(error)
+        }
+    }
+}
+
+async fn replace_docker_child(owned: &mut Option<tokio::process::Child>,
+    spawn: impl std::future::Future<Output = anyhow::Result<tokio::process::Child>>) -> anyhow::Result<()> {
+    if let Some(child) = owned.as_mut() { crate::tunnel::stop_child_confirmed(child).await?; }
+    *owned = None;
+    *owned = Some(spawn.await?);
+    Ok(())
+}
+
+pub(crate) async fn stop_docker_transport(state: &AppState) -> anyhow::Result<()> {
+    let mut owned = state.lifecycle.docker_tunnel.lock().await;
+    if let Some(child) = owned.as_mut() { crate::tunnel::stop_child_confirmed(child).await?; }
+    *owned = None;
     Ok(())
 }
 
@@ -559,6 +616,30 @@ const TICK_SECS: u64 = 20;
 const WAKE_GAP_SECS: u64 = TICK_SECS * 3;
 
 /// 后台修复持有独占权与维护许可，调用方无需阻塞健康采样。
+/// 自动和手动二级修复共用：重启、恢复转发、规则下发与读回缺一不可。
+pub async fn restart_router(state: &AppState) -> anyhow::Result<()> {
+    let docker = state.docker().ok_or_else(|| anyhow::anyhow!("docker 连接不可用"))?;
+    router_recovery_sequence(
+        docker::restart(&docker, infra::MIHOMO_CONTAINER),
+        crate::tunnel::ensure(state),
+        crate::manager::rebuild(&state.cfg, Some(&docker), &state.cfg.db_path()),
+    ).await
+}
+
+async fn router_recovery_sequence(
+    restart: impl std::future::Future<Output = anyhow::Result<()>>,
+    forward: impl std::future::Future<Output = anyhow::Result<()>>,
+    rebuild: impl std::future::Future<Output = String>,
+) -> anyhow::Result<()> {
+    restart.await?;
+    forward.await?;
+    let result = rebuild.await;
+    anyhow::ensure!(result != crate::config_apply::DEFERRED
+        && result.parse::<u16>().ok().is_some_and(|code| (200..300).contains(&code)),
+        "分流路由已重启，但规则同步尚未确认: {result}");
+    Ok(())
+}
+
 fn spawn_repair(
     state: AppState,
     repair: tokio::sync::OwnedMutexGuard<()>,
@@ -604,12 +685,7 @@ fn spawn_repair(
                     return;
                 }
                 if !state.self_heal_enabled() { return; }
-                let result = async {
-                    let d = state.docker().ok_or_else(|| anyhow::anyhow!("docker 连接不可用"))?;
-                    docker::restart(&d, infra::MIHOMO_CONTAINER).await?;
-                    // 容器换了 IP,转发目标随之失效 → 立刻按新 IP 重建。
-                    crate::tunnel::ensure(&state).await
-                }.await;
+                let result = restart_router(&state).await;
                 match result {
                     Ok(()) => { crate::ev!(info, "watchdog", "heal_done", "分流路由重启动作完成", { "action": action.as_str(), "duration_ms": action_started.elapsed().as_millis() as u64 }); }
                     Err(e) => { crate::ev!(error, "watchdog", "heal_failed", "分流路由重启失败", { "action": action.as_str(), "error": e.to_string() }); }
@@ -625,6 +701,16 @@ fn spawn_repair(
 ///
 /// 睡醒立查:Mac 合盖会冻结 VM,醒来后隧道多半已断。靠「墙钟跳变」识别(不依赖 macOS
 /// 唤醒通知,bin 与 Tauri 壳同款行为),识别到就跳过防抖立刻自愈,而不是让用户先撞一次墙。
+#[derive(Default)]
+struct VmDownStreak(u8);
+
+impl VmDownStreak {
+    fn observe(&mut self, health: GatewayHealth) -> bool {
+        self.0 = if health == GatewayHealth::VmDown { self.0.saturating_add(1) } else { 0 };
+        self.0 == 3
+    }
+}
+
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         let mut wd = Watchdog::default();
@@ -635,6 +721,7 @@ pub fn spawn(state: AppState) {
         let mut last_health: Option<GatewayHealth> = None;
         let mut self_heal_was_enabled = true;
         let mut tick_count = 0_u64;
+        let mut vm_down = VmDownStreak::default();
         // 三次观测通常跨约两分钟；只表示检测失败，不作为槽位耗尽的独立证明。
         const EGRESS_FAIL_BEFORE_DEAD: u32 = 3;
         let mut egress_fail_streak = 0_u32;
@@ -642,7 +729,21 @@ pub fn spawn(state: AppState) {
         let mut usernet = crate::usernet::Sampler::default();
         loop {
             tick.tick().await;
+            tick_count = tick_count.wrapping_add(1);
+            if state.lifecycle.runtime().snapshot().phase == crate::runtime_lifecycle::Phase::Closing { break; }
             if !crate::runtime::serving(&state) {
+                crate::entry::tun_renew(&state.cfg, false).await;
+                vm_down = VmDownStreak::default();
+                // 失败/半启动只确认 VM 存活并维护守卫，不探通道、不自动重启底座。
+                let phase = state.lifecycle.runtime().snapshot().phase;
+                if matches!(phase, crate::runtime_lifecycle::Phase::Failed | crate::runtime_lifecycle::Phase::Starting) {
+                    if let Some(_activity) = state.lifecycle.runtime().maintenance() {
+                        if matches!(crate::vm::status(&state.cfg.vm_profile).await, Ok(crate::vm::VmStatus::Running))
+                            && tick_count.is_multiple_of(3) {
+                            ensure_egress_guard(state.clone(), false).await;
+                        }
+                    }
+                }
                 wd = Watchdog::default();
                 last_wall = std::time::SystemTime::now();
                 last_health = None;
@@ -651,7 +752,6 @@ pub fn spawn(state: AppState) {
             }
             let Some(_activity) = state.lifecycle.runtime().maintenance() else { continue; };
             if !crate::runtime::serving(&state) { continue; }
-            tick_count = tick_count.wrapping_add(1);
             let self_heal_enabled = state.self_heal_enabled();
             let self_heal_resumed = self_heal_enabled && !self_heal_was_enabled;
             if self_heal_resumed {
@@ -690,12 +790,22 @@ pub fn spawn(state: AppState) {
             let now_ms = started.elapsed().as_millis() as u64;
             let probe_started = std::time::Instant::now();
             let (health, probe) = check(&state).await;
+            crate::entry::tun_renew(&state.cfg, probe == ProxyProbe::Ok
+                && matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded)).await;
             if let Ok(mut snap) = state.health.lock() {
                 snap.gateway_health = health;
                 snap.gateway_checked_at_ms = Some(chrono::Utc::now().timestamp_millis());
                 snap.proxy_port_reachable = matches!(health, GatewayHealth::Healthy | GatewayHealth::TransportDegraded);
             }
+            if state.cfg.managed_vm && vm_down.observe(health) {
+                state.lifecycle.runtime().unavailable("运行环境连续不可用，请重新连接");
+                crate::ev!(warn, "runtime", "vm_down", "运行环境连续不可用，已暂停后台通道检测，等待显式连接", {});
+                continue;
+            }
             let probe_ms = probe_started.elapsed().as_millis() as u64;
+            if health == GatewayHealth::Healthy && last_health != Some(GatewayHealth::Healthy) {
+                crate::lifecycle::retry_rebuild_after_recovery(&state);
+            }
             crate::ev!(debug, "watchdog", "health_tick", "分流链路体检完成", { "health": health.as_str(), "probe": probe.as_str(), "probe_ms": probe_ms });
             if last_health.is_some_and(|previous| previous != health) {
                 let previous = last_health.unwrap();
@@ -1053,16 +1163,87 @@ mod tests {
     }
 
     #[test]
-    fn transport_degraded_is_stable_and_clears_gave_up() {
-        // 降级稳态:分流口活着、docker 不可达 → 不折腾,且清 gave_up
-        // (否则 gave_up 只有 Healthy 能清、docker 不通时永远到不了 → 永久错误红横幅)。
+    fn transport_degraded_preserves_exhausted_recovery_budget() {
         let mut wd = Watchdog::default();
         assert!(exhaust_ladder(&mut wd, GatewayHealth::TransportDead).0 > 0);
         assert!(wd.gave_up());
+        let failures = wd.fail_streak();
         assert_eq!(wd.decide(GatewayHealth::TransportDegraded, 9_000_000), Action::None);
-        assert!(!wd.gave_up());
+        assert!(wd.gave_up());
+        assert_eq!(wd.fail_streak(), failures);
         // 持续降级不再动作
         assert_eq!(wd.decide(GatewayHealth::TransportDegraded, 9_100_000), Action::None);
+        assert_eq!(wd.decide(GatewayHealth::TransportDead, 9_200_000), Action::None);
+        assert!(wd.gave_up());
+        assert_eq!(wd.decide(GatewayHealth::Healthy, 9_300_000), Action::None);
+        assert!(!wd.gave_up());
+        assert_eq!(wd.fail_streak(), 0);
+    }
+
+    #[tokio::test]
+    async fn three_consecutive_vm_failures_stop_serving_until_explicit_start() {
+        use crate::runtime_lifecycle::{Coordinator, Phase};
+        let runtime = std::sync::Arc::new(Coordinator::default());
+        runtime.ensure(|| async { Ok(()) }).await.unwrap();
+        let mut streak = VmDownStreak::default();
+        for _ in 0..2 {
+            assert!(!streak.observe(GatewayHealth::VmDown));
+            assert_eq!(runtime.snapshot().phase, Phase::Ready);
+        }
+        assert!(!streak.observe(GatewayHealth::TransportDegraded));
+        assert!(!streak.observe(GatewayHealth::VmDown));
+        assert!(!streak.observe(GatewayHealth::VmDown));
+        assert!(streak.observe(GatewayHealth::VmDown));
+        runtime.unavailable("VM down");
+        assert_eq!(runtime.snapshot().phase, Phase::Failed);
+        assert!(!streak.observe(GatewayHealth::VmDown), "emit once per outage");
+        assert!(!streak.observe(GatewayHealth::Healthy));
+        assert_eq!(runtime.snapshot().phase, Phase::Failed, "observation cannot restart the runtime");
+        let attempts = runtime.snapshot().start_attempt;
+        runtime.ensure(|| async { Ok(()) }).await.unwrap();
+        assert_eq!(runtime.snapshot().phase, Phase::Ready);
+        assert_eq!(runtime.snapshot().start_attempt, attempts + 1);
+    }
+
+    #[tokio::test]
+    async fn router_recovery_rebuilds_once_after_restart_and_forward_and_requires_confirmation() {
+        for failure in ["none", "restart", "forward", "readback", "deferred"] {
+            let calls = Mutex::new(Vec::new());
+            let result = router_recovery_sequence(
+                async { calls.lock().unwrap().push("restart"); anyhow::ensure!(failure != "restart", "restart failed"); Ok(()) },
+                async { calls.lock().unwrap().push("forward"); anyhow::ensure!(failure != "forward", "forward failed"); Ok(()) },
+                async { calls.lock().unwrap().push("rebuild"); match failure {
+                    "readback" => "readback failed".into(),
+                    "deferred" => crate::config_apply::DEFERRED.into(),
+                    _ => "204".into(),
+                } },
+            ).await;
+            assert_eq!(result.is_ok(), failure == "none", "{failure}: {result:?}");
+            let expected = match failure { "restart" => vec!["restart"], "forward" => vec!["restart", "forward"],
+                _ => vec!["restart", "forward", "rebuild"] };
+            assert_eq!(*calls.lock().unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn replacing_backup_child_reaps_old_process_before_spawning_and_handles_failure() {
+        let spawn = || tokio::process::Command::new("/bin/sleep").arg("60").kill_on_drop(true).spawn().map_err(anyhow::Error::from);
+        let mut owned = None;
+        replace_docker_child(&mut owned, async { spawn() }).await.unwrap();
+        let first_pid = owned.as_ref().unwrap().id().unwrap();
+        replace_docker_child(&mut owned, async {
+            let status = tokio::process::Command::new("/bin/kill").args(["-0", &first_pid.to_string()])
+                .stderr(std::process::Stdio::null()).status().await.unwrap();
+            assert!(!status.success(), "previous owned process must already be reaped");
+            spawn()
+        }).await.unwrap();
+        assert_ne!(owned.as_ref().unwrap().id(), Some(first_pid));
+        let second_pid = owned.as_ref().unwrap().id().unwrap();
+        assert!(replace_docker_child(&mut owned, async { anyhow::bail!("spawn fixture failed") }).await.is_err());
+        assert!(owned.is_none());
+        let status = tokio::process::Command::new("/bin/kill").args(["-0", &second_pid.to_string()])
+            .stderr(std::process::Stdio::null()).status().await.unwrap();
+        assert!(!status.success());
     }
 
     #[test]

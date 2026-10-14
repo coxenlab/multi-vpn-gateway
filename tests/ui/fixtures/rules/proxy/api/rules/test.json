@@ -1,0 +1,9 @@
+{
+  "q": "erp.vendor.example",
+  "kind": "domain",
+  "normalized": "erp.vendor.example",
+  "result": "direct",
+  "rule": null,
+  "channel": null,
+  "reachable": null
+}

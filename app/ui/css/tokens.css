@@ -1,0 +1,56 @@
+/* 通道管家 · 样式变量。全应用的颜色只在这里定义。
+   一个品牌色（靛蓝）加绿、橙、红三种状态色；其余是它们的浅底和中性色。 */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+
+  --ink: #1b1c2a;
+  --ink-2: #6b6f85;
+  --ink-3: #a3a7ba;
+  --line: rgba(30, 32, 70, .08);
+  --fill: rgba(30, 32, 70, .05);
+  --fill-2: rgba(30, 32, 70, .09);
+
+  --brand: #5457e6;
+  --brand-ink: #4043c9;
+  --brand-soft: rgba(84, 87, 230, .1);
+
+  --ok: #22a565;
+  --ok-ink: #178a52;
+  --wait: #e89a10;
+  --wait-ink: #a96a00;
+  --bad: #e5484d;
+  --bad-ink: #c5292f;
+  --off: #a3a7ba;
+
+  --card: #ffffff;
+  --r-card: 18px;
+  --sh-card: 0 0 0 1px rgba(30, 32, 70, .04), 0 1px 2px rgba(30, 32, 70, .04), 0 10px 28px rgba(50, 54, 120, .07);
+
+  /* 以下取值原来直接写在原型的各个类里，挪到这里统一管理 */
+  --on-brand: #ffffff;
+  --bg: #f3f4fa;
+  --bg-a: #e6e8fb;
+  --bg-b: #f7e9f1;
+  --bg-c: #e7f1fb;
+  --logo-a: #7a7dff;
+  --logo-b: #4a4dd8;
+  --sheet: #f6f7fc;
+  --wait-bg: #fff7e8;
+  --bad-bg: #fdf0f0;
+  --memo: #fffaeb;
+  --memo-ink: #5a4a1c;
+  --log-ink: #3a3d52;
+  --remote-a: #454c5e;
+  --remote-b: #2a2e3a;
+
+  /* 流向图的深色面板 */
+  --map-bg: #0d131f;
+  --map-grid: rgba(255, 255, 255, .035);
+  --map-node: #161e2c;
+  --map-node-line: rgba(255, 255, 255, .11);
+  --map-ink: #eef2f8;
+  --map-ink-2: #8a96a8;
+  --map-ip: #9a9cff;
+  --map-domain: #2dd4bf;
+  --map-rest: #a3adbd;
+}

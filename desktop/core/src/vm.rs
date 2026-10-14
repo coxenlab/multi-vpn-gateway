@@ -5,12 +5,12 @@
 //! 命门 #4 不受影响:sock 是 unix domain socket,UI/转发端口仍只绑 127.0.0.1。
 //! 命门隔离:`--activate=false` 不改用户 active docker context;专属 profile 与 `default` 互不干扰。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -21,9 +21,74 @@ pub enum VmStatus {
     Stopped,
 }
 
-/// 纯:docker.sock 路径 = `<home>/.colima/<profile>/docker.sock`。
+/// 纯:运行环境根目录 = `<home>/<身份的 colima_home_rel>`;旧身份是 colima 默认的 `<home>/.colima`。
+/// 通道管家放在 `~/.tongdao/colima`:与旧应用不共用 `_lima`(网络定义、出站进程),
+/// 且不放 Application Support 下(路径太长,lima 的套接字路径有 104 字节上限)。
+pub fn colima_home_in(home: impl AsRef<Path>, profile: &str) -> PathBuf {
+    home.as_ref().join(crate::identity::for_profile(profile).colima_home_rel.unwrap_or(".colima"))
+}
+
+/// 运行环境根目录(读 `$HOME`)。
+pub fn colima_home(profile: &str) -> PathBuf {
+    colima_home_in(std::env::var("HOME").unwrap_or_default(), profile)
+}
+
+/// 纯:该 profile 的 `colima` 命令。通道管家身份设 `COLIMA_HOME`(= [`colima_home_in`]);
+/// 旧身份不设,与改动前相同。
+fn colima_command_in(home: &str, profile: &str) -> Command {
+    colima_command_with_debug(home, profile, std::env::var("GODEBUG").ok().as_deref())
+}
+
+/// Only the new runtime's descendants bypass macOS supplemental resolver files.
+/// gvisor-tap-vsock uses net.Resolver{PreferGo:false}; forcing the Go path avoids
+/// re-reading our /etc/resolver fake-IP domains for a container's upstream query.
+/// Keep other Go options (notably CPU compatibility workarounds) intact.
+fn usernet_godebug(inherited: Option<&str>) -> String {
+    let mut options: Vec<_> = inherited.unwrap_or("").split(',').map(str::trim)
+        .filter(|s| !s.is_empty() && !s.starts_with("netdns=")).collect();
+    options.push("netdns=go");
+    options.join(",")
+}
+
+fn colima_command_with_debug(home: &str, profile: &str, inherited: Option<&str>) -> Command {
+    let mut cmd = Command::new("colima");
+    if crate::identity::for_profile(profile).colima_home_rel.is_some() {
+        cmd.env("COLIMA_HOME", colima_home_in(home, profile));
+        cmd.env("LIMA_HOME", colima_home_in(home, profile).join("_lima"));
+        cmd.env("GODEBUG", usernet_godebug(inherited));
+    }
+    cmd
+}
+
+fn prepare_colima_home_in(home: &Path, profile: &str) -> Result<()> {
+    let Some(relative) = crate::identity::for_profile(profile).colima_home_rel else { return Ok(()) };
+    anyhow::ensure!(home.is_absolute() && home.is_dir(), "无法定位独立运行环境的主目录");
+    let mut path = home.to_path_buf();
+    for component in Path::new(relative).components() {
+        anyhow::ensure!(matches!(component, std::path::Component::Normal(_)), "运行环境目录配置无效");
+        path.push(component);
+        match std::fs::create_dir(&path) {
+            Ok(()) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(error) => return Err(error.into()),
+        }
+        anyhow::ensure!(std::fs::symlink_metadata(&path)?.file_type().is_dir(),
+            "独立运行环境目录不可用或是符号链接: {}", path.display());
+    }
+    Ok(())
+}
+
+fn colima_command(profile: &str) -> Result<Command> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    // Colima 0.10.3 ignores a nonexistent COLIMA_HOME and silently falls back
+    // to ~/.colima. Establish our directory before *any* command can do that.
+    prepare_colima_home_in(Path::new(&home), profile)?;
+    Ok(colima_command_in(&home, profile))
+}
+
+/// 纯:docker.sock 路径 = `<运行环境根目录>/<profile>/docker.sock`。
 pub fn socket_path_in(home: &str, profile: &str) -> PathBuf {
-    PathBuf::from(home).join(".colima").join(profile).join("docker.sock")
+    colima_home_in(home, profile).join(profile).join("docker.sock")
 }
 
 /// docker.sock 路径(读 `$HOME`)。对照 colima status 输出的 "docker socket"。
@@ -38,8 +103,7 @@ pub fn docker_host(profile: &str) -> String {
 
 /// 纯:lima 实例目录(colima 实例的 lima 名 = `colima-<profile>`)下的 ssh.config。
 pub fn ssh_config_path_in(home: &str, profile: &str) -> PathBuf {
-    PathBuf::from(home)
-        .join(".colima")
+    colima_home_in(home, profile)
         .join("_lima")
         .join(format!("colima-{profile}"))
         .join("ssh.config")
@@ -84,6 +148,69 @@ pub async fn ssh_reachable(profile: &str) -> bool {
     )
 }
 
+const GENERIC_APPARMOR_PROFILE: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/tongdao-generic.apparmor"));
+const GENERIC_APPARMOR_INSTALL_SCRIPT: &str = r#"set -e
+enabled=$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || true)
+[ "$enabled" = Y ] || { echo 'AppArmor is unavailable' >&2; exit 41; }
+command -v apparmor_parser >/dev/null 2>&1 || { echo 'apparmor_parser is unavailable' >&2; exit 42; }
+tmp=$(mktemp /tmp/tongdao-generic-apparmor.XXXXXX)
+dst=/etc/apparmor.d/.tongdao-generic.$$
+trap 'rm -f "$tmp"; sudo -n rm -f "$dst"' EXIT
+cat >"$tmp"
+sudo -n install -D -m 0644 "$tmp" "$dst"
+sudo -n mv -f "$dst" /etc/apparmor.d/tongdao-generic
+sudo -n apparmor_parser -r /etc/apparmor.d/tongdao-generic
+sudo -n grep -q '^tongdao-generic ' /sys/kernel/security/apparmor/profiles
+sudo -n systemctl is-enabled --quiet apparmor.service || sudo -n systemctl enable apparmor.service
+echo TONGDAO_GENERIC_APPARMOR_OK"#;
+
+/// 为完整 init 的通用桌面容器装载最小 AppArmor 策略。
+///
+/// 策略只允许 systemd 启动所需的私有 cgroup2 remount；不存在 AppArmor、解析器、免密
+/// VM sudo 或加载确认时都失败关闭，绝不退回 `unconfined`。调用方只在托管 VM 中准备
+/// `systemd: true` 的 custom 通道时调用，普通 VPN 容器不依赖此能力。
+pub async fn ensure_generic_apparmor(profile: &str) -> Result<()> {
+    let cfg = ssh_config_path(profile);
+    if !cfg.exists() {
+        return Err(anyhow!("ssh config 不存在: {}", cfg.display()));
+    }
+    let mut child = Command::new("ssh")
+        .kill_on_drop(true)
+        .args([
+            "-F", &cfg.display().to_string(),
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=5",
+            &format!("lima-colima-{profile}"),
+            "--", GENERIC_APPARMOR_INSTALL_SCRIPT,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| anyhow!("启动 AppArmor 配置命令失败: {error}"))?;
+    let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("无法写入 AppArmor 配置"))?;
+    stdin.write_all(GENERIC_APPARMOR_PROFILE.as_bytes()).await
+        .map_err(|error| anyhow!("写入 AppArmor 配置失败: {error}"))?;
+    stdin.shutdown().await.map_err(|error| anyhow!("结束 AppArmor 配置输入失败: {error}"))?;
+    drop(stdin);
+    let out = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
+        .await
+        .map_err(|_| anyhow!("装载通用容器 AppArmor 配置超时(20s)"))?
+        .map_err(|error| anyhow!("等待 AppArmor 配置命令失败: {error}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() || !stdout.lines().any(|line| line == "TONGDAO_GENERIC_APPARMOR_OK") {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(anyhow!(
+            "通用安装环境需要 AppArmor 限定策略，当前 VM 无法安全加载: {}",
+            stderr.trim().lines().last().unwrap_or("未确认策略已生效")
+        ));
+    }
+    Ok(())
+}
+
 /// 纯:docker.sock 备援隧道参数(unix streamlocal 转发;`StreamLocalBindUnlink` 覆盖陈死本地 sock)。
 pub fn socket_tunnel_args(ssh_config: &str, profile: &str, local_sock: &str, remote_sock: &str) -> Vec<String> {
     let mut a: Vec<String> = [
@@ -95,7 +222,7 @@ pub fn socket_tunnel_args(ssh_config: &str, profile: &str, local_sock: &str, rem
         "-o", "ConnectTimeout=10",
         "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=8",
-        "-fN",
+        "-N",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -110,7 +237,7 @@ pub fn socket_tunnel_args(ssh_config: &str, profile: &str, local_sock: &str, rem
 /// sock 路径(lima 用户在 docker 组、免 sudo,实测 2026-07-02)。成功后 `docker::connect_at`
 /// 重建连接换入 AppState → 下一拍 ping 通,状态从 TransportDead 收敛回 Healthy。
 /// ⚠️ local_sock 须短路径(unix sun_path 上限 104 字节),放 data_dir 下。
-pub async fn spawn_docker_sock_tunnel(profile: &str, local_sock: &std::path::Path) -> Result<()> {
+pub async fn spawn_docker_sock_tunnel(profile: &str, local_sock: &std::path::Path) -> Result<tokio::process::Child> {
     let cfg = ssh_config_path(profile);
     if !cfg.exists() {
         return Err(anyhow!("ssh.config 不存在:{}(VM 未初始化?)", cfg.display()));
@@ -122,15 +249,8 @@ pub async fn spawn_docker_sock_tunnel(profile: &str, local_sock: &std::path::Pat
         &local_sock.display().to_string(),
         "/var/run/docker.sock",
     ))
-    .kill_on_drop(true);
-    let st = tokio::time::timeout(Duration::from_secs(30), cmd.status())
-        .await
-        .map_err(|_| anyhow!("docker.sock 隧道建立超时(30s)"))?
-        .map_err(|e| anyhow!("ssh 启动失败: {e}"))?;
-    if !st.success() {
-        return Err(anyhow!("docker.sock 隧道建立失败(exit {:?})", st.code()));
-    }
-    Ok(())
+    .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    cmd.spawn().map_err(|e| anyhow!("ssh 启动失败: {e}"))
 }
 
 /// colima 是否在 PATH 上(后续版本将 sidecar 内置)。
@@ -143,25 +263,33 @@ pub async fn colima_present() -> bool {
         .unwrap_or(false)
 }
 
-/// `colima status --profile p`:exit 0 = Running,否则 Stopped(含不存在)。
-pub async fn status(profile: &str) -> VmStatus {
-    let ok = Command::new("colima")
-        .args(["status", "--profile", profile])
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if ok {
-        VmStatus::Running
-    } else {
-        VmStatus::Stopped
+/// 限时等待并回收自己启动的进程；超时不能解释为虚拟机已停止。
+async fn command_status(mut command: Command, budget: Duration, label: &str) -> Result<std::process::ExitStatus> {
+    // 外壳可能先关日志管道；避免 Go 子进程向已关闭的 stdout/stderr 写入而提前 SIGPIPE。
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .kill_on_drop(true).spawn().map_err(|e| anyhow!("{label}: {e}"))?;
+    match tokio::time::timeout(budget, child.wait()).await {
+        Ok(result) => result.map_err(|e| anyhow!("{label}: {e}")),
+        Err(_) => {
+            let _ = child.kill().await;
+            crate::ev!(warn, "vm", "command_timeout", "运行环境命令超时", { "command": label });
+            Err(anyhow!("{label} 超时"))
+        }
     }
+}
+
+/// exit 0 = Running，正常返回非零 = Stopped；命令失败或超时返回 Err。
+pub async fn status(profile: &str) -> Result<VmStatus> {
+    let mut cmd = colima_command(profile)?;
+    cmd.args(["status", "--profile", profile]);
+    let result = command_status(cmd, Duration::from_secs(15), "colima status").await?;
+    Ok(if result.success() { VmStatus::Running } else { VmStatus::Stopped })
 }
 
 /// 用于释放确认：命令失败、缺少目标、未知状态都不能当作已停止。
 pub async fn stopped_confirmed(profile: &str) -> Result<bool> {
     let output = tokio::time::timeout(Duration::from_secs(8),
-        Command::new("colima").args(["list", "--json"]).kill_on_drop(true).output()).await??;
+        colima_command(profile)?.args(["list", "--json"]).kill_on_drop(true).output()).await??;
     anyhow::ensure!(output.status.success(), "无法读取虚拟机列表");
     stopped_from_listing(&String::from_utf8(output.stdout)?, profile)
 }
@@ -252,9 +380,29 @@ where
     if !colima_present().await {
         return Err(anyhow!("未找到 colima(请先安装;后续版本会随 app 内置打包)"));
     }
-    let mut command = Command::new("colima");
+    let mut command = colima_command(profile)?;
     command.args(start_args(profile, enable_rosetta));
-    run_start_command(command, on_progress).await
+    run_start_command(command, on_progress).await?;
+    ensure_guest_dns(profile).await
+}
+
+// The bundled minimal image has networkd DNS configuration but no resolved
+// service. Repair only its dangling stub link; working/custom resolvers survive.
+const GUEST_DNS_REPAIR: &str = include_str!("guest_dns_repair.sh");
+
+pub(crate) async fn ensure_guest_dns(profile: &str) -> Result<()> {
+    if crate::identity::for_profile(profile).colima_home_rel.is_none() {
+        return Ok(());
+    }
+    let mut command = colima_command(profile)?;
+    let script = format!("sudo -n sh <<'TONGDAO_GUEST_DNS_SCRIPT'\n{GUEST_DNS_REPAIR}\nTONGDAO_GUEST_DNS_SCRIPT");
+    command.args(["--profile", profile, "ssh", "--", "sh", "-c", &script]);
+    let output = tokio::time::timeout(Duration::from_secs(20),
+        command.kill_on_drop(true).output()).await
+        .map_err(|_| anyhow!("运行环境 DNS 检查超时"))??;
+    anyhow::ensure!(output.status.success(), "运行环境 DNS 初始化失败: {}",
+        String::from_utf8_lossy(&output.stderr).trim());
+    Ok(())
 }
 
 async fn run_start_command<F>(mut command: Command, mut on_progress: F) -> Result<()>
@@ -402,9 +550,39 @@ pub async fn install_rosetta() -> Result<bool> {
 const EGRESS_CHAIN: &str = "VPNMGR_EGRESS";
 const PRIVATE_NETS: [&str; 4] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EgressPolicy {
+    pub bound: Vec<String>,
+    pub gateways: Vec<String>,
+    pub bridge: Option<String>,
+}
+
+/// 使用原始启用规则，不随通道停止、掉线或暂停分流而撤掉防回环保护。
+pub fn egress_policy(rules: &[crate::store::Rule], channels: &[crate::store::ChannelPublic]) -> EgressPolicy {
+    let mut bound = std::collections::BTreeSet::from(["198.18.0.0/15".to_owned()]);
+    for r in rules.iter().filter(|r| r.enabled != 0 && r.kind == "ip") {
+        if let Some((_, pattern)) = crate::webutil::normalize_stored_rule(&r.kind, &r.pattern) {
+            if let Ok(net) = pattern.parse::<ipnet::Ipv4Net>() { bound.insert(net.trunc().to_string()); }
+        }
+    }
+    let gateways: std::collections::BTreeSet<_> = channels.iter()
+        .filter_map(|c| c.server.trim().parse::<std::net::Ipv4Addr>().ok())
+        .map(|ip| format!("{ip}/32")).collect();
+    EgressPolicy { bound: bound.into_iter().collect(), gateways: gateways.into_iter().collect(), bridge: None }
+}
+
+pub fn valid_bridge(name: &str) -> bool {
+    !name.is_empty() && name.len() < 16 && !name.starts_with('-')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+}
+
 /// 合成在 VM 内执行的守卫脚本(纯函数,便于测)。`vpn_subnet` = docker VPN 网段;`exempt` =
 /// 额外放行的目标网段(宿主直连局域网)。只在 COMMIT 时替换本链,失败保留旧规则。
 pub fn egress_guard_script(vpn_subnet: &str, exempt: &[String]) -> String {
+    egress_guard_script_with(vpn_subnet, exempt, &EgressPolicy::default())
+}
+
+pub fn egress_guard_script_with(vpn_subnet: &str, exempt: &[String], policy: &EgressPolicy) -> String {
     let mut sh = String::from("set -e\nIPT='sudo -n iptables -w 5'\n");
     // VM 侧锁覆盖 restore 与跳转检查,避免两个 app/SSH 调用交错插入重复跳转。
     sh.push_str("exec 9>/tmp/vpnmgr-egress.lock\nflock -w 10 9\n");
@@ -416,6 +594,13 @@ pub fn egress_guard_script(vpn_subnet: &str, exempt: &[String]) -> String {
         "-A {c} -d $VMSUB -j RETURN\n",
         c = EGRESS_CHAIN
     ));
+    for gateway in &policy.gateways {
+        sh.push_str(&format!("-A {EGRESS_CHAIN} -d {gateway} -j RETURN\n"));
+    }
+    for n in &policy.bound {
+        sh.push_str(&format!("-A {EGRESS_CHAIN} -d {n} -p tcp -j REJECT --reject-with tcp-reset\n"));
+        sh.push_str(&format!("-A {EGRESS_CHAIN} -d {n} -j REJECT --reject-with icmp-net-unreachable\n"));
+    }
     for e in exempt {
         sh.push_str(&format!("-A {c} -d {e} -j RETURN\n", c = EGRESS_CHAIN));
     }
@@ -424,10 +609,19 @@ pub fn egress_guard_script(vpn_subnet: &str, exempt: &[String]) -> String {
         sh.push_str(&format!("-A {c} -d {n} -j REJECT --reject-with icmp-net-unreachable\n", c = EGRESS_CHAIN));
     }
     sh.push_str("COMMIT\nVPNMGR_RULES\n");
-    sh.push_str(&format!(
+    if let Some(bridge) = &policy.bridge {
+        for rule in [format!("-i {bridge} -s {vpn_subnet} -j {EGRESS_CHAIN}"),
+            format!("-i {bridge} ! -s {vpn_subnet} -j DROP")] {
+            sh.push_str(&format!("$IPT -C DOCKER-USER {rule} 2>/dev/null || $IPT -I DOCKER-USER 1 {rule}\n"));
+        }
+        // 先装好按接口的两条，再删旧版仅按源地址的跳转；重跑不会增加重复项。
+        sh.push_str(&format!("while $IPT -C DOCKER-USER -s {vpn_subnet} -j {EGRESS_CHAIN} 2>/dev/null; do\n$IPT -D DOCKER-USER -s {vpn_subnet} -j {EGRESS_CHAIN}\ndone\necho VPNMGR_EGRESS_OK"));
+    } else {
+        sh.push_str(&format!(
         "$IPT -C DOCKER-USER -s {s} -j {c} 2>/dev/null || $IPT -I DOCKER-USER 1 -s {s} -j {c}; echo VPNMGR_EGRESS_OK",
         s = vpn_subnet, c = EGRESS_CHAIN
-    ));
+        ));
+    }
     sh
 }
 
@@ -477,8 +671,12 @@ static EGRESS_GUARDS: std::sync::LazyLock<std::sync::Mutex<std::collections::Has
 /// 每次调用都实际下发守卫,缓存仅用于日志去重。按 profile 串行,VM 重建也不跳过。
 /// `force` 只要求记录成功事件。经 ssh 进 VM 用 `sudo -n iptables`;
 /// 成功判据是脚本末尾回显的标记(脚本 `set -e`,任一步失败即无标记)。
-pub async fn ensure_egress_guard(profile: &str, vpn_subnet: &str, force: bool) -> Result<()> {
+pub async fn ensure_egress_guard(profile: &str, vpn_subnet: &str, policy: &EgressPolicy, force: bool) -> Result<()> {
     let _: ipnet::Ipv4Net = vpn_subnet.parse().map_err(|_| anyhow!("无效 VPN IPv4 网段"))?;
+    for net in policy.bound.iter().chain(&policy.gateways) {
+        let _: ipnet::Ipv4Net = net.parse().map_err(|_| anyhow!("无效守卫目标网段"))?;
+    }
+    anyhow::ensure!(policy.bridge.as_deref().is_none_or(valid_bridge), "无效 VPN 网桥名");
     let guard = EGRESS_GUARDS.lock().map_err(|_| anyhow!("守卫状态锁不可用"))?
         .entry(profile.to_owned()).or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(String::new())))
         .clone();
@@ -488,7 +686,7 @@ pub async fn ensure_egress_guard(profile: &str, vpn_subnet: &str, force: bool) -
         return Err(anyhow!("ssh config 不存在: {}", cfg.display()));
     }
     let exempt = host_lan_subnets().await;
-    let script = egress_guard_script(vpn_subnet, &exempt);
+    let script = egress_guard_script_with(vpn_subnet, &exempt, policy);
     let out = tokio::time::timeout(
         Duration::from_secs(20),
         Command::new("ssh")
@@ -523,23 +721,24 @@ pub async fn ensure_egress_guard(profile: &str, vpn_subnet: &str, force: bool) -
 
 /// 确保 VM 在跑(已 Running 则跳过 start)。
 pub async fn ensure_running(profile: &str) -> Result<()> {
-    if status(profile).await == VmStatus::Running {
-        return Ok(());
+    if status(profile).await? == VmStatus::Running {
+        return ensure_guest_dns(profile).await;
     }
     start(profile).await
 }
 
 /// 停 VM。用于传输层坏死时的自动恢复(停→冷起,实测 2026-07-02 该路径 ~15s 满血)。
 pub async fn stop(profile: &str) -> Result<()> {
-    let st = Command::new("colima")
-        .args(["stop", profile])
-        // Native launchers can close their log pipes before cleanup. Go treats writes
-        // to a closed inherited stderr/stdout as SIGPIPE and exits before stopping VM.
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .kill_on_drop(true)
-        .status()
-        .await
-        .map_err(|e| anyhow!("colima stop {profile}: {e}"))?;
+    let mut command = colima_command(profile)?;
+    command.args(["stop", profile]);
+    let st = match command_status(command, Duration::from_secs(60), "colima stop").await {
+        Ok(status) => status,
+        Err(error) => {
+            // 写操作结果不明只读回一次，不能重复 stop。
+            if stopped_confirmed(profile).await.unwrap_or(false) { return Ok(()); }
+            return Err(error);
+        }
+    };
     if !st.success() {
         return Err(anyhow!("colima stop {profile} 失败(exit {:?})", st.code()));
     }
@@ -570,6 +769,71 @@ pub async fn wait_docker_ready(profile: &str, timeout_secs: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_apparmor_only_allows_scoped_cgroup_remount() {
+        assert!(GENERIC_APPARMOR_PROFILE.contains("profile tongdao-generic"));
+        assert!(GENERIC_APPARMOR_PROFILE.contains(
+            "mount options=(rw,nosuid,nodev,noexec,remount,relatime) -> /sys/fs/cgroup/"
+        ));
+        assert!(GENERIC_APPARMOR_PROFILE.contains("mount options=(rw,rslave) -> /,"));
+        assert!(GENERIC_APPARMOR_PROFILE.contains("mount options=(rw,rslave) -> /dev/,"));
+        assert!(GENERIC_APPARMOR_PROFILE.contains(
+            "mount fstype=tmpfs options=(rw,nosuid,nodev,noexec) tmpfs -> /dev/shm/,"
+        ));
+        assert!(GENERIC_APPARMOR_PROFILE.contains(
+            "mount options=(rw,rbind) / -> /run/systemd/unit-root/,"
+        ));
+        assert!(!GENERIC_APPARMOR_PROFILE.contains("unconfined"));
+        assert!(!GENERIC_APPARMOR_PROFILE.contains("mount -> /tmp"));
+        assert!(!GENERIC_APPARMOR_PROFILE.contains("/** rw,"));
+        assert!(GENERIC_APPARMOR_INSTALL_SCRIPT.contains(
+            "install -D -m 0644 \"$tmp\" \"$dst\""
+        ));
+        assert!(GENERIC_APPARMOR_INSTALL_SCRIPT.contains(
+            "mv -f \"$dst\" /etc/apparmor.d/tongdao-generic"
+        ));
+        assert!(GENERIC_APPARMOR_INSTALL_SCRIPT.contains(
+            "apparmor_parser -r /etc/apparmor.d/tongdao-generic"
+        ));
+        assert!(GENERIC_APPARMOR_INSTALL_SCRIPT.contains("is-enabled --quiet apparmor.service"));
+    }
+
+    #[test]
+    fn guest_dns_repairs_only_known_dangling_stub_and_preserves_custom_dns() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("etc")).unwrap();
+        std::fs::create_dir_all(root.path().join("run/systemd/network")).unwrap();
+        let resolver = root.path().join("etc/resolv.conf");
+        let network = root.path().join("run/systemd/network/10-netplan-eth0.network");
+        let run = || {
+            let script = GUEST_DNS_REPAIR.replacen("root=/", "root=$1", 1);
+            let mut child = std::process::Command::new("sh")
+                .args(["-s", "--"]).arg(root.path())
+                .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().unwrap();
+            child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+            child.wait().unwrap().success()
+        };
+        std::os::unix::fs::symlink("../run/systemd/resolve/stub-resolv.conf", &resolver).unwrap();
+        for invalid in ["DNS=999.1.2.3\n", "DNS=1.2.3.4\nDNS=2.3.4.5\n", "DNS=garbage\n", ""] {
+            std::fs::write(&network, invalid).unwrap();
+            assert!(!run());
+            assert!(std::fs::symlink_metadata(&resolver).unwrap().file_type().is_symlink());
+        }
+        std::fs::write(&network, "[Network]\nDNS=192.168.5.2\n").unwrap();
+        assert!(run());
+        assert_eq!(std::fs::read_to_string(&resolver).unwrap(), "nameserver 192.168.5.2\n");
+        assert!(std::fs::read_link(root.path().join("etc/resolv.conf.tongdao-original")).is_ok());
+        std::fs::write(&resolver, "nameserver 10.20.30.40\n").unwrap();
+        assert!(run());
+        assert_eq!(std::fs::read_to_string(&resolver).unwrap(), "nameserver 10.20.30.40\n");
+        std::fs::remove_file(&resolver).unwrap();
+        std::os::unix::fs::symlink("custom-missing", &resolver).unwrap();
+        assert!(run());
+        assert_eq!(std::fs::read_link(&resolver).unwrap(), PathBuf::from("custom-missing"));
+    }
 
     #[test]
     fn release_confirmation_requires_explicit_target_status() {
@@ -610,6 +874,44 @@ mod tests {
     }
 
     #[test]
+    fn guard_bound_targets_precede_lan_exemptions_and_check_source_interface() {
+        let policy = EgressPolicy { bound: vec!["192.168.0.99/32".into(), "198.18.0.0/15".into()],
+            gateways: vec!["192.168.0.1/32".into()], bridge: Some("br-123456abcdef".into()) };
+        let sh = egress_guard_script_with("172.18.0.0/16", &["192.168.0.0/24".into()], &policy);
+        let pos = |s: &str| sh.find(s).unwrap();
+        assert!(pos("-d 172.18.0.0/16 -j RETURN") < pos("-d $VMSUB -j RETURN"));
+        assert!(pos("-d $VMSUB -j RETURN") < pos("-d 192.168.0.1/32 -j RETURN"));
+        assert!(pos("-d 192.168.0.1/32 -j RETURN") < pos("-d 192.168.0.99/32 -p tcp -j REJECT"));
+        assert!(pos("-d 198.18.0.0/15 -j REJECT") < pos("-d 192.168.0.0/24 -j RETURN"));
+        assert!(pos("-d 192.168.0.0/24 -j RETURN") < pos("-d 10.0.0.0/8 -p tcp -j REJECT"));
+        assert!(sh.contains("-i br-123456abcdef -s 172.18.0.0/16 -j VPNMGR_EGRESS"));
+        assert!(sh.contains("-i br-123456abcdef ! -s 172.18.0.0/16 -j DROP"));
+        assert!(sh.contains("-D DOCKER-USER -s 172.18.0.0/16 -j VPNMGR_EGRESS"));
+        let fallback = egress_guard_script_with("172.18.0.0/16", &[], &EgressPolicy { bridge: None, ..policy });
+        assert!(!fallback.contains("-i br-") && !fallback.contains("-j DROP"));
+        assert!(fallback.contains("-C DOCKER-USER -s 172.18.0.0/16 -j VPNMGR_EGRESS"));
+        assert!(fallback.contains("-d 198.18.0.0/15 -j REJECT"));
+        // 只解析脚本语法，不执行任何 sudo、iptables、接口或宿主命令。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("guard.sh");
+        for script in [sh, fallback] {
+            std::fs::write(&path, script).unwrap();
+            assert!(std::process::Command::new("/bin/bash").arg("-n").arg(&path).status().unwrap().success());
+        }
+    }
+
+    #[test]
+    fn docker_bridge_uses_explicit_name_or_valid_network_id() {
+        let network = |value| serde_json::from_value::<bollard::models::Network>(value).unwrap();
+        assert_eq!(crate::docker::network_bridge(&network(serde_json::json!({"Id":"123456abcdef9999"}))).as_deref(), Some("br-123456abcdef"));
+        assert_eq!(crate::docker::network_bridge(&network(serde_json::json!({"Id":"123456abcdef9999", "Options":{"com.docker.network.bridge.name":"vpn-bridge"}}))).as_deref(), Some("vpn-bridge"));
+        for value in [serde_json::json!({}), serde_json::json!({"Id":"bad"}),
+            serde_json::json!({"Id":"zzzzzzzzzzzz"}), serde_json::json!({"Options":{"com.docker.network.bridge.name":"x;touch /tmp/oops"}})] {
+            assert!(crate::docker::network_bridge(&network(value)).is_none());
+        }
+    }
+
+    #[test]
     fn parse_host_lan_subnets_from_ifconfig() {
         let out = "lo0: flags=8049<UP,LOOPBACK> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n\
 en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 192.168.7.14 netmask 0xffffff00 broadcast 192.168.7.255\n\
@@ -629,6 +931,102 @@ en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n"
         );
     }
 
+    #[test]
+    fn tongdao_paths_live_under_own_root() {
+        for profile in ["tongdao", "tongdao-dev", "tongdao-verify-x"] {
+            for p in [
+                colima_home_in("/Users/x", profile),
+                socket_path_in("/Users/x", profile),
+                ssh_config_path_in("/Users/x", profile),
+            ] {
+                assert!(p.starts_with("/Users/x/.tongdao/colima"), "{}", p.display());
+                assert!(!p.to_string_lossy().contains("/.colima"), "{}", p.display());
+            }
+        }
+        assert_eq!(socket_path_in("/Users/x", "tongdao"), PathBuf::from("/Users/x/.tongdao/colima/tongdao/docker.sock"));
+        assert_eq!(
+            ssh_config_path_in("/Users/x", "tongdao-dev"),
+            PathBuf::from("/Users/x/.tongdao/colima/_lima/colima-tongdao-dev/ssh.config")
+        );
+    }
+
+    #[test]
+    fn legacy_paths_unchanged() {
+        for profile in ["vpnmgr", "vpnmgr-dev", "default"] {
+            assert_eq!(colima_home_in("/Users/x", profile), PathBuf::from("/Users/x/.colima"));
+            assert_eq!(
+                socket_path_in("/Users/x", profile),
+                PathBuf::from(format!("/Users/x/.colima/{profile}/docker.sock"))
+            );
+            assert_eq!(
+                ssh_config_path_in("/Users/x", profile),
+                PathBuf::from(format!("/Users/x/.colima/_lima/colima-{profile}/ssh.config"))
+            );
+        }
+    }
+
+    fn envs(cmd: &Command) -> Vec<(String, Option<String>)> {
+        cmd.as_std()
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned())))
+            .collect()
+    }
+
+    #[test]
+    fn colima_home_env_only_for_tongdao() {
+        // 只构造、不执行。
+        for profile in ["tongdao", "tongdao-dev"] {
+            let cmd = colima_command_with_debug("/Users/x", profile, None);
+            assert_eq!(cmd.as_std().get_program(), "colima");
+            assert_eq!(envs(&cmd), vec![("COLIMA_HOME".to_string(), Some("/Users/x/.tongdao/colima".to_string())),
+                ("GODEBUG".to_string(), Some("netdns=go".to_string())),
+                ("LIMA_HOME".to_string(), Some("/Users/x/.tongdao/colima/_lima".to_string()))]);
+        }
+        for profile in ["vpnmgr", "vpnmgr-dev"] {
+            assert!(envs(&colima_command_in("/Users/x", profile)).is_empty(), "{profile}");
+        }
+        // 读 $HOME 的版本与 colima_home 一致。
+        let home = colima_home("tongdao-dev").display().to_string();
+        assert!(home.ends_with("/.tongdao/colima"));
+        assert_eq!(envs(&colima_command("tongdao-dev").unwrap()), vec![("COLIMA_HOME".to_string(), Some(home.clone())),
+            ("GODEBUG".to_string(), Some(usernet_godebug(std::env::var("GODEBUG").ok().as_deref()))),
+            ("LIMA_HOME".to_string(), Some(format!("{home}/_lima")))]);
+        assert!(envs(&colima_command("vpnmgr").unwrap()).is_empty());
+    }
+
+    #[test]
+    fn runtime_dns_mode_is_scoped_and_preserves_unrelated_go_options() {
+        assert_eq!(usernet_godebug(None), "netdns=go");
+        assert_eq!(usernet_godebug(Some("cpu.avx2=off,netdns=cgo+2,madvdontneed=1,netdns=go+1")),
+            "cpu.avx2=off,madvdontneed=1,netdns=go");
+        for profile in ["tongdao", "tongdao-dev", "tongdao-verify-dns"] {
+            let cmd = colima_command_with_debug("/Users/x", profile, Some("cpu.avx2=off,netdns=cgo"));
+            assert!(envs(&cmd).contains(&("GODEBUG".into(), Some("cpu.avx2=off,netdns=go".into()))));
+        }
+        for profile in ["default", "vpnmgr", "vpnmgr-dev"] {
+            assert!(envs(&colima_command_with_debug("/Users/x", profile, Some("netdns=cgo"))).is_empty());
+        }
+    }
+
+    #[test]
+    fn new_runtime_home_exists_before_cli_and_cannot_alias_legacy() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join(".colima"); std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("sentinel"), "unchanged").unwrap();
+        prepare_colima_home_in(root.path(), "tongdao-verify-home").unwrap();
+        let ours = colima_home_in(root.path(), "tongdao-verify-home");
+        assert!(ours.is_dir());
+        assert_eq!(std::fs::read_dir(&old).unwrap().count(), 1);
+        std::fs::remove_dir(&ours).unwrap();
+        std::os::unix::fs::symlink(&old, &ours).unwrap();
+        assert!(prepare_colima_home_in(root.path(), "tongdao").is_err());
+        assert_eq!(std::fs::read_to_string(old.join("sentinel")).unwrap(), "unchanged");
+        let empty = tempfile::tempdir().unwrap();
+        prepare_colima_home_in(empty.path(), "vpnmgr").unwrap();
+        assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
+        assert!(prepare_colima_home_in(Path::new(""), "tongdao").is_err());
+    }
+
 
     #[test]
     fn socket_tunnel_args_shape() {
@@ -636,7 +1034,8 @@ en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n"
         assert!(a.contains(&"StreamLocalBindUnlink=yes".to_string()), "须能覆盖陈死本地 sock");
         assert!(a.contains(&"ControlMaster=no".to_string()), "独立连接,不依赖 hostagent 主连接");
         assert!(a.contains(&"/tmp/dt.sock:/var/run/docker.sock".to_string()));
-        assert!(a.contains(&"-fN".to_string()));
+        assert!(a.contains(&"-N".to_string()));
+        assert!(!a.iter().any(|arg| arg.contains("-f")));
         assert_eq!(a.last().unwrap(), "lima-colima-vpnmgr");
     }
 
@@ -692,6 +1091,23 @@ en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n"
         assert!(run_start_command(command, |_| {}).await.unwrap_err().to_string().contains("运行诊断"));
     }
 
+    #[tokio::test]
+    async fn command_timeout_reaps_only_its_owned_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("pid");
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "echo $$ > \"$1\"; exec /bin/sleep 60", "fixture"]).arg(&pid_path);
+        let error = command_status(command, Duration::from_secs(2), "fixture").await.unwrap_err();
+        assert!(error.to_string().contains("超时"));
+        let pid = std::fs::read_to_string(pid_path).unwrap();
+        let alive = std::process::Command::new("/bin/kill").args(["-0", pid.trim()])
+            .stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success();
+        assert!(!alive, "owned child remains alive after timeout");
+        let mut failed = Command::new("/bin/sh");
+        failed.args(["-c", "exit 7"]);
+        assert_eq!(command_status(failed, Duration::from_secs(2), "fixture").await.unwrap().code(), Some(7));
+    }
+
     #[test]
     fn start_args_omit_rosetta_after_user_skips() {
         let with = start_args("vpnmgr", true);
@@ -708,6 +1124,6 @@ en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n"
     #[tokio::test]
     #[ignore] // needs colima installed
     async fn status_of_absent_profile_is_stopped() {
-        assert_eq!(status("definitely-no-such-profile").await, VmStatus::Stopped);
+        assert_eq!(status("definitely-no-such-profile").await.unwrap(), VmStatus::Stopped);
     }
 }

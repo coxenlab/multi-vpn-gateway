@@ -146,6 +146,11 @@ pub async fn persist_container(docker: &bollard::Docker, name: &str, content: &[
     Ok(())
 }
 
+fn needs_dns_flush(verified: bool, previous_revision: i64, revision: i64, error: Option<&str>) -> bool {
+    verified && (previous_revision != revision
+        || error.is_some_and(|error| !matches!(error, "delivery_failed" | "write_failed")))
+}
+
 pub async fn apply(cfg: &Config, docker: Option<&bollard::Docker>, db: &Path) -> Result<String> {
     let _lock = application_lock(db).await?;
     let path = crate::manager::mihomo_config_path();
@@ -159,7 +164,8 @@ pub async fn apply(cfg: &Config, docker: Option<&bollard::Docker>, db: &Path) ->
     let mut prepared = None;
     for _ in 0..8 {
         let snapshot = journal::snapshot(db, off)?;
-        let config = crate::manager::build_mihomo_config(base.clone(), &snapshot.channels, &snapshot.rules);
+        let config = crate::manager::build_mihomo_config_with(base.clone(), &snapshot.channels, &snapshot.rules,
+            &crate::lifecycle::lost_channels(db));
         let digest = fingerprint(&config)?;
         if let Ok(ticket) = journal::prepare(db, snapshot.revision, off, &digest) { prepared = Some((config, ticket)); break; }
     }
@@ -171,7 +177,7 @@ pub async fn apply(cfg: &Config, docker: Option<&bollard::Docker>, db: &Path) ->
     let stamped = stamp(&config, &ticket)?;
     let yaml = serde_yaml::to_string(&stamped)?;
     let mut verified = readback(&config, &ticket, cfg).await.unwrap_or(false);
-    let needs_flush = verified && (previous.desired_revision != ticket.revision || previous.last_error.is_some());
+    let needs_flush = needs_dns_flush(verified, previous.desired_revision, ticket.revision, previous.last_error.as_deref());
     let mut reload_failed = false;
     if !verified {
         let response = reqwest::Client::new().put(format!("{}/configs", cfg.mihomo_ctrl_url)).query(&[("force", "true")])
@@ -234,6 +240,17 @@ pub async fn apply(cfg: &Config, docker: Option<&bollard::Docker>, db: &Path) ->
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn retrying_startup_file_delivery_does_not_flush_live_dns() {
+        for error in ["delivery_failed", "write_failed"] {
+            assert!(!needs_dns_flush(true, 7, 7, Some(error)));
+            assert!(needs_dns_flush(true, 7, 8, Some(error)), "new rules still invalidate addresses");
+        }
+        assert!(needs_dns_flush(true, 7, 7, Some("dns_flush_failed")));
+        assert!(!needs_dns_flush(true, 7, 7, None));
+        assert!(!needs_dns_flush(false, 7, 8, Some("dns_flush_failed")), "unverified rules cannot flush caches");
+    }
 
     #[test]
     fn fingerprint_is_order_independent_and_matches_python_scalar_encoding() {

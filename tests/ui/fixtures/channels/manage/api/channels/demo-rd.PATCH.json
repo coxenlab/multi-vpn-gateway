@@ -1,0 +1,33 @@
+{
+  "id": "demo-rd",
+  "name": "华东研发二部",
+  "vpn_type": "easyconnect",
+  "server": "vpn2.rd.example",
+  "ec_ver": "7.6.7",
+  "login_method": "interactive",
+  "username": "zhang.wei",
+  "vnc_password": "vnc-o-rd",
+  "mac": null,
+  "novnc_port": null,
+  "probe_url": "http://git.corp.example/",
+  "status": "logged_in",
+  "container_id": "c-demo-rd",
+  "latency_ms": 18,
+  "config": {},
+  "routing_enabled": true,
+  "stop_pending": false,
+  "replacement": null,
+  "saved": true,
+  "deferred": false,
+  "config_application": {
+    "applied_generation": 3,
+    "available": true,
+    "desired_generation": 3,
+    "desired_revision": 21,
+    "last_error": null,
+    "pending": false,
+    "scope": "managed_rules_proxies",
+    "source_revision": 21,
+    "verified_at": 1789999988000
+  }
+}

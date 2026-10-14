@@ -39,7 +39,7 @@ pytest tests/                           # adapters / api / clash / dockerhub / m
 
 - 接口以源码为准:Web 端点见 `app/main.py`,桌面专用端点见 `desktop/core/src/server.rs`;README 不再维护接口表。
 - 提交信息沿用 `type(scope): 摘要`(feat / fix / test / docs / chore)。
-- 前端设计系统见 [`docs/development.md`](./docs/development.md) 的「前端设计系统」一节,保持 Neutral Modern,不要 AI-slop。
+- 前端设计系统见 [`docs/development.md`](./docs/development.md) 的「前端设计系统」一节,沿用现有主题与组件。
 
 ## 绝不能破坏的命门(详见 [`docs/development.md`](./docs/development.md))
 

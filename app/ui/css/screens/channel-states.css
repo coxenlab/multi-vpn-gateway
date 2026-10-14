@@ -1,0 +1,13 @@
+/* 通道 · 还没验证（06）与出错（08） */
+.cs { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+.verdict > .cs-acts { flex: none; display: flex; gap: 8px; }
+.cs-url { display: flex; gap: 10px; margin-top: 4px; }
+.cs-url .field { flex: 1; height: 36px; border-radius: 11px; }
+.cs-url .btn { height: 36px; border-radius: 11px; }
+.cs-foot { font-size: 11.5px; margin-top: 8px; }
+.cs-result { margin-top: 10px; }
+.cs-result .st { white-space: normal; align-items: flex-start; }
+.cs-result .st i { margin-top: 5px; }
+.cs-rules { max-height: 240px; overflow: auto; }
+.cs-logs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cs-logs .logs { flex: 1; min-height: 0; }

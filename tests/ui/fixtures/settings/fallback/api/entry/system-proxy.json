@@ -1,0 +1,7 @@
+{
+  "supported": true,
+  "service": "Wi-Fi",
+  "url": "http://127.0.0.1:47230/entry/proxy.pac",
+  "enabled": true,
+  "is_ours": true
+}

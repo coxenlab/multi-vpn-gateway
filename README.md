@@ -25,33 +25,37 @@ your Clash ──(rule match)──▶ vpn-router
       one container per VPN ── SOCKS5 exit ──▶ corporate intranet
 ```
 
-- **Login**: GUI clients such as EasyConnect / aTrust are logged in through a
-  noVNC window in your browser; headless clients (OpenConnect, OpenVPN,
+- **Login**: GUI clients such as EasyConnect / aTrust are logged in by hand in
+  a login window (noVNC); headless clients (OpenConnect, OpenVPN,
   WireGuard, …) log in with saved credentials.
 - **Connected means reachable**: a channel counts as connected only when a
   probe through its SOCKS5 exit reaches your intranet check address.
-- **No Clash?** Point your system or browser proxy at this tool (PAC or system
-  proxy): matched traffic goes through a VPN, everything else stays direct.
+- **No Clash?** The app takes over with a virtual interface and the system
+  proxy: matched traffic goes through a VPN, everything else stays direct.
 
 ## Install
 
-### macOS app (recommended)
+### macOS app "Tongdao" (recommended)
 
 1. Download a `.dmg` from the [latest release](https://github.com/coxenlab/multi-vpn-gateway/releases/latest):
-   `lite` (recommended) downloads the VM image on first launch; `with-vm`
-   bundles it and is larger.
-2. Open the `.dmg` and drag `vpnmgr.app` into Applications.
+   `with-vm` (recommended) bundles the Linux VM image; `lite` is smaller and
+   downloads the VM image on first launch.
+2. Open the `.dmg` and drag `Tongdao.app` into Applications.
 3. The app is ad-hoc signed and not notarized, so Gatekeeper blocks the first
    launch. Clear the quarantine attribute:
 
    ```bash
-   xattr -dr com.apple.quarantine /Applications/vpnmgr.app
+   xattr -dr com.apple.quarantine /Applications/Tongdao.app
    ```
 
 Requires Apple Silicon and macOS 14+. The app bundles its own Linux VM, so no
 Docker installation is needed. It installs a privileged helper running as root
-to manage the route entry and system proxy; verify the SHA-256 from the release
-first. To build from source, see [`desktop/native/README.md`](./desktop/native/README.md).
+to manage the virtual interface and system proxy; verify the SHA-256 from the
+release first.
+
+The legacy 1.3.x app `vpnmgr.app` can stay installed alongside Tongdao; move
+channels with Settings → Backup → Export in the old app, then import them in
+Tongdao. To build from source, see [`desktop/tongdao/README.md`](./desktop/tongdao/README.md).
 
 ### Docker Compose (self-hosted)
 
@@ -65,24 +69,17 @@ docker compose down   # stop
 All ports bind to `127.0.0.1`; see `.env` for `UI_PORT` (web UI) and
 `MIHOMO_PORT` (point your Clash here).
 
-### Prebuilt client images
-
-[Container downloads](./downloads/containers/README.md) provides a Hillstone
-Secure Connect Linux arm64 image with import instructions.
-
 ## Supported VPNs
 
-| Type | Login | Clients |
+| Type | Login | Notes |
 |---|---|---|
-| EasyConnect / aTrust | in the browser | upstream [hagb](https://github.com/Hagb/docker-easyconnect) images |
+| EasyConnect / aTrust | in the login window | upstream [hagb](https://github.com/Hagb/docker-easyconnect) images |
 | Open protocols | automatic | AnyConnect, GlobalProtect, Fortinet, Juniper / Pulse, openfortivpn, OpenVPN, WireGuard |
-| Hillstone Secure Connect | in the browser | prebuilt image, see above |
-| Custom | in the browser | a Linux desktop where you install any VPN client yourself; best effort |
+| Generic install | in the login window | drag in the vendor's official Linux package (`.deb`, or a script / AppImage); it is installed and launched inside the container — e.g. Hillstone Secure Connect |
 
-The custom type suits ordinary Linux clients that bring their own tun device
-and use network-only authentication. Clients that need systemd daemons,
-hardware tokens / smart cards, or exist only for Windows / macOS are not
-supported.
+Generic install suits Linux clients that bring their own tun device and use
+network-only authentication. RPM packages, hardware tokens / smart cards, and
+clients that exist only for Windows / macOS are not supported.
 
 ## Security
 

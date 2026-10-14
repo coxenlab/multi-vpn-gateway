@@ -3,7 +3,47 @@ use std::{collections::HashMap, time::Duration};
 use anyhow::{anyhow, ensure, Result};
 use bollard::{Docker, container::{RenameContainerOptions, UpdateContainerOptions, StartContainerOptions, StopContainerOptions, ListContainersOptions}, models::{ContainerInspectResponse, RestartPolicy, RestartPolicyNameEnum}};
 use serde_json::{json, Map, Value};
-use crate::{AppState, store::{self, ChannelPublic}, manager, registry, replacement_store::{self as journal, Record, AppliedRuntime}, replacement_docker::{self as resources, Owner}};
+use crate::{AppState, store::{self, ChannelPublic}, manager, registry, verify_target, replacement_store::{self as journal, Record, AppliedRuntime}, replacement_docker::{self as resources, Owner}};
+
+#[derive(Default)]
+struct CleanupRetry { running: bool, due: Option<std::time::Instant> }
+impl CleanupRetry {
+    fn begin(&mut self, now: std::time::Instant) -> bool {
+        if self.running || self.due.is_some_and(|due| now < due) { return false; }
+        self.running = true;
+        true
+    }
+    fn failed(&mut self, now: std::time::Instant) {
+        self.running = false;
+        self.due = Some(now + Duration::from_secs(60));
+    }
+}
+type CleanupKey = (std::path::PathBuf, String, String);
+static CLEANUP_RETRIES: std::sync::LazyLock<std::sync::Mutex<HashMap<CleanupKey, CleanupRetry>>> = std::sync::LazyLock::new(Default::default);
+
+/// 探活只安排一个清理任务；失败后同一条替换记录至少等待 60 秒。
+/// 显式恢复/删除仍走 cleanup，不被后台退避挡住。
+pub fn schedule_cleanup(st: &AppState, cid: &str) {
+    let db = st.cfg.db_path();
+    let Ok(key) = store::master_key(&st.cfg.data_dir) else { return; };
+    let Ok(Some(record)) = journal::get(&db, &key, cid) else { return; };
+    let identity = (db, cid.to_string(), record.operation_id);
+    if !CLEANUP_RETRIES.lock().unwrap().entry(identity.clone()).or_default().begin(std::time::Instant::now()) { return; }
+    let st = st.clone();
+    tokio::spawn(async move {
+        let result = async {
+            let _guard = st.lifecycle.maintenance_access(&identity.1).await.ok_or_else(|| anyhow!("运行环境正在释放"))?;
+            // 排队期间记录可能已替换，不用旧任务清理新记录。
+            if journal::get(&identity.0, &key, &identity.1)?.is_none_or(|record| record.operation_id != identity.2) { return Ok(()); }
+            cleanup(&st, &identity.1).await
+        }.await;
+        let mut retries = CLEANUP_RETRIES.lock().unwrap();
+        if let Err(error) = result {
+            retries.entry(identity.clone()).or_default().failed(std::time::Instant::now());
+            crate::ev!(warn,"replacement","cleanup_pending","旧资源清理待重试",{"cid":identity.1,"error":error.to_string()});
+        } else { retries.remove(&identity); }
+    });
+}
 
 fn owner(record: &Record, restore: bool) -> Owner {
     Owner { channel: record.channel_id.clone(), operation: format!("{}{}", record.operation_id, if restore { "-restore" } else { "" }) }
@@ -111,6 +151,12 @@ fn validate_source(info: &ContainerInspectResponse, cid: &str, volume: &str) -> 
     Ok(())
 }
 
+/// 替换后是否停在待登录确认(保留旧实例,探活成功才提交)。没有验证目标时永远等不到探活成功,
+/// 直接提交;提交不等于登录成功,状态仍由探活决定。
+fn awaiting_login(connected: bool, has_target: bool, old_exists: bool, source_exists: bool, fields_changed: bool) -> bool {
+    !connected && has_target && (old_exists || source_exists || fields_changed)
+}
+
 /// 调用前已拿通道变更锁。没有旧实例时仍使用候选和持久化记录。
 pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Value>, force_start: bool) -> Result<()> {
     let docker = st.docker().ok_or_else(|| anyhow!("docker unavailable"))?;
@@ -185,12 +231,22 @@ pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Val
         rename(&docker, &candidate, &owner.candidate_name(), &canonical).await?;
         let record = advance(st, &key, &record, "validating", json!({}))?;
         let (mut connected, mut latency) = (false, None);
+        // 没有可信的验证目标(没填地址时类型出口没绑隧道或没有可用规则,或握手目标本进程里还没成功过)时
+        // 不探活、不等登录确认。
+        let target = match verify_target::pick(&desired, &store::list_rules(&db, &ch.id)?) {
+            Some(target) if st.lifecycle.verified_target(&ch.id, &target).await => Some(target),
+            _ => None,
+        };
         if payload["start"] == true {
             set_running(&docker, &candidate, true).await?;
             initialize(&docker, &desired, &config).await?;
-            if spec.runtime == "oss" || desired.login_method == "headless" {
+            if let Some(target) = target.as_ref().filter(|_| spec.runtime == "oss" || desired.login_method == "headless") {
                 for attempt in 0..3 {
-                    (connected, latency) = manager::probe(Some(&docker), &st.cfg, &desired).await;
+                    match verify_target::probe(Some(&docker), &st.cfg, &desired, target).await {
+                        crate::manager::ProbeOutcome::Connected { latency: ms } => { connected = true; latency = ms; },
+                        crate::manager::ProbeOutcome::NotConnected => {},
+                        crate::manager::ProbeOutcome::ProbeFailed { reason } => anyhow::bail!("验证暂时无法执行: {reason}"),
+                    }
                     if connected { break; }
                     if attempt < 2 { tokio::time::sleep(Duration::from_secs(2)).await; }
                 }
@@ -199,7 +255,7 @@ pub async fn replace(st: &AppState, ch: &ChannelPublic, fields: &Map<String, Val
         }
         let runtime = applied_runtime(&docker, &candidate, &owner.volume_name(), connected, latency).await?;
         ensure!(payload["start"] != true || runtime.status != "stopped", "候选容器在初始化时退出");
-        let waiting = !connected && (old.is_some() || source_exists || !fields.is_empty());
+        let waiting = awaiting_login(connected, target.is_some(), old.is_some(), source_exists, !fields.is_empty());
         journal::apply(&db, &key, &record, fields, &secrets, &runtime, waiting)?;
         Ok::<_, anyhow::Error>((candidate, waiting))
     }.await;
@@ -284,10 +340,20 @@ pub async fn recover(st: &AppState, cid: &str) -> Result<()> {
 }
 
 pub async fn cleanup(st: &AppState, cid: &str) -> Result<()> {
-    let docker = st.docker().ok_or_else(|| anyhow!("docker unavailable"))?;
     let db = st.cfg.db_path(); let key = store::master_key(&st.cfg.data_dir)?;
     let Some(record) = journal::get(&db,&key,cid)? else { return Ok(()); };
+    let identity = (db, cid.to_string(), record.operation_id.clone());
+    let result = cleanup_record(st, cid, record).await;
+    let mut retries = CLEANUP_RETRIES.lock().unwrap();
+    if result.is_err() { retries.entry(identity).or_default().failed(std::time::Instant::now()); }
+    else { retries.remove(&identity); }
+    result
+}
+
+async fn cleanup_record(st: &AppState, cid: &str, record: Record) -> Result<()> {
     if !matches!(record.phase.as_str(), "committed" | "rolled_back") { return Ok(()); }
+    let docker = st.docker().ok_or_else(|| anyhow!("docker unavailable"))?;
+    let db = st.cfg.db_path();
     let ch = store::get_channel(&db,cid)?.ok_or_else(|| anyhow!("通道不存在"))?;
     if record.payload["kind"] == "initial" && record.phase == "rolled_back" {
         ensure!(ch.container_id.is_none(), "无旧实例恢复后出现未知运行实例");
@@ -463,4 +529,34 @@ pub async fn discard(st:&AppState,cid:&str)->Result<bool> {
     }
     journal::deleted(&db,&record)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::awaiting_login;
+
+    #[test]
+    fn cleanup_retry_coalesces_and_waits_sixty_seconds_after_failure() {
+        let now = std::time::Instant::now();
+        let mut retry = super::CleanupRetry::default();
+        assert!(retry.begin(now));
+        assert!(!retry.begin(now + super::Duration::from_secs(120)), "in-flight work cannot overlap");
+        retry.failed(now);
+        assert!(!retry.begin(now + super::Duration::from_secs(59)));
+        assert!(retry.begin(now + super::Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn no_target_commits_instead_of_waiting_for_login() {
+        // 有目标:没连上且有旧实例、旧数据卷或改了字段时等待确认;连上了直接提交。
+        assert!(awaiting_login(false, true, true, false, false));
+        assert!(awaiting_login(false, true, false, true, false));
+        assert!(awaiting_login(false, true, false, false, true));
+        assert!(!awaiting_login(true, true, true, true, true));
+        assert!(!awaiting_login(false, true, false, false, false), "brand-new channel commits");
+        // 没有目标:永远等不到探活成功,一律直接提交。
+        for (old, source, fields) in [(true, true, true), (true, false, false), (false, true, false), (false, false, true), (false, false, false)] {
+            assert!(!awaiting_login(false, false, old, source, fields));
+        }
+    }
 }

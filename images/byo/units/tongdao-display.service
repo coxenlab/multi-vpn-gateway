@@ -1,0 +1,6 @@
+[Unit]
+Description=Channel display
+[Service]
+ExecStartPre=/bin/rm -f /tmp/.X0-lock
+ExecStart=/usr/bin/Xvfb :0 -screen 0 1280x800x24 -nolisten tcp
+Restart=on-failure

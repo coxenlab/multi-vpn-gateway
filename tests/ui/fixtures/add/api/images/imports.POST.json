@@ -1,0 +1,13 @@
+{
+  "id": "imp-demo1",
+  "preview": {
+    "images": [
+      {"tags": ["vpnmgr/oss-vpn:latest"], "id": "sha256:0000000000000000000000000000000000000000000000000000000000000001", "architecture": "arm64", "adapters": ["wireguard", "openvpn"]}
+    ],
+    "bytes": 52428800,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000002"
+  },
+  "status": "preview",
+  "progress": "校验完成，等待确认导入",
+  "error": null
+}

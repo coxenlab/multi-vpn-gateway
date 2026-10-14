@@ -1,0 +1,56 @@
+/* 设置（21）。取值照原型第四版 screens.js 的设置页。 */
+
+.set { flex: 1; min-height: 0; overflow: auto; margin: 0 -14px -22px; padding: 0 14px 22px; }
+.set-h { margin-bottom: 16px; }
+.set-cols { grid-template-columns: 1fr 1fr; align-items: start; }
+.set-slot { display: contents; }
+.set .row { min-height: 56px; }
+.set-t { font-weight: 500; }
+.set-acts { display: flex; gap: 8px; flex: none; }
+.set-hint .two span { color: var(--wait-ink); }
+/* 只是建议时不用提醒色 */
+.set-hint.tip .two span { color: var(--ink-2); }
+.set-clash { gap: 10px; }
+.set-state { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ink-3); }
+.set-clash.wait .set-state { background: var(--wait); }
+/* 「现在的网络」流向图：深色面板上的节点连线图，线上的光点表示流量方向 */
+.set-now { display: grid; gap: 8px; padding: 6px 0 16px; border-bottom: 1px solid var(--line); }
+.set-now-h { font-size: 11.5px; color: var(--ink-2); }
+.set-map { padding: 14px 14px 12px; border-radius: 14px; background-color: var(--map-bg);
+  background-image: linear-gradient(var(--map-grid) 1px, transparent 1px), linear-gradient(90deg, var(--map-grid) 1px, transparent 1px);
+  background-size: 28px 28px; }
+.set-map-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.set-map-node { fill: var(--map-node); stroke: var(--map-node-line); }
+.set-map-node.out { fill: none; stroke-dasharray: 3 3; }
+.set-map-t { fill: var(--map-ink); font-size: 12px; font-weight: 600; text-anchor: middle; }
+.set-map-s { fill: var(--map-ink-2); font-size: 9.5px; text-anchor: middle; }
+.set-map-legend { fill: var(--map-ink-2); font-size: 10.5px; }
+.set-map-key, .set-map-base, .set-map-run { fill: none; stroke-linecap: round; }
+.set-map-key { stroke-width: 2.5; }
+.set-map-base { stroke-width: 1.4; opacity: .38; }
+.set-map-base.wait, .set-map-base.off { stroke-dasharray: 4 4; }
+.set-map-base.off { opacity: .3; }
+.set-map-run { stroke-width: 2.4; stroke-dasharray: 1 15; animation: set-map-run 1s linear infinite; }
+.k-ip { stroke: var(--map-ip); }
+.k-domain { stroke: var(--map-domain); }
+.k-rest { stroke: var(--map-rest); }
+@keyframes set-map-run { to { stroke-dashoffset: -16; } }
+@media (prefers-reduced-motion: reduce) { .set-map-run { animation: none; } }
+.set-now-row { display: grid; grid-template-columns: 8px 1fr; gap: 10px; align-items: baseline; line-height: 1.5; }
+.set-now-row .set-state { align-self: center; }
+.set-now-row.wait .set-state { background: var(--wait); }
+.set-now-how { font-size: 11.5px; color: var(--ink-2); }
+.set-now-row.wait .set-now-how { color: var(--wait-ink); }
+.set .row small.set-warn { color: var(--wait-ink); }
+.set .row.set-tall, .set .row.set-clash { padding-block: 10px; }
+
+/* 进入高级的一整行 */
+.card.set-link { padding: 4px 20px; }
+.set-adv { color: inherit; text-decoration: none; cursor: default; }
+
+/* 配合 Clash 的接入说明（弹层） */
+.set-lb { margin-bottom: 8px; }
+.set-code { max-height: 240px; padding: 12px 14px; border-radius: 12px; background: var(--fill); user-select: text; -webkit-user-select: text; }
+.set-more { margin-top: 8px; }
+.set-sheet .row { min-height: 52px; }
+.set-val { user-select: text; -webkit-user-select: text; color: var(--ink); }

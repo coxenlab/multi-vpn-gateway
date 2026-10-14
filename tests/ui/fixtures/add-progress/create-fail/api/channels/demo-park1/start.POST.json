@@ -1,0 +1,7 @@
+{
+  "__status__": 500,
+  "__delay_ms__": 800,
+  "__body__": {
+    "error": "replace: candidate exited with code 1"
+  }
+}

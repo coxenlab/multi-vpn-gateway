@@ -1,0 +1,14 @@
+{
+  "__delay_ms__": 1500,
+  "__body__": {
+    "status": "logged_in",
+    "connected": true,
+    "latency_ms": 24,
+    "checked_at": 1789999988000,
+    "stale": false,
+    "replacement": null,
+    "blocked": false,
+    "awaiting_target": false,
+    "target": "console.cloud.example"
+  }
+}

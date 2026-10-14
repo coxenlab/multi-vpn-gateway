@@ -25,6 +25,10 @@ pub struct AdapterSpec {
     #[serde(default)]
     pub desc: Option<String>,
     pub runtime: String,
+    /// 运行完整 init/systemd 的通用桌面容器。此标志只改变该适配器的宿主隔离参数；
+    /// 未声明的既有 VPN 容器继续沿用轻量 entrypoint。
+    #[serde(default)]
+    pub systemd: bool,
     #[serde(default)]
     pub dns_recovery_tun: Option<String>,
     pub image: String,
@@ -155,6 +159,11 @@ mod tests {
         let forti = get("openfortivpn").unwrap();
         assert_eq!(forti.device_cgroup_rules, vec!["c 108:* rwm"]);
         assert!(forti.caps.contains(&"MKNOD".to_string()));
+
+        assert!(get("custom").unwrap().systemd);
+        for key in ["easyconnect", "atrust", "anyconnect", "hillstone"] {
+            assert!(!get(key).unwrap().systemd, "{key}");
+        }
 
         assert!(get("nope").is_err());
     }

@@ -14,8 +14,11 @@ pub async fn vpn_types() -> Json<Value> {
     Json(json!(registry::list_adapters().unwrap_or_default()))
 }
 
-pub async fn connections(State(st): State<AppState>) -> Json<Value> {
-    Json(st.mihomo.connections().await)
+pub async fn connections(State(st): State<AppState>) -> axum::response::Response {
+    match st.mihomo.connections().await {
+        Ok(value) => Json(value).into_response(),
+        Err(_) => err_detail(StatusCode::SERVICE_UNAVAILABLE, "暂时读不到连接数据，请稍后重试"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -406,7 +409,7 @@ pub(crate) fn err_detail(status: StatusCode, msg: &str) -> axum::response::Respo
     (status, Json(json!({ "detail": msg }))).into_response()
 }
 /// rebuild 的 2xx 表示设置已接受；202 为休眠期间保存，实际应用另看 journal。
-fn reload_ok(status: &str) -> bool {
+pub(crate) fn reload_ok(status: &str) -> bool {
     status
         .parse::<u16>()
         .ok()
@@ -706,6 +709,9 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         })
     });
     let routing_changed = fields.get("routing_enabled").and_then(|v| v.as_bool()).is_some_and(|v| v != ch.routing_enabled);
+    let custom_probe_changed = ch.vpn_type == "custom" && fields.get("probe_url").is_some_and(|v| {
+        store::clean_field("probe_url", v.as_str().unwrap_or_default()) != ch.probe_url
+    });
     // 审计:改前快照 + 提交了哪些字段。密码只记「改没改」,值绝不进日志(命门 #5)。
     let before = channel_snapshot(&ch);
     let changed_fields: Vec<&str> = fields
@@ -721,10 +727,15 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
             "before": before.clone(), "after": after, "result": result,
         })
     };
-    let rollback_routing = || {
+    let rollback_runtime_fields = || {
         let mut rollback_fields = serde_json::Map::new();
-        rollback_fields.insert("routing_enabled".into(), json!(ch.routing_enabled));
-        store::update_channel(&db, &key, &cid, &rollback_fields, &sk)
+        if routing_changed { rollback_fields.insert("routing_enabled".into(), json!(ch.routing_enabled)); }
+        if custom_probe_changed { rollback_fields.insert("probe_url".into(), json!(ch.probe_url)); }
+        if !rollback_fields.is_empty() { store::update_channel(&db, &key, &cid, &rollback_fields, &sk)?; }
+        if custom_probe_changed && matches!(ch.status.as_str(), "running" | "logged_in") {
+            store::set_probe_result(&db, &cid, &ch.status, ch.latency_ms)?;
+        }
+        Ok::<(), anyhow::Error>(())
     };
     let stop_pending = match crate::stop_intents::pending(&db, &cid) { Ok(value) => value, Err(e) => return err500(&e.to_string()) };
     let save_for_later = queued || ((stop_pending || (st.cfg.managed_vm && st.docker().is_none())) && touched && ch.container_id.is_some());
@@ -752,24 +763,25 @@ async fn update_inner(st: AppState, cid: String, b: Value) -> axum::response::Re
         crate::events::audit_failed("channel_update", "通道更新未完成，保留恢复记录与原数据", detail);
         return err500(&format!("{e}"));
     }
-    if provisioned || routing_changed {
+    // custom 的 probe_url 与状态撤销已由 store::update_channel 在同一事务中完成。
+    if provisioned || routing_changed || custom_probe_changed {
         let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
         if !reload_ok(&reload) {
             crate::ev!(error, "api", "mihomo_reload_failed", "更新通道后 mihomo 重载未达成",
                 { "operation": "update", "cid": cid.as_str(), "error": reload.as_str() });
-            if !routing_changed {
+            if !routing_changed && !custom_probe_changed {
                 // 字段已落库、只是分流面没跟上:仍算改成了,但把 reload_status 记进审计。
                 let mut detail = audit_detail("ok", channel_snapshot_of(&db, &cid));
                 detail["reload_status"] = json!(reload.as_str());
                 crate::events::audit("channel_update", "通道已更新(mihomo 重载未达成)", detail);
                 return channel_json(&db, &cid);
             }
-            if let Err(error) = rollback_routing() {
+            if let Err(error) = rollback_runtime_fields() {
                 let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
                 detail["reload_status"] = json!(reload.as_str());
                 detail["rollback_error"] = json!(error.to_string());
                 crate::events::audit_failed("channel_update", "切换通道分流失败且状态回滚失败", detail);
-                return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("routing rollback failed: {error}"));
+                return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("runtime field rollback failed: {error}"));
             }
             let rollback = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
             let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid));
@@ -810,7 +822,9 @@ pub async fn login(State(st): State<AppState>, Path(cid): Path<String>, Query(q)
             Ok(None) => return err404("not found"),
             Err(e) => return err500(&e.to_string()),
         }
-        if let Err(e) = crate::runtime::ensure(&st).await { return err503(&e.to_string()); }
+        if !crate::runtime::serving(&st) {
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail":"运行环境还没准备好", "runtime":true}))).into_response();
+        }
     }
     let _operation = match st.lifecycle.access(&cid).await {
         Ok(guard) => guard,
@@ -883,10 +897,22 @@ pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp:
         || !crate::runtime::serving(&st) || crate::stop_intents::pending(&db, &cid).unwrap_or(true) {
         return err_detail(StatusCode::CONFLICT, "通道状态已改变或尚未连接，请核对后重新上传");
     }
+    let target_container_id = match current.container_id.clone().filter(|id| !id.is_empty()) {
+        Some(id) => id,
+        None => return err_detail(StatusCode::CONFLICT, "通道运行实例尚未确认，请停止后重新连接"),
+    };
     let docker = match st.docker() {
         Some(d) => d,
         None => return err_detail(StatusCode::CONFLICT, "请先连接通道，再上传安装包"),
     };
+    if original.vpn_type == "custom" {
+        match crate::installer_upload::install_in_progress(&docker, &st.cfg.data_dir, &cid).await {
+            Ok(true) => return err_detail(StatusCode::CONFLICT, "这个通道已有安装任务正在执行"),
+            Ok(false) => {}
+            Err(e) => return err_detail(StatusCode::SERVICE_UNAVAILABLE,
+                &format!("暂时无法确认上次安装是否结束，未覆盖原安装包：{e}")),
+        }
+    }
     let filename = upload.filename.clone(); let size = upload.size;
     let audit_base = || {
         json!({
@@ -894,13 +920,16 @@ pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp:
             "filename": filename.as_str(), "size_bytes": size,
         })
     };
-    if let Err(e) = upload.deliver(&docker, &format!("vpn-{cid}"), &st.cfg.data_dir).await {
+    let package_path = match upload.deliver(&docker, &target_container_id, &st.cfg.data_dir).await {
+        Ok(path) => path,
+        Err(e) => {
         let mut detail = audit_base();
         detail["result"] = json!("failed");
         detail["error"] = json!(e.to_string());
         crate::events::audit_failed("channel_upload", "通道安装文件投递失败", detail);
         return err500(&format!("安装包投递结果未确认，请在通道内核对后再决定是否重试：{e}"));
-    }
+        }
+    };
     if store::set_config_field(&db, &key, &cid, "package", &filename, false).is_err() {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok":false,"uploaded":true,
             "error":"安装包已投递，但文件名记录失败；请在通道内核对，无需重复上传"}))).into_response();
@@ -908,7 +937,76 @@ pub async fn upload(State(st): State<AppState>, Path(cid): Path<String>, mut mp:
     let mut detail = audit_base();
     detail["result"] = json!("ok");
     crate::events::audit("channel_upload", "安装包已投递到通道数据卷", detail);
-    Json(json!({ "ok": true, "package": filename })).into_response()
+    // 旧的专用类型仍由各自镜像负责客户端，不要求通用安装入口。只有 custom
+    // 明确执行官方包安装，并把上传与安装结果拆开。
+    if original.vpn_type != "custom" {
+        return Json(json!({ "ok": true, "uploaded": true, "package": filename })).into_response();
+    }
+    let install = crate::installer_upload::queued(filename.clone());
+    if let Err(e) = crate::installer_upload::persist_queued(&st.cfg.data_dir, &cid, &install) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok":false,"uploaded":true,
+            "error":format!("安装包已投递，但安装任务没有创建：{e}")}))).into_response();
+    }
+    crate::installer_upload::mark_active(&install.attempt_id);
+    let task_status = install.clone();
+    let data_dir = st.cfg.data_dir.clone();
+    let db_path = st.cfg.db_path();
+    let task_cid = cid.clone();
+    let expected_container_id = Some(target_container_id.clone());
+    tokio::spawn(async move {
+        crate::installer_upload::run_install(
+            docker,
+            crate::installer_upload::InstallRequest {
+                container: target_container_id,
+                package_path,
+                directory: data_dir,
+                db_path,
+                cid: task_cid,
+                expected_container_id,
+            },
+            task_status,
+        ).await;
+    });
+    (StatusCode::ACCEPTED, Json(json!({ "ok": true, "uploaded": true,
+        "package": filename, "install": install }))).into_response()
+}
+
+/// Desktop readiness is separate from VPN authentication and reachability.
+pub async fn startup_status(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    let ch = match store::get_channel(&st.cfg.db_path(), &cid) {
+        Ok(Some(ch)) if ch.vpn_type == "custom" => ch,
+        Ok(Some(_)) => return err_detail(StatusCode::BAD_REQUEST, "此通道不使用通用桌面"),
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&e.to_string()),
+    };
+    let Some(container) = ch.container_id else { return err503("通道运行实例尚未确认") };
+    let Some(docker) = st.docker() else { return err503("运行环境暂时不可用") };
+    let result = tokio::time::timeout(std::time::Duration::from_secs(4),
+        crate::docker::exec_capture(&docker, &container,
+            vec!["head", "-c", "4096", "/run/tongdao-desktop/startup.json"])).await;
+    match result {
+        Ok(Ok(body)) => match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(value) if matches!(value["phase"].as_str(), Some("starting" | "ready" | "failed" | "manual")) =>
+                Json(value).into_response(),
+            _ => Json(json!({"phase":"unknown", "message":"尚未读到客户端启动状态；旧通道可能需要更新运行环境"})).into_response(),
+        },
+        _ => err503("暂时无法读取客户端启动状态"),
+    }
+}
+
+pub async fn install_status(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
+    let db = st.cfg.db_path();
+    match store::get_channel(&db, &cid) {
+        Ok(Some(ch)) if ch.vpn_type == "custom" => {}
+        Ok(Some(_)) => return err_detail(StatusCode::BAD_REQUEST, "此通道不使用通用安装流程"),
+        Ok(None) => return err404("not found"),
+        Err(e) => return err500(&e.to_string()),
+    }
+    match crate::installer_upload::public_status(&st.cfg.data_dir, &cid) {
+        Ok(Some(status)) => Json(json!(status)).into_response(),
+        Ok(None) => err404("还没有安装任务"),
+        Err(e) => err500(&format!("读取安装状态失败：{e}")),
+    }
 }
 
 /// 登录备注长度上限(字符),对照 main.py NOTE_MAX。
@@ -990,6 +1088,76 @@ pub async fn status(State(st): State<AppState>, Path(cid): Path<String>) -> axum
     probe_response(crate::lifecycle::sample(st, cid, true).await)
 }
 
+/// 先用候选地址探活，只在成功后保存地址和 `logged_in`。失败或探针故障不会把
+/// 临时地址暴露给后台采样器。处理函数用 `detached` 脱离 HTTP 生命周期：客户端断开后服务端
+/// 仍会完成这次检测，但仍然只有实测成功才提交。
+pub async fn verify_target(
+    State(st): State<AppState>,
+    Path(cid): Path<String>,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    let probe_state = st.clone();
+    detached("verify_target", verify_target_inner_with(st, cid, body, move |candidate| async move {
+        let docker = probe_state.docker();
+        manager::probe(docker.as_ref(), &probe_state.cfg, &candidate).await
+    })).await
+}
+
+async fn verify_target_inner_with<F, Fut>(st: AppState, cid: String, body: Value, probe: F) -> axum::response::Response
+where
+    F: FnOnce(store::ChannelPublic) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = manager::ProbeOutcome> + Send + 'static,
+{
+    let raw = match body.get("probe_url").and_then(Value::as_str) {
+        Some(value) => value,
+        None => return err_detail(StatusCode::BAD_REQUEST, "probe_url must be text"),
+    };
+    let target = store::clean_field("probe_url", raw);
+    let valid = reqwest::Url::parse(&target).ok().is_some_and(|url| {
+        matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+    });
+    if !valid { return err_detail(StatusCode::BAD_REQUEST, "请填写完整的 http 或 https 验证地址"); }
+
+    let _operation = match st.lifecycle.access(&cid).await {
+        Ok(guard) => guard,
+        Err(error) => return err503(&error.to_string()),
+    };
+    let db = st.cfg.db_path();
+    let original = match store::get_channel(&db, &cid) {
+        Ok(Some(channel)) => channel,
+        Ok(None) => return err404("not found"),
+        Err(error) => return err500(&error.to_string()),
+    };
+    if !matches!(original.status.as_str(), "running" | "logged_in") {
+        return err_detail(StatusCode::CONFLICT, "请先启动通道");
+    }
+    let mut candidate = original.clone();
+    candidate.probe_url = target.clone();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(32), probe(candidate)).await
+        .unwrap_or_else(|_| manager::ProbeOutcome::failed("探活超时，连通状态待确认"));
+    match outcome {
+        manager::ProbeOutcome::NotConnected => Json(json!({
+            "connected":false,"target":target,"probe_failed":false,"probe_reason":null,
+            "saved":false,"config_application":config_application(&db)
+        })).into_response(),
+        manager::ProbeOutcome::ProbeFailed { reason } => Json(json!({
+            "connected":null,"target":target,"probe_failed":true,"probe_reason":reason,
+            "saved":false,"config_application":config_application(&db)
+        })).into_response(),
+        manager::ProbeOutcome::Connected { latency } => {
+            if let Err(error) = store::confirm_probe_target(&db, &cid, original.container_id.as_deref(), &target, latency) {
+                return err_detail(StatusCode::CONFLICT, &error.to_string());
+            }
+            st.lifecycle.target_confirmed_locked(&cid).await;
+            let reload = manager::rebuild(&st.cfg, st.docker().as_ref(), &db).await;
+            config_reply(&db, &reload, json!({
+                "connected":true,"target":target,"probe_failed":false,"probe_reason":null,
+                "latency_ms":latency,"reload_status":reload
+            }))
+        }
+    }
+}
+
 pub async fn channel_health(State(st): State<AppState>, Path(cid): Path<String>) -> axum::response::Response {
     probe_response(crate::lifecycle::sample(st, cid, false).await)
 }
@@ -1049,12 +1217,26 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
             return operation_done(&db);
         }
         Ok(false) => {},
-        Err(e) => return err500(&format!("启动未完成: {e}")),
+        Err(e) => {
+            let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "resume_pending");
+            detail["error"] = json!(e.to_string());
+            crate::events::audit_failed("channel_start", "通道启动失败", detail);
+            return err500(&format!("启动未完成: {e}"));
+        }
     }
-    let runtime = registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
+    let spec = registry::get(&ch.vpn_type).ok();
+    let runtime = spec.as_ref().map(|s| s.runtime.as_str()).unwrap_or_default();
     if runtime == "byo" && ch.container_id.is_some() {
         // byo 客户端装在可写层,扛得住原地重启 → 不重建
-        if let Err(e) = manager::start(&docker, &cid, ch.container_id.as_deref().unwrap_or_default()).await {
+        let ready = match spec.as_ref() {
+            Some(spec) => manager::ensure_full_init_host(&st.cfg, spec).await,
+            None => Ok(()),
+        };
+        let start_result = match ready {
+            Ok(()) => manager::start(&docker, &cid, ch.container_id.as_deref().unwrap_or_default()).await,
+            Err(error) => Err(error),
+        };
+        if let Err(e) = start_result {
             let _ = store::set_status(&db, &cid, "error");
             let _ = manager::rebuild(&st.cfg, Some(&docker), &db).await;
             let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "in_place");
@@ -1087,6 +1269,10 @@ async fn start_inner(st: AppState, cid: String) -> axum::response::Response {
             let _ = store::set_status(&db, &cid, "error");
         }
         let _ = manager::rebuild(&st.cfg, Some(&docker), &db).await;
+        // 出错原因(causes)据此判断「客户端下载失败」。只记错误文本,快照里没有密码和 secret 字段。
+        let mut detail = audit_detail("failed", channel_snapshot_of(&db, &cid), "replace");
+        detail["error"] = json!(e.to_string());
+        crate::events::audit_failed("channel_start", "通道启动失败", detail);
         return err500(&format!("启动未完成: {e}"));
     }
     let reload = manager::rebuild(&st.cfg, Some(&docker), &db).await;
@@ -1323,7 +1509,7 @@ pub async fn clash_snippet(State(st): State<AppState>) -> axum::response::Respon
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
     };
     let ui = st.cfg.ui_port.to_string();
-    text_plain(webutil::clash_snippet_text(&rules, &st.cfg.mihomo_host_port, &ui))
+    text_plain(webutil::clash_snippet_text_for(st.cfg.identity(), &rules, &st.cfg.mihomo_host_port, &ui))
 }
 
 pub async fn entry_pac(State(st): State<AppState>) -> axum::response::Response {
@@ -1331,7 +1517,7 @@ pub async fn entry_pac(State(st): State<AppState>) -> axum::response::Response {
         Ok(r) => r,
         Err(e) => return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("all_rules: {e}")),
     };
-    let pac = webutil::pac_text(&rules, &st.cfg.mihomo_host_port);
+    let pac = webutil::pac_text_for(st.cfg.identity(), &rules, &st.cfg.mihomo_host_port);
     ([(axum::http::header::CONTENT_TYPE, "application/x-ns-proxy-autoconfig")], pac).into_response()
 }
 
@@ -1351,7 +1537,7 @@ pub async fn clash_detect() -> Json<Value> {
 /// Clash Verge Rev 可导入的 Merge profile(text/yaml)。
 pub async fn clash_merge_profile(State(st): State<AppState>) -> axum::response::Response {
     let ui = st.cfg.ui_port.to_string();
-    let body = entry::verge_merge_profile(&st.cfg.mihomo_host_port, &ui);
+    let body = entry::verge_merge_profile_for(st.cfg.identity(), &st.cfg.mihomo_host_port, &ui);
     crate::ev!(info, "entry", "clash_profile_generated", "Clash Merge profile 已生成",
         { "client": "clash_verge_rev" });
     ([(axum::http::header::CONTENT_TYPE, "text/yaml; charset=utf-8")], body).into_response()
@@ -1368,10 +1554,9 @@ pub async fn system_proxy_set(State(st): State<AppState>, Json(b): Json<Value>) 
     if !st.cfg.host_integrations_allowed() {
         return (StatusCode::FORBIDDEN, Json(json!({"error": "隔离实例禁用系统代理变更"}))).into_response();
     }
-    let ui = st.cfg.ui_port.to_string();
     let enable = b.get("enable").and_then(|v| v.as_bool()).unwrap_or(false);
     if enable { if let Err(error) = crate::runtime::ensure(&st).await { return err503(&error.to_string()); } }
-    match entry::system_proxy_apply(&ui, enable).await {
+    match entry::system_proxy_apply(&st.cfg, enable).await {
         Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
         Err(e) => err500(&format!("{e}")),
     }
@@ -1526,7 +1711,9 @@ pub async fn preflight_fix(State(st): State<AppState>, Path(action): Path<String
                 .unwrap_or(&st.cfg.vpn_net)
                 .to_string();
             match st.docker().as_ref() {
-                Some(d) => match crate::docker::create_bridge_network(d, &name).await {
+                Some(d) => match if name == st.cfg.vpn_net {
+                    crate::runtime_network::ensure(d, &st.cfg).await.map(|_| ())
+                } else { crate::docker::create_bridge_network(d, &name).await } {
                     Ok(_) => {
                         crate::events::audit("preflight_fix", "已创建 docker 网络", json!({
                             "target_kind": "system", "target_name": name.as_str(),
@@ -2012,6 +2199,38 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn login_does_not_start_dormant_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into(); cfg.dev_mode = true; cfg.managed_vm = true;
+        cfg.vm_profile = "tongdao-verify-login".into();
+        cfg.mihomo_ctrl_url = "http://127.0.0.1:1".into();
+        store::init(&cfg.db_path()).unwrap();
+        let key = store::master_key(&cfg.data_dir).unwrap();
+        store::add_channel(&cfg.db_path(), &key, &NewChannel {
+            id: "login-test".into(), name: "Login test".into(), vpn_type: "easyconnect".into(),
+            server: String::new(), ec_ver: String::new(), login_method: "interactive".into(),
+            username: String::new(), password: String::new(), vnc_password: "fixture".into(),
+            mac: "02:00:00:00:00:01".into(), probe_url: String::new(), status: "running".into(), routing_enabled: true,
+        }, &serde_json::Map::new(), &[]).unwrap();
+        let st = AppState {
+            cfg: std::sync::Arc::new(cfg), lifecycle: Default::default(), docker: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            mihomo: crate::mihomo::Controller::new("http://127.0.0.1:1".into(), String::new()),
+            health: crate::health::shared(), tunnel: crate::tunnel::handle(), novnc: crate::novnc::handle(),
+            self_heal_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let before = st.lifecycle.runtime().snapshot().phase;
+        let response = login(State(st.clone()), Path("login-test".into()), Query(LoginQuery::default())).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["runtime"], true);
+        assert_eq!(body["detail"], "运行环境还没准备好");
+        assert_eq!(st.lifecycle.runtime().snapshot().phase, before);
+        assert!(st.docker().is_none());
+    }
+
+    #[tokio::test]
     async fn detached_operation_finishes_after_request_is_cancelled() {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
@@ -2027,6 +2246,162 @@ mod tests {
         assert!(request.await.unwrap_err().is_cancelled());
         finish_tx.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), done_rx).await.unwrap().unwrap();
+    }
+
+    fn verify_fixture() -> (tempfile::TempDir, AppState) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into(); cfg.dev_mode = true; cfg.managed_vm = true;
+        cfg.vm_profile = "tongdao-verify-target-test".into(); cfg.mihomo_ctrl_url = "http://127.0.0.1:1".into();
+        store::init(&cfg.db_path()).unwrap();
+        let key = store::master_key(&cfg.data_dir).unwrap();
+        store::add_channel(&cfg.db_path(), &key, &NewChannel {
+            id: "byo".into(), name: "BYO".into(), vpn_type: "custom".into(), server: String::new(),
+            ec_ver: String::new(), login_method: "byo".into(), username: String::new(), password: String::new(),
+            vnc_password: "fixture".into(), mac: "02:00:00:00:00:02".into(),
+            probe_url: "https://old.example.test/".into(), status: "logged_in".into(), routing_enabled: true,
+        }, &serde_json::Map::new(), &[]).unwrap();
+        let state = AppState {
+            cfg: std::sync::Arc::new(cfg), lifecycle: Default::default(), docker: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            mihomo: crate::mihomo::Controller::new("http://127.0.0.1:1".into(), String::new()),
+            health: crate::health::shared(), tunnel: crate::tunnel::handle(), novnc: crate::novnc::handle(),
+            self_heal_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn verify_target_commits_only_successful_candidate() {
+        let (_dir, state) = verify_fixture();
+        state.lifecycle.runtime().ensure(|| async { Ok(()) }).await.unwrap();
+        let db = state.cfg.db_path();
+        let failed = verify_target_inner_with(state.clone(), "byo".into(), json!({"probe_url":"https://bad.example.test/"}),
+            |_| async { manager::ProbeOutcome::NotConnected }).await;
+        assert_eq!(failed.status(), StatusCode::OK);
+        let channel = store::get_channel(&db, "byo").unwrap().unwrap();
+        assert_eq!((channel.probe_url.as_str(), channel.status.as_str()), ("https://old.example.test/", "logged_in"));
+
+        let failed = verify_target_inner_with(state.clone(), "byo".into(), json!({"probe_url":"https://unknown.example.test/"}),
+            |_| async { manager::ProbeOutcome::failed("probe unavailable") }).await;
+        let value: Value = serde_json::from_slice(&axum::body::to_bytes(failed.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!((value["connected"].as_bool(), value["probe_failed"].as_bool(), value["saved"].as_bool()), (None, Some(true), Some(false)));
+        assert_eq!(store::get_channel(&db, "byo").unwrap().unwrap().probe_url, "https://old.example.test/");
+
+        let success = verify_target_inner_with(state, "byo".into(), json!({"probe_url":"https://new.example.test/"}),
+            |_| async { manager::ProbeOutcome::Connected { latency: Some(23) } }).await;
+        assert_eq!(success.status(), StatusCode::ACCEPTED);
+        let channel = store::get_channel(&db, "byo").unwrap().unwrap();
+        assert_eq!((channel.probe_url.as_str(), channel.status.as_str(), channel.latency_ms),
+            ("https://new.example.test/", "logged_in", Some(23)));
+    }
+
+    #[tokio::test]
+    async fn aborted_inner_probe_never_writes_temporary_target() {
+        let (_dir, state) = verify_fixture();
+        state.lifecycle.runtime().ensure(|| async { Ok(()) }).await.unwrap();
+        let db = state.cfg.db_path();
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let wait = gate.clone();
+        let task = tokio::spawn(verify_target_inner_with(state, "byo".into(), json!({"probe_url":"https://temporary.example.test/"}),
+            move |_| async move { wait.acquire().await.unwrap().forget(); manager::ProbeOutcome::Connected { latency: None } }));
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let channel = store::get_channel(&db, "byo").unwrap().unwrap();
+        assert_eq!((channel.probe_url.as_str(), channel.status.as_str()), ("https://old.example.test/", "logged_in"));
+    }
+
+    #[tokio::test]
+    async fn detached_verify_finishes_verified_commit_after_client_cancellation() {
+        let (_dir, state) = verify_fixture();
+        state.lifecycle.runtime().ensure(|| async { Ok(()) }).await.unwrap();
+        let db = state.cfg.db_path();
+        let started = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let finish = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let seen = started.clone(); let release = finish.clone();
+        let request = tokio::spawn(detached("verify_target_test", verify_target_inner_with(
+            state, "byo".into(), json!({"probe_url":"https://new.example.test/"}), move |_| async move {
+                seen.add_permits(1);
+                release.acquire().await.unwrap().forget();
+                manager::ProbeOutcome::Connected { latency: Some(31) }
+            })));
+        started.acquire().await.unwrap().forget();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        finish.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store::get_channel(&db, "byo").unwrap().unwrap().probe_url == "https://new.example.test/" { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        let channel = store::get_channel(&db, "byo").unwrap().unwrap();
+        assert_eq!((channel.status.as_str(), channel.latency_ms), ("logged_in", Some(31)));
+    }
+
+    #[tokio::test]
+    async fn verify_target_discards_result_after_container_identity_changes() {
+        let (_dir, state) = verify_fixture();
+        state.lifecycle.runtime().ensure(|| async { Ok(()) }).await.unwrap();
+        let db = state.cfg.db_path();
+        let changed_db = db.clone();
+        let response = verify_target_inner_with(state, "byo".into(), json!({"probe_url":"https://new.example.test/"}), move |_| async move {
+            rusqlite::Connection::open(changed_db).unwrap().execute(
+                "UPDATE channels SET container_id='replacement' WHERE id='byo'", []).unwrap();
+            manager::ProbeOutcome::Connected { latency: Some(10) }
+        }).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let channel = store::get_channel(&db, "byo").unwrap().unwrap();
+        assert_eq!((channel.probe_url.as_str(), channel.status.as_str()), ("https://old.example.test/", "logged_in"));
+    }
+
+    #[tokio::test]
+    async fn start_failure_leaves_audit_without_secrets() {
+        // 开发模式、控制口不可达;容器引擎指向一个不是 docker 的文件,重建在第一次查询容器时失败。
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::from_getter(|_| None);
+        cfg.data_dir = dir.path().into(); cfg.dev_mode = true; cfg.vm_profile = "vpnmgr-test".into();
+        cfg.mihomo_ctrl_url = "http://127.0.0.1:1".into();
+        store::init(&cfg.db_path()).unwrap();
+        let st = AppState {
+            cfg: std::sync::Arc::new(cfg), lifecycle: Default::default(), docker: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            mihomo: crate::mihomo::Controller::new("http://127.0.0.1:1".into(), String::new()),
+            health: crate::health::shared(), tunnel: crate::tunnel::handle(), novnc: crate::novnc::handle(),
+            self_heal_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let socket = dir.path().join("not-a-docker.sock");
+        std::fs::write(&socket, b"").unwrap();
+        st.set_docker(Some(bollard::Docker::connect_with_unix(socket.to_str().unwrap(), 5, bollard::API_DEFAULT_VERSION).unwrap()));
+
+        let (cid, password, profile) = ("startfail", "fixture-pass-7Qx", "remote vpn.example.test 1194\n<key>fixture-key-9Kd</key>");
+        let db = st.cfg.db_path();
+        let key = store::master_key(&st.cfg.data_dir).unwrap();
+        let config = serde_json::Map::from_iter([
+            ("config_file".to_string(), json!(profile)), ("username".to_string(), json!("user")), ("password".to_string(), json!(password)),
+        ]);
+        store::add_channel(&db, &key, &NewChannel {
+            id: cid.into(), name: "启动失败(示例)".into(), vpn_type: "openvpn".into(), server: "".into(), ec_ver: "".into(),
+            login_method: "headless".into(), username: "user".into(), password: password.into(), vnc_password: "v".into(),
+            mac: "02:00:00:00:00:01".into(), probe_url: "".into(), status: "stopped".into(), routing_enabled: true,
+        }, &config, &secret_keys_of("openvpn")).unwrap();
+        // 之前一次创建时拉取镜像失败;这次启动在别处失败,旧原因不能留着。
+        crate::events::audit_failed("channel_create", "通道创建失败", json!({"target_kind":"channel","target_id":cid,"result":"failed",
+            "error":"拉取镜像 vpnmgr/oss-vpn:latest 失败(所有镜像源):mirror.example.test 不可达"}));
+        let audits = || crate::events::snapshot(0, usize::MAX, &crate::events::Filter { src: Some("audit".into()), ..Default::default() }).0;
+        assert!(crate::causes::image_pull_failed_at(cid, &audits()).is_some());
+
+        let response = start_inner(st.clone(), cid.into()).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let events = audits();
+        let starts: Vec<_> = events.iter().filter(|e| e.event == "channel_start" && e.detail["target_id"] == cid).collect();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].detail["result"], "failed");
+        assert_eq!(starts[0].detail["mode"], "replace");
+        assert!(starts[0].detail["error"].as_str().is_some_and(|e| !e.is_empty()));
+        let text = serde_json::to_string(&events).unwrap();
+        assert!(!text.contains(password) && !text.contains("fixture-key-9Kd"), "no password or profile content in audits");
+        assert_eq!(crate::causes::image_pull_failed_at(cid, &events), None, "the start failure supersedes the old pull failure");
+        assert_eq!(store::get_channel(&db, cid).unwrap().unwrap().status, "error");
     }
 
     #[test]

@@ -1,0 +1,59 @@
+{
+  "reload_status": "reloaded",
+  "domains": [
+    {
+      "id": 4,
+      "channel_id": "demo-cloud",
+      "kind": "domain",
+      "pattern": "cloud.example",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    },
+    {
+      "id": 7,
+      "channel_id": "demo-cloud",
+      "kind": "domain",
+      "pattern": "old.cloud.example",
+      "enabled": 0,
+      "note": "旧入口",
+      "locked": 0
+    }
+  ],
+  "ips": [
+    {
+      "id": 5,
+      "channel_id": "demo-cloud",
+      "kind": "ip",
+      "pattern": "10.40.0.0/16",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    },
+    {
+      "id": 6,
+      "channel_id": "demo-cloud",
+      "kind": "ip",
+      "pattern": "fd00:20::/48",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    },
+    {
+      "id": 14,
+      "channel_id": "demo-cloud",
+      "kind": "ip",
+      "pattern": "10.41.0.0/16",
+      "enabled": 1,
+      "note": "",
+      "locked": 0
+    }
+  ],
+  "added": {
+    "domain": 0,
+    "ip": 1
+  },
+  "rejected": [
+    "10.0.0.0/40"
+  ]
+}

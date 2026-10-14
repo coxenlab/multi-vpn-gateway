@@ -1,0 +1,23 @@
+{
+  "__status__": 202,
+  "__body__": {
+    "ok": true,
+    "saved": true,
+    "deferred": true,
+    "message": "已保存，连接后生效",
+    "rules_applied": false,
+    "added": 1,
+    "rejected": [],
+    "config_application": {
+      "available": true,
+      "scope": "managed_rules_proxies",
+      "source_revision": 12,
+      "desired_revision": 13,
+      "desired_generation": 13,
+      "applied_generation": 12,
+      "verified_at": 1779999996,
+      "last_error": null,
+      "pending": true
+    }
+  }
+}

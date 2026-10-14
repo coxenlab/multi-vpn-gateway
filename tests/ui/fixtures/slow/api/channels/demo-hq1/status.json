@@ -1,0 +1,14 @@
+{
+  "__delay_ms__": 2000,
+  "__body__": {
+    "status": "logged_in",
+    "connected": true,
+    "latency_ms": 42,
+    "checked_at": 1779999997000,
+    "stale": false,
+    "replacement": null,
+    "blocked": false,
+    "awaiting_target": false,
+    "target": "corp.example.test"
+  }
+}

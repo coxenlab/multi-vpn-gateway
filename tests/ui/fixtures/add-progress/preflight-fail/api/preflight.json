@@ -1,0 +1,35 @@
+{
+  "__status__": 200,
+  "__delay_ms__": 600,
+  "__body__": {
+    "host_arch": "arm64",
+    "target_image": "hagb/docker-easyconnect:7.6.7",
+    "overall": "fail",
+    "checks": [
+      {
+        "id": "disk_space",
+        "layer": "运行条件",
+        "title": "磁盘空间",
+        "status": "fail",
+        "detail": "剩余 1.2 GB",
+        "fix": null
+      },
+      {
+        "id": "image_present",
+        "layer": "镜像",
+        "title": "目标镜像本地就绪",
+        "status": "fail",
+        "detail": "未拉取",
+        "fix": null
+      },
+      {
+        "id": "host_arch",
+        "layer": "引擎",
+        "title": "宿主架构",
+        "status": "pass",
+        "detail": "arm64",
+        "fix": null
+      }
+    ]
+  }
+}

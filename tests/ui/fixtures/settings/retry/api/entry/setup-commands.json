@@ -1,0 +1,12 @@
+{
+  "port": "47231",
+  "pac_url": "http://127.0.0.1:47230/entry/proxy.pac",
+  "macos": {
+    "pac_on": "networksetup -setautoproxyurl Wi-Fi http://127.0.0.1:47230/entry/proxy.pac",
+    "pac_off": "networksetup -setautoproxystate Wi-Fi off"
+  },
+  "env": {
+    "http": "export HTTPS_PROXY=http://127.0.0.1:47231 HTTP_PROXY=http://127.0.0.1:47231",
+    "unset": "unset ALL_PROXY HTTPS_PROXY HTTP_PROXY"
+  }
+}

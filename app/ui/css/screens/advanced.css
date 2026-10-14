@@ -1,0 +1,57 @@
+/* 设置 · 高级（22）和四个二级页。取值照原型第四版 screens.js 的高级页。 */
+
+/* 滚动区向两边和下面各让出一点，卡片的阴影不被裁掉 */
+.adv { flex: 1; min-height: 0; overflow: auto; margin: 0 -14px -22px; padding: 0 14px 22px; }
+.adv-fixed { overflow: hidden; display: flex; flex-direction: column; }
+.adv-slot { display: contents; }
+.adv-back { display: inline-flex; align-items: center; gap: 4px; text-decoration: none; cursor: default; }
+.adv-title { margin: 4px 0 16px; }
+.adv-count { padding-bottom: 5px; font-size: 11.5px; }
+.adv-lead { margin-top: -8px; }
+.adv-cols { grid-template-columns: 1fr 1fr; align-items: start; }
+.adv .row { min-height: 56px; }
+.adv .row.slim { min-height: 44px; }
+.adv-t { font-weight: 500; }
+.adv-acts { display: flex; align-items: center; gap: 8px; flex: none; }
+.adv-go { color: inherit; text-decoration: none; cursor: default; }
+.adv-check .two small { white-space: normal; }
+.adv-none { padding: 14px 0; }
+.adv-p { margin: 0 0 10px; line-height: 1.6; }
+.adv-err { margin-top: 10px; color: var(--bad-ink); }
+.btn.pri.adv-danger { background: var(--bad); box-shadow: none; }
+
+/* 下载源 */
+.adv-list { margin-bottom: 16px; }
+.adv-add { padding-top: 4px; padding-bottom: 4px; }
+.adv-host { flex: 1; }
+
+/* 检查整条链路（弹层） */
+.adv-chain-top { margin-bottom: 8px; }
+.adv-chain-top .row { min-height: 52px; }
+.adv-chain-list { border-radius: 14px; background: var(--card); box-shadow: var(--sh-card); padding: 4px 6px 6px; margin-bottom: 10px; }
+.adv-chain-row { grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 1fr)); padding: 0 10px; }
+.adv-chain-row .st { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.adv-idle { color: var(--ink-3); }
+
+/* 各通道的运行情况 */
+.adv-body { min-height: 0; }
+.adv-ct { flex: none; }
+.adv-ct-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) 176px; }
+.adv-ct-row:not(.th) { height: auto; min-height: 56px; padding-top: 8px; padding-bottom: 8px; }
+.adv-ct-row .two { gap: 3px; }
+.adv-r { justify-self: end; text-align: right; }
+.adv-logs { max-height: 52vh; min-height: 220px; padding: 12px 14px; border-radius: 12px; background: var(--fill); user-select: text; -webkit-user-select: text; }
+
+/* 查看日志 */
+.adv-tools { align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.adv-ev-body { flex: 1; display: flex; flex-direction: column; }
+.adv-ev-scroll { flex: 1; min-height: 0; overflow: auto; }
+.adv-ev-scroll .th { position: sticky; top: 0; z-index: 1; background: var(--card); }
+.adv-ev-rows { display: flex; flex-direction: column; }
+.adv-ev-rows .tr { flex: none; }
+.adv-ev-row { grid-template-columns: 112px 40px 76px minmax(0, 1fr); }
+.adv-ev-row.w .adv-lv { color: var(--wait-ink); }
+.adv-ev-row.e .adv-lv { color: var(--bad-ink); }
+.adv-ev-msg { display: block; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: default; }
+.adv-ev-detail { flex: none; margin: 2px 14px 8px; padding: 10px 12px; border-radius: 10px; background: var(--fill); white-space: pre-wrap; word-break: break-all; user-select: text; -webkit-user-select: text; }
+.adv-ev-rows .adv-none { padding: 14px; }

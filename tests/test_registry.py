@@ -33,14 +33,15 @@ def test_host_arch_known():
     assert registry.host_arch() in ("amd64", "arm64", "unknown")
 
 
-def test_hillstone_is_preinstalled_byo_member():
-    """hillstone = byo 家族预装成员:同 runtime、无上传输入、带向导 notice、镜像自建可构建。"""
+@pytest.mark.parametrize("adapter,label", [("hillstone", "Hillstone")])
+def test_preinstalled_byo_member(adapter, label):
+    """预装成员沿用 BYO 登录，无安装包上传输入，预检能识别自建镜像。"""
     import preflight
-    spec = registry.get("hillstone")
+    spec = registry.get(adapter)
     assert spec["runtime"] == "byo"
     assert spec["login_modes"] == ["byo"]
     assert spec["inputs"] == []
-    assert "Hillstone" in spec["notice"]
+    assert label in spec["notice"]
     assert preflight.is_buildable(spec["image"])
-    summary = next(a for a in registry.list_adapters() if a["key"] == "hillstone")
+    summary = next(a for a in registry.list_adapters() if a["key"] == adapter)
     assert summary["notice"] == spec["notice"]

@@ -1,0 +1,11 @@
+{
+  "status": "running",
+  "connected": false,
+  "latency_ms": null,
+  "checked_at": null,
+  "stale": false,
+  "replacement": null,
+  "blocked": false,
+  "awaiting_target": false,
+  "target": null
+}

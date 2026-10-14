@@ -1,0 +1,11 @@
+{
+  "status": "running",
+  "connected": false,
+  "latency_ms": null,
+  "checked_at": 1789999990000,
+  "stale": false,
+  "replacement": null,
+  "blocked": false,
+  "awaiting_target": false,
+  "target": "http://wiki.branch.example/"
+}

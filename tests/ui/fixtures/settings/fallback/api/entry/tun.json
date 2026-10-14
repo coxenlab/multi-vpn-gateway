@@ -1,0 +1,12 @@
+{
+  "supported": true,
+  "resources": true,
+  "installed": true,
+  "enabled": false,
+  "helper": null,
+  "config_current": null,
+  "expected_version": "0.3.0",
+  "device": "utun229",
+  "desired_v4": [],
+  "desired_v6": []
+}

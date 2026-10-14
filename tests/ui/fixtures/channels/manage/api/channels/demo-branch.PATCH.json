@@ -1,0 +1,35 @@
+{
+  "id": "demo-branch",
+  "name": "新分部",
+  "vpn_type": "wireguard",
+  "server": "vpn.branch.example",
+  "ec_ver": null,
+  "login_method": "headless",
+  "username": "",
+  "vnc_password": null,
+  "mac": null,
+  "novnc_port": null,
+  "probe_url": "",
+  "status": "running",
+  "container_id": "c-demo-branch",
+  "latency_ms": null,
+  "config": {
+    "filename": "branch.conf"
+  },
+  "routing_enabled": true,
+  "stop_pending": false,
+  "replacement": null,
+  "saved": true,
+  "deferred": false,
+  "config_application": {
+    "applied_generation": 3,
+    "available": true,
+    "desired_generation": 3,
+    "desired_revision": 21,
+    "last_error": null,
+    "pending": false,
+    "scope": "managed_rules_proxies",
+    "source_revision": 21,
+    "verified_at": 1789999988000
+  }
+}

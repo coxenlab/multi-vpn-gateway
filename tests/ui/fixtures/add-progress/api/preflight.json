@@ -1,0 +1,10 @@
+{
+  "__status__": 200,
+  "__delay_ms__": 600,
+  "__body__": {
+    "host_arch": "arm64",
+    "target_image": "",
+    "overall": "pass",
+    "checks": []
+  }
+}

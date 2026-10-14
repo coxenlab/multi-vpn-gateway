@@ -1,0 +1,82 @@
+#!/usr/bin/python3
+"""Install an official local package inside one channel. No vendor dispatch."""
+import fcntl, os, pathlib, subprocess, sys, shutil, json, time
+
+def run(args):
+    subprocess.run(args, check=True, env=dict(os.environ, DEBIAN_FRONTEND='noninteractive'))
+
+def output(args):
+    return subprocess.check_output(args, text=True).strip()
+
+try:
+    lock = open('/run/lock/tongdao-install.lock', 'w')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise ValueError('已有安装任务正在执行，未启动新的安装')
+    if len(sys.argv) != 2:
+        raise ValueError('需要一个安装包路径')
+    package = pathlib.Path(sys.argv[1])
+    if not package.is_absolute() or package.parent != pathlib.Path('/root') or not package.is_file() or package.is_symlink():
+        raise ValueError('安装包必须是已上传到通道的普通文件')
+    with package.open('rb') as f:
+        magic = f.read(16)
+    if magic.startswith(b'!<arch>\n'):
+        name = output(['dpkg-deb', '-f', str(package), 'Package'])
+        arch = output(['dpkg-deb', '-f', str(package), 'Architecture'])
+        host = output(['dpkg', '--print-architecture'])
+        if arch not in ('all', host, 'amd64' if host == 'arm64' else host):
+            raise ValueError('安装包架构与当前环境不兼容: '+arch)
+        if not pathlib.Path('/run/systemd/system').is_dir():
+            raise ValueError('系统服务管理器没有就绪，未执行安装')
+        print('正在按官方包依赖和维护脚本安装…', flush=True)
+        run(['apt-get', '-o', 'Acquire::Retries=2', 'install', '-y', str(package)])
+        state = output(['dpkg-query', '-W', '-f=${Status}', name])
+        if state != 'install ok installed':
+            raise ValueError('系统未确认安装完成: '+state)
+        files = output(['dpkg-query', '-L', name]).splitlines()
+        apps = pathlib.Path('/home/desktop/.local/share/tongdao/apps');apps.mkdir(parents=True, exist_ok=True)
+        # This directory contains only generated launchers for the selected package.
+        # An old client's window must not make a newly uploaded client look ready.
+        for old in apps.glob('*.desktop'):
+            old.unlink()
+        entries = []
+        for entry in files:
+            file = pathlib.Path(entry)
+            if entry.startswith('/usr/share/applications/') and file.suffix == '.desktop' and file.is_file():
+                shutil.copy2(file, apps / file.name)
+                entries.append(file.name)
+        run(['chown', '-R', 'desktop:desktop', '/home/desktop/.local'])
+        if not entries:
+            print('安装完成，但安装包没有提供桌面入口；请按厂商说明手动启动。', flush=True)
+            sys.exit(20)
+        run(['systemctl', 'restart', 'tongdao-desktop.service'])
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                startup = json.loads(pathlib.Path('/run/tongdao-desktop/startup.json').read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                time.sleep(.5)
+                continue
+            if startup['phase'] == 'ready':
+                print('官方安装完成，客户端窗口已打开；请登录后验证内网。', flush=True)
+                break
+            if startup['phase'] == 'failed':
+                print('安装已完成，但启动失败：' + startup['message'], flush=True)
+                sys.exit(21)
+            time.sleep(.5)
+        else:
+            print('安装已完成，但等待客户端窗口超时；请查看启动日志', flush=True)
+            sys.exit(21)
+    elif magic.startswith(b'#!') or (magic.startswith(b'\x7fELF') and magic[8:10] == b'AI'):
+        # Interactive installers keep their own prompts and original executable.
+        destination = pathlib.Path('/home/desktop/Downloads') / package.name
+        shutil.copy2(package, destination)
+        run(['chown', 'desktop:desktop', str(destination)])
+        print('安装文件已放入登录窗口的 Downloads 文件夹；请按厂商步骤安装，尚未确认安装完成。', flush=True)
+        sys.exit(20)
+    else:
+        raise ValueError('当前环境支持 Debian 安装包或 Linux 交互安装程序；请提供对应版本')
+except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+    print('安装未完成: '+str(exc), file=sys.stderr, flush=True)
+    sys.exit(1)

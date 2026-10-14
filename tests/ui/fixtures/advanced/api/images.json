@@ -1,0 +1,185 @@
+{
+  "host_arch": "arm64",
+  "mirrors": [
+    "mirror-a.example.com",
+    "mirror-b.example.com"
+  ],
+  "images": [
+    {
+      "image": "example/easyconnect",
+      "display": "example/easyconnect:<版本>",
+      "repo": "example/easyconnect",
+      "tag": null,
+      "kind": "pull",
+      "role": "vpn",
+      "title": "EasyConnect",
+      "used_by": [
+        "EasyConnect"
+      ],
+      "arch": [
+        "amd64",
+        "arm64"
+      ],
+      "versioned": true,
+      "build_context": null,
+      "versions": [
+        {
+          "tag": "7.6.7",
+          "arch": [
+            "amd64",
+            "arm64"
+          ],
+          "usable_here": true
+        },
+        {
+          "tag": "7.6.3",
+          "arch": [
+            "amd64"
+          ],
+          "usable_here": false
+        },
+        {
+          "tag": "vncless-7.6.7",
+          "arch": [
+            "arm64"
+          ],
+          "usable_here": true
+        }
+      ],
+      "present": null
+    },
+    {
+      "image": "example/atrust",
+      "display": "example/atrust:<版本>",
+      "repo": "example/atrust",
+      "tag": null,
+      "kind": "pull",
+      "role": "vpn",
+      "title": "aTrust",
+      "used_by": [
+        "aTrust"
+      ],
+      "arch": [
+        "amd64",
+        "arm64"
+      ],
+      "versioned": true,
+      "build_context": null,
+      "versions": [
+        {
+          "tag": "2.2.16",
+          "arch": [
+            "arm64"
+          ],
+          "usable_here": true
+        }
+      ],
+      "present": null
+    },
+    {
+      "image": "vpnmgr/oss-vpn:latest",
+      "display": "vpnmgr/oss-vpn:latest",
+      "repo": "vpnmgr/oss-vpn",
+      "tag": "latest",
+      "kind": "build",
+      "role": "vpn",
+      "title": "Cisco AnyConnect",
+      "used_by": [
+        "Cisco AnyConnect",
+        "GlobalProtect",
+        "OpenVPN",
+        "WireGuard"
+      ],
+      "arch": [
+        "amd64",
+        "arm64"
+      ],
+      "versioned": false,
+      "build_context": "images/oss",
+      "versions": [],
+      "present": true
+    },
+    {
+      "image": "vpnmgr/byo-desktop:latest",
+      "display": "vpnmgr/byo-desktop:latest",
+      "repo": "vpnmgr/byo-desktop",
+      "tag": "latest",
+      "kind": "build",
+      "role": "vpn",
+      "title": "自定义 / BYO",
+      "used_by": [
+        "自定义 / BYO"
+      ],
+      "arch": [
+        "amd64",
+        "arm64"
+      ],
+      "versioned": false,
+      "build_context": "images/byo",
+      "versions": [],
+      "present": false
+    },
+    {
+      "image": "vpnmgr/hillstone-desktop:latest",
+      "display": "vpnmgr/hillstone-desktop:latest",
+      "repo": "vpnmgr/hillstone-desktop",
+      "tag": "latest",
+      "kind": "build",
+      "role": "vpn",
+      "title": "Hillstone Secure Connect",
+      "used_by": [
+        "Hillstone Secure Connect"
+      ],
+      "arch": [
+        "amd64",
+        "arm64"
+      ],
+      "versioned": false,
+      "build_context": "images/hillstone",
+      "versions": [],
+      "present": true
+    },
+    {
+      "image": "example/router:v1.19.0",
+      "display": "example/router:v1.19.0",
+      "repo": "example/router",
+      "tag": "v1.19.0",
+      "kind": "pull",
+      "role": "infra",
+      "title": "分流底座",
+      "used_by": [],
+      "arch": [
+        "amd64",
+        "arm64"
+      ],
+      "versioned": false,
+      "build_context": null,
+      "versions": [
+        {
+          "tag": "v1.19.0",
+          "arch": [
+            "amd64",
+            "arm64"
+          ],
+          "usable_here": true
+        }
+      ],
+      "present": true
+    },
+    {
+      "image": "app",
+      "display": "app",
+      "repo": "app",
+      "tag": null,
+      "kind": "compose",
+      "role": "infra",
+      "title": "管理后端",
+      "used_by": [],
+      "arch": [],
+      "versioned": false,
+      "build_context": "app",
+      "versions": [],
+      "present": null
+    }
+  ]
+}

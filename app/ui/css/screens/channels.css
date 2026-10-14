@@ -1,0 +1,96 @@
+/* 通道 · 列表与详情（界面 03–05）。三栏的公共类在 components.css，这里只放本页的排布。 */
+
+/* 列表 */
+.lscroll { flex: 1; min-height: 0; overflow: auto; margin: 0 -8px; padding: 0 8px 12px; scrollbar-width: none; }
+.lscroll::-webkit-scrollbar { display: none; }
+.lscroll .lgroup:first-child { padding-top: 2px; }
+.litem:hover:not(.on) { background: var(--fill); }
+.litem .two span, .litem .two small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.litem .r, .litem > .st { flex: none; }
+.lnone { padding: 14px 12px; color: var(--ink-3); }
+
+/* 详情 */
+.dhead b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dhead .acts { flex: none; }
+.channel-tabs { display: flex; align-items: center; gap: 4px; flex: none; }
+.channel-tabs button { border: 0; border-radius: 9px; background: transparent; padding: 8px 16px; font-size: 13px; color: var(--ink-2); cursor: default; }
+.channel-tabs button:hover { background: var(--fill); }
+.channel-tabs button.on { background: var(--brand-soft); color: var(--brand-ink); font-weight: 650; }
+.ch-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px; overflow: auto; margin: -6px -16px -22px; padding: 6px 16px 22px; }
+
+/* 概览 */
+.ch-stats .big { font-size: 27.5px; }
+.ch-overview { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.ch-stats { display: flex; background: var(--card); border-radius: var(--r-card); padding: 18px 0; }
+.ch-metric { flex: 1; min-width: 0; padding: 0 22px; }
+.ch-metric + .ch-metric { border-left: 1px solid var(--line); }
+.ch-metric .lb { margin-bottom: 6px; }
+.ch-overview-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.ch-overview-details .ch-memo { grid-column: 2; grid-row: 1 / 3; }
+.ch-target-editor { min-width: 0; background: var(--card); border-radius: var(--r-card); padding: 18px; }
+.ch-target-editor summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; cursor: pointer; list-style: none; }
+.ch-target-editor summary::-webkit-details-marker { display: none; }
+.ch-target-editor summary b { font-weight: 600; }
+.ch-target-summary { grid-row: 2; grid-column: 1 / -1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-2); font-size: 11.5px; }
+.ch-target-edit { color: var(--brand-ink); font-size: 11.5px; }
+.ch-target-editor[open] .ch-target-edit { color: var(--ink-2); }
+.ch-target-form { margin-top: 14px; }
+.ch-target-form .cs-url { flex-wrap: wrap; }
+.ch-target-form .field { min-width: 140px; }
+.ch-chart .area.axis { margin-top: 6px; }
+.ch-chart svg { width: 100%; height: 132px; }
+.ch-chart .chart-none { height: 110px; }
+.ch-memo { display: flex; flex-direction: column; }
+.ch-memo .lb { min-height: 20px; }
+.ch-memo-acts { display: inline-flex; align-items: center; gap: 10px; }
+.ch-memo-state { font-weight: 500; }
+.ch-memo-text { display: block; width: 100%; flex: 0 1 auto; min-height: 0; margin-top: 4px; border: 0; outline: none; resize: none; font: inherit; line-height: 1.55; white-space: pre-wrap; }
+.ch-memo-text:focus { box-shadow: 0 0 0 3.5px rgba(84, 87, 230, .2), inset 0 0 0 1.5px var(--brand); }
+.ch-memo-text::placeholder { color: var(--ink-3); }
+.ch-memo-text:disabled { opacity: .7; }
+.ch-conflict { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 6px; padding: 9px 11px; border-radius: 11px; background: var(--wait-bg); color: var(--wait-ink); font-weight: 500; }
+.ch-conflict-acts { display: inline-flex; gap: 8px; margin-left: auto; }
+
+/* 规则 */
+.ch-rules .tr { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 50px 52px; }
+.ch-rules-rows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.ch-rules-rows .tr { flex: none; }
+.ch-rules-rows .tr:first-child { box-shadow: none; }
+.ch-rules-rows .tr + .tr { box-shadow: 0 -1px 0 var(--line); }
+.ch-rules .tr .cell.r { display: flex; justify-content: flex-end; }
+.ch-rules .fate { max-width: 100%; }
+.ch-rules-foot { padding: 8px 8px 4px; }
+.ch-del { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: var(--ink-3); cursor: default; opacity: 0; }
+.tr:hover .ch-del, .ch-del:focus-visible { opacity: 1; }
+.ch-del:hover { background: var(--fill); color: var(--bad-ink); }
+.ch-rules .btn.danger { padding: 0 8px; }
+
+/* 日志 */
+.ch-logcard { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ch-logs { flex: 1; min-height: 0; }
+
+/* 详情头的「更多」菜单：按钮和菜单项都是现成的 .btn，底色、阴影取卡片的 */
+.ch-more { position: relative; display: inline-flex; }
+.ch-more > .btn svg { color: var(--ink-3); }
+.ch-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 4; min-width: 148px; padding: 5px; display: flex; flex-direction: column; gap: 2px; border-radius: 12px; background: var(--card); box-shadow: var(--sh-card); }
+.ch-menu .btn { justify-content: flex-start; width: 100%; border-radius: 8px; }
+.ch-menu .btn.ghost { color: var(--ink); }
+.ch-menu .btn.ghost.danger { color: var(--bad-ink); }
+.ch-menu .btn:hover, .ch-menu .btn:focus-visible { background: var(--fill); outline: none; }
+
+/* 「恢复上一次设置」「没有参与分流」提示条：用规则页的 .rl-warn */
+.ch-restore-slot, .ch-whole { display: contents; }
+.rl-warn.ch-restore { margin: 0; }
+/* 登录页自己画详情头：详情头排第一，提示条第二，其余在后 */
+.ch-lift > .rl-warn { order: 1; }
+.ch-whole > * { order: 2; }
+.ch-whole > .dhead { order: 0; }
+.ch-unrouted-slot > .rl-warn { margin: 6px 6px 4px; }
+
+/* 删除确认 */
+.ch-del-text { margin: 0; line-height: 1.6; }
+
+@media (max-width: 1100px) {
+  .ch-overview-details { grid-template-columns: minmax(0, 1fr); }
+  .ch-overview-details .ch-memo { grid-column: auto; grid-row: auto; }
+}

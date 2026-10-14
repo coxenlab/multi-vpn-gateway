@@ -46,12 +46,17 @@ verified at build time, and that end up inside any `.app` / `.dmg` you produce:
   * Docker CLI (https://github.com/docker/cli) — Apache-2.0.
   * gvisor-tap-vsock (https://github.com/containers/gvisor-tap-vsock) —
     Apache-2.0, as a Lima dependency.
+  * OpenSSL (https://www.openssl.org/) — Apache-2.0, statically linked into
+    the Tongdao desktop core from the build machine's installed archives.
 
 If you redistribute a build of the macOS app, you are redistributing those
 components and must comply with their licenses (for mihomo, that includes the
-GPL-3.0 obligation to offer the corresponding source). The `.dmg` files attached
-to this project's releases ship a `THIRD-PARTY-LICENSES.txt` reproducing those
-licenses in full, along with the pinned upstream source locations.
+GPL-3.0 obligation to offer the corresponding source). Tongdao builds include
+these components' license texts and their upstream license locations in
+`Tongdao.app/Contents/Resources/licenses/`. Runtime and mihomo source versions
+remain pinned in the source manifests described above. This collection covers
+the listed components; their transitive dependencies and bundled Linux images
+also retain their own notices and licenses.
 
 Product and company names are used only to describe compatibility (nominative
 use); no affiliation, sponsorship, or endorsement is implied.

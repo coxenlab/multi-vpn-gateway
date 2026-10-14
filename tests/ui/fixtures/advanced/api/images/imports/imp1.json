@@ -1,0 +1,50 @@
+{
+  "__sequence__": [
+    {
+      "id": "imp1",
+      "preview": {
+        "images": [
+          {
+            "tags": [
+              "vpnmgr/oss-vpn:latest"
+            ],
+            "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "architecture": "arm64",
+            "adapters": [
+              "OpenVPN",
+              "WireGuard"
+            ]
+          }
+        ],
+        "bytes": 214958080,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "status": "loading",
+      "progress": "正在核对运行环境中的镜像…",
+      "error": null
+    },
+    {
+      "id": "imp1",
+      "preview": {
+        "images": [
+          {
+            "tags": [
+              "vpnmgr/oss-vpn:latest"
+            ],
+            "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "architecture": "arm64",
+            "adapters": [
+              "OpenVPN",
+              "WireGuard"
+            ]
+          }
+        ],
+        "bytes": 214958080,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "status": "done",
+      "progress": "已经导入，可以用来添加通道",
+      "error": null
+    }
+  ]
+}

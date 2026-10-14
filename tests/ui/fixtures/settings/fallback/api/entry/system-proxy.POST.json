@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "state": {
+    "supported": true,
+    "service": "Wi-Fi",
+    "url": null,
+    "enabled": false,
+    "is_ours": false
+  }
+}

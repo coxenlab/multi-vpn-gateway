@@ -1,0 +1,1 @@
+"# 通道管家 · Clash Verge 扩展配置(示例)\nprepend-rules:\n  - DOMAIN-SUFFIX,corp.example.test,tongdao-router,no-resolve\n"

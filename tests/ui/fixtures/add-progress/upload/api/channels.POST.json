@@ -1,0 +1,32 @@
+{
+  "__status__": 200,
+  "__delay_ms__": 1200,
+  "__body__": {
+    "id": "demo-cu1",
+    "name": "合作方桌面",
+    "vpn_type": "custom",
+    "server": "vpn.example.test",
+    "ec_ver": "",
+    "login_method": "byo",
+    "username": "",
+    "vnc_password": "vnc-demo-cu1",
+    "mac": "02:11:22:33:44:58",
+    "novnc_port": 39150,
+    "probe_url": "",
+    "status": "running",
+    "container_id": "c-demo-cu1",
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "running",
+    "domains": [],
+    "ips": [],
+    "volume_name": "vpndata-demo-cu1",
+    "socks_proxy": "ch-demo-cu1",
+    "socks_endpoint": "vpn-demo-cu1:1080",
+    "uptime": "1小时5分",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  }
+}

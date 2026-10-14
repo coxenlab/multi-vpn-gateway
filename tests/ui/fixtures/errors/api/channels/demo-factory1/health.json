@@ -1,0 +1,11 @@
+{
+  "status": "error",
+  "connected": false,
+  "latency_ms": null,
+  "checked_at": null,
+  "stale": true,
+  "replacement": null,
+  "blocked": true,
+  "awaiting_target": false,
+  "target": "mes.example.test"
+}

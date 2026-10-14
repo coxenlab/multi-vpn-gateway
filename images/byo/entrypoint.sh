@@ -1,33 +1,21 @@
 #!/bin/sh
-set -e
-
-# --- /dev/net/tun 兜底(host 应 --device 传入;mknod 是安全网,需 MKNOD cap)---
-if [ ! -c /dev/net/tun ]; then
-    mkdir -p /dev/net
-    mknod /dev/net/tun c 10 200 || echo "WARN: mknod /dev/net/tun 失败 — VPN 客户端可能拿不到隧道(需 --cap-add NET_ADMIN,MKNOD)"
-    chmod 600 /dev/net/tun 2>/dev/null || true
+set -eu
+# Docker supplies a PRIVATE cgroup namespace. AppArmor permits only this
+# remount; never bind the VM's cgroup tree or use privileged/host namespaces.
+test "$(cat /proc/1/cgroup)" = '0::/'
+mount -o remount,rw /sys/fs/cgroup
+mkdir -p /root/installers /root/.local/share/tongdao/apps /run/tongdao
+mkdir -p /home/desktop/.local/share/tongdao/apps /home/desktop/Downloads
+chown -R desktop:desktop /home/desktop
+chmod 700 /run/tongdao
+# Keep credentials in a private file, not argv or process environment passed
+# to the desktop/session or the VPN installer.
+(umask 077; printf '%s\n' "${PASSWORD:?missing desktop password}" > /run/tongdao/vnc-password)
+unset PASSWORD
+# Generic compatibility for translated Go programs on Apple Silicon.
+# This does not replace or edit any vendor unit or installation script.
+if [ "$(uname -m)" = aarch64 ]; then
+    mkdir -p /etc/systemd/system.conf.d
+    printf '[Manager]\nDefaultEnvironment=GODEBUG=cpu.avx2=off\n' > /etc/systemd/system.conf.d/tongdao-translation.conf
 fi
-
-# --- 无头 X ---
-rm -f /tmp/.X0-lock
-Xvfb :0 -screen 0 "${GEOMETRY:-1280x800x24}" -nolisten tcp &
-for i in $(seq 1 50); do [ -e /tmp/.X11-unix/X0 ] && break; sleep 0.1; done
-
-# --- 窗口管理器 ---
-DISPLAY=:0 fluxbox >/tmp/fluxbox.log 2>&1 &
-
-# --- VNC server 绑到 Xvfb 显示,密码取自 PASSWORD env(同 hagb 合约)---
-# RFB 5901 对齐 manager.ensure_novnc_bridge 的自愈目标(127.0.0.1:5901)。
-PW="${PASSWORD:-changeme}"
-x11vnc -storepasswd "$PW" /tmp/.vncpass >/dev/null 2>&1
-x11vnc -display :0 -rfbport 5901 -rfbauth /tmp/.vncpass \
-       -forever -shared -noxdamage -repeat -bg -o /tmp/x11vnc.log
-
-# --- noVNC:websockify 同端口既服务静态站点又桥接 WS->VNC(8080)---
-# 与 vnc.html?path=websockify/&password=PW 兼容(websockify 升级任意路径)。
-websockify --web /usr/share/novnc 0.0.0.0:8080 127.0.0.1:5901 >/tmp/websockify.log 2>&1 &
-
-# --- SOCKS5 占 0.0.0.0:1080(仅 docker 内网,命门 #4 永不 host-map):
-#     microsocks 跟随 OS 路由表,自动走用户客户端装起的 tun 路由(无 egress pin,
-#     因为任意厂商客户端的隧道接口名事先未知)---
-exec microsocks -i 0.0.0.0 -p 1080
+exec /sbin/init

@@ -1,0 +1,40 @@
+{
+  "mihomo_status": "running",
+  "mihomo_port": 47231,
+  "controller": "127.0.0.1:47232",
+  "ui_port": 47230,
+  "bound_ip": "127.0.0.1",
+  "gateway_health": "healthy",
+  "gateway_checked_at_ms": 1779999996000,
+  "proxy_port_reachable": true,
+  "healing": false,
+  "gave_up": false,
+  "vm_egress_dead": false,
+  "usernet": null,
+  "egress_guard_checked_at": null,
+  "egress_guard_applied": null,
+  "self_heal_enabled": true,
+  "vm_profile": "tongdao",
+  "runtime": {
+    "phase": "ready",
+    "active_tasks": 0,
+    "start_attempt": 1,
+    "release_in_seconds": null,
+    "error": null,
+    "detail": ""
+  },
+  "host_integrations_available": true,
+  "probe_cache_available": true,
+  "routing_off": false,
+  "config_application": {
+    "available": true,
+    "scope": "managed_rules_proxies",
+    "source_revision": 12,
+    "desired_revision": 12,
+    "desired_generation": 12,
+    "applied_generation": 12,
+    "verified_at": 1779999996,
+    "last_error": null,
+    "pending": false
+  }
+}

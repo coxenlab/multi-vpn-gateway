@@ -1,0 +1,21 @@
+{
+  "q": "10.20.16.10",
+  "kind": "ip",
+  "normalized": "10.20.16.10",
+  "result": "channel",
+  "rule": {
+    "id": 3,
+    "kind": "ip",
+    "pattern": "10.20.16.0/24"
+  },
+  "channel": {
+    "id": "demo-rd",
+    "name": "华东研发",
+    "status": "logged_in"
+  },
+  "reachable": {
+    "ok": true,
+    "latency_ms": 18,
+    "port": 443
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "__status__": 200,
+  "__delay_ms__": 1200,
+  "__body__": {
+    "id": "demo-nv1",
+    "name": "仓库",
+    "vpn_type": "anyconnect",
+    "server": "vpn.example.test",
+    "ec_ver": "",
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": "vnc-demo-nv1",
+    "mac": "02:11:22:33:44:58",
+    "novnc_port": 39150,
+    "probe_url": "",
+    "status": "running",
+    "container_id": "c-demo-nv1",
+    "latency_ms": null,
+    "config": {},
+    "routing_enabled": true,
+    "configured_status": "running",
+    "domains": [],
+    "ips": [],
+    "volume_name": "vpndata-demo-nv1",
+    "socks_proxy": "ch-demo-nv1",
+    "socks_endpoint": "vpn-demo-nv1:1080",
+    "uptime": "1小时5分",
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": false
+  }
+}

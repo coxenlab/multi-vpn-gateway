@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
-use bollard::container::{CreateContainerOptions, LogsOptions, RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions, UploadToContainerOptions};
+use bollard::container::{CreateContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions, UploadToContainerOptions};
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{CreateImageOptions, ImportImageOptions, RemoveImageOptions, TagImageOptions};
 use bollard::models::CreateImageInfo;
 use bollard::network::{CreateNetworkOptions, InspectNetworkOptions};
 use bollard::Docker;
-use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
@@ -33,22 +32,82 @@ pub async fn connect_at(sock: &str) -> Result<Docker> {
     Ok(docker)
 }
 
-/// 对照 manager.uptime:容器 vpn-{cid} 运行时长的人类可读串;停止/缺失/任何错误 → None。
-pub async fn uptime(docker: Option<&Docker>, cid: &str) -> Option<String> {
-    let docker = docker?;
-    let name = format!("vpn-{cid}");
-    let info = docker.inspect_container(&name, None).await.ok()?;
-    let state = info.state?;
-    if !state.running.unwrap_or(false) {
-        return None;
+pub async fn inspect_with_timeout(docker: &Docker, name: &str, budget: std::time::Duration)
+    -> Result<bollard::models::ContainerInspectResponse> {
+    tokio::time::timeout(budget, docker.inspect_container(name, None)).await
+        .map_err(|_| anyhow!("读取容器状态超时"))?.map_err(Into::into)
+}
+
+pub async fn network_inspect_with_timeout(docker: &Docker, name: &str, budget: std::time::Duration)
+    -> Result<bollard::models::Network> {
+    tokio::time::timeout(budget, docker.inspect_network(name, None::<InspectNetworkOptions<String>>)).await
+        .map_err(|_| anyhow!("读取网络状态超时"))?.map_err(Into::into)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerPresence { Running, Absent, #[default] Unknown }
+
+#[derive(Clone, Debug, Default)]
+pub struct ContainerObservation {
+    pub state: ContainerPresence,
+    pub uptime: Option<String>,
+}
+
+/// 一次列表只读取本工具的通道容器；失败必须向上传递，不能冒充空列表。
+pub async fn channel_snapshot(docker: Option<&Docker>) -> Result<HashMap<String, ContainerObservation>> {
+    let docker = docker.ok_or_else(|| anyhow!("运行环境状态暂时无法读取"))?;
+    let options = ListContainersOptions::<String> {
+        all: true,
+        filters: HashMap::from([("name".into(), vec!["vpn-".into()])]),
+        ..Default::default()
+    };
+    let list = tokio::time::timeout(std::time::Duration::from_secs(10), docker.list_containers(Some(options)))
+        .await.map_err(|_| anyhow!("运行环境状态读取超时"))??;
+    Ok(observations(list))
+}
+
+fn observations(list: Vec<bollard::models::ContainerSummary>) -> HashMap<String, ContainerObservation> {
+    let mut out = HashMap::new();
+    for item in list {
+        let state = match item.state.as_deref() {
+            Some("running") => ContainerPresence::Running,
+            Some("created" | "exited" | "dead" | "removing" | "paused" | "restarting") => ContainerPresence::Absent,
+            _ => ContainerPresence::Unknown,
+        };
+        let uptime = if state == ContainerPresence::Running { item.status.as_deref().and_then(summary_uptime) } else { None };
+        for name in item.names.unwrap_or_default() {
+            if let Some(cid) = name.trim_start_matches('/').strip_prefix("vpn-").filter(|cid| !cid.is_empty()) {
+                out.insert(cid.into(), ContainerObservation { state: state.clone(), uptime: uptime.clone() });
+            }
+        }
     }
-    let started = state.started_at?;
-    let started: DateTime<Utc> = DateTime::parse_from_rfc3339(&started).ok()?.with_timezone(&Utc);
-    let secs = (Utc::now() - started).num_seconds();
-    if secs < 0 {
-        return None;
+    out
+}
+
+/// Docker 列表没有 StartedAt，不能拿 Created 冒充运行时长；只转换它报告的 Up 时长。
+fn summary_uptime(status: &str) -> Option<String> {
+    let elapsed = status.strip_prefix("Up ")?.split(" (").next()?;
+    match elapsed {
+        "Less than a second" => return Some("不到1秒".into()),
+        "About a minute" => return Some("约1分钟".into()),
+        "About an hour" => return Some("约1小时".into()),
+        _ => {}
     }
-    Some(fmt_uptime(secs))
+    let (n, unit) = elapsed.split_once(' ')?;
+    let n: i64 = n.parse().ok()?;
+    let multiplier = match unit.trim_end_matches('s') {
+        "second" => 1, "minute" => 60, "hour" => 3600, "day" => 86400, "week" => 604800,
+        _ => return None,
+    };
+    (n >= 0).then(|| n.checked_mul(multiplier)).flatten().map(fmt_uptime)
+}
+
+pub fn observation(snapshot: Option<&HashMap<String, ContainerObservation>>, cid: &str) -> ContainerObservation {
+    match snapshot {
+        None => ContainerObservation::default(),
+        Some(map) => map.get(cid).cloned().unwrap_or(ContainerObservation { state: ContainerPresence::Absent, uptime: None }),
+    }
 }
 
 /// 对照 manager.uptime 的格式化分支(中文单位)。
@@ -257,13 +316,14 @@ pub async fn container_ip_on_net(docker: &Docker, name: &str, net: &str) -> Opti
     if ip.is_empty() { None } else { Some(ip) }
 }
 
-/// 某 docker 网络的首个 IPv4 子网(如 `172.18.0.0/16`);网络不存在或无 IPAM 配置 → None。
-pub async fn network_subnet(docker: &Docker, net: &str) -> Option<String> {
-    let info = docker.inspect_network(net, None::<InspectNetworkOptions<String>>).await.ok()?;
-    let cfgs = info.ipam?.config?;
-    cfgs.into_iter()
-        .filter_map(|c| c.subnet)
-        .find(|s| s.contains('.'))
+/// 从同一次网络快照取网桥名；未经校验的 Docker 文本不能插入守卫脚本。
+pub fn network_bridge(info: &bollard::models::Network) -> Option<String> {
+    if let Some(name) = info.options.as_ref().and_then(|o| o.get("com.docker.network.bridge.name")) {
+        return crate::vm::valid_bridge(name).then(|| name.clone());
+    }
+    let id = info.id.as_deref()?;
+    if id.len() < 12 || !id.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+    Some(format!("br-{}", &id[..12]))
 }
 
 pub async fn exec_capture(docker: &Docker, name: &str, cmd: Vec<&str>) -> Result<String> {
@@ -556,6 +616,35 @@ pub async fn run_probe_capture(docker: &Docker, cfg: &crate::config::Config, ima
     result
 }
 
+/// 空闲释放时只停止本网络的探针；清空缓存使下次探测重新检查并启动它。
+pub async fn stop_probe(docker: &Docker, cfg: &crate::config::Config) -> Result<()> {
+    let key = format!("{}:{}", cfg.docker_socket().display(), cfg.vpn_net);
+    let cache = PROBE_CONTAINERS.lock().map_err(|_| anyhow!("probe cache unavailable"))?
+        .entry(key).or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(None))).clone();
+    let mut cached = cache.lock().await;
+    *cached = None;
+    let before = match inspect_with_timeout(docker, PROBE_CONTAINER, std::time::Duration::from_secs(5)).await {
+        Ok(info) => info,
+        Err(error) if error.downcast_ref::<bollard::errors::Error>().is_some_and(is_not_found) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let owned = before.config.as_ref().and_then(|c| c.labels.as_ref())
+        .and_then(|labels| labels.get("com.vpnmgr.role")).map(String::as_str) == Some("probe");
+    anyhow::ensure!(owned && before.host_config.as_ref().and_then(|h| h.network_mode.as_deref()) == Some(&cfg.vpn_net),
+        "探针容器归属无法确认，保留运行环境");
+    let id = before.id.ok_or_else(|| anyhow!("探针容器缺少 ID"))?;
+    if before.state.and_then(|s| s.running) == Some(false) { return Ok(()); }
+    // 应答丢失也不重复 stop；按不可变 ID 读回实际结果。
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), stop(docker, &id)).await;
+    match inspect_with_timeout(docker, &id, std::time::Duration::from_secs(5)).await {
+        Ok(after) => anyhow::ensure!(after.id.as_deref() == Some(&id)
+            && after.state.and_then(|s| s.running) == Some(false), "探针停止尚未确认"),
+        Err(error) if error.downcast_ref::<bollard::errors::Error>().is_some_and(is_not_found) => {},
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
 /// 仅清理本次探针。API 层保有维护许可，HTTP 取消后仍执行到清理结束。
 pub async fn run_tun_probe(docker: &Docker, image: &str) -> Result<bool> {
     run_tun_probe_with_budget(docker, image, std::time::Duration::from_secs(10)).await
@@ -632,6 +721,22 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn slow_read_endpoints_obey_caller_budget() {
+        use axum::{Router, http::StatusCode};
+        let app = Router::new().fallback(|| async {
+            std::future::pending::<()>().await;
+            StatusCode::OK
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let docker = Docker::connect_with_http(&format!("http://{}", listener.local_addr().unwrap()), 120, bollard::API_DEFAULT_VERSION).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let budget = std::time::Duration::from_millis(30);
+        assert!(inspect_with_timeout(&docker, "fixture", budget).await.unwrap_err().to_string().contains("超时"));
+        assert!(network_inspect_with_timeout(&docker, "fixture", budget).await.unwrap_err().to_string().contains("超时"));
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn restart_has_deadlines_reads_back_lost_ack_and_never_replays() {
         use axum::{http::{Method, StatusCode}, response::IntoResponse, Router};
         use serde_json::json;
@@ -671,6 +776,45 @@ mod tests {
             assert_eq!(writes.len(), usize::from(!matches!(mode, "inspect_timeout" | "missing")), "{mode}");
             assert!(writes.iter().all(|(_, path)| path.contains("/containers/owned-id/restart?t=10")));
             if !writes.is_empty() { assert!(calls.last().unwrap().1.ends_with("/containers/owned-id/json")); }
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_probe_stop_checks_ownership_and_readback() {
+        use axum::{body::Body, http::{Method, Request, StatusCode}, response::IntoResponse, Router};
+        use std::sync::{Arc, Mutex};
+        for mode in ["ok", "lost_ack", "still_running", "foreign", "wrong_network", "missing", "stopped"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut cfg = crate::config::Config::from_getter(|_| None);
+            cfg.data_dir = dir.path().into(); cfg.dev_mode = true;
+            cfg.mihomo_ctrl_url = "http://127.0.0.1:1".into();
+            let network = cfg.vpn_net.clone();
+            let writes = Arc::new(Mutex::new(0));
+            let observed = writes.clone();
+            let app = Router::new().fallback(move |request: Request<Body>| {
+                let writes = observed.clone(); let network = network.clone();
+                async move {
+                    if request.method() == Method::POST {
+                        assert!(request.uri().path().ends_with("/probe-owned/stop"));
+                        *writes.lock().unwrap() += 1;
+                        return if mode == "lost_ack" { StatusCode::INTERNAL_SERVER_ERROR } else { StatusCode::NO_CONTENT }.into_response();
+                    }
+                    assert_eq!(request.method(), Method::GET);
+                    if mode == "missing" { return StatusCode::NOT_FOUND.into_response(); }
+                    let stopped = mode == "stopped" || (*writes.lock().unwrap() > 0 && mode != "still_running");
+                    axum::Json(serde_json::json!({"Id":"probe-owned",
+                        "Config":{"Labels":{"com.vpnmgr.role":if mode == "foreign" {"other"} else {"probe"}}},
+                        "HostConfig":{"NetworkMode":if mode == "wrong_network" {"other".to_string()} else {network}},
+                        "State":{"Running":!stopped}})).into_response()
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let docker = Docker::connect_with_http(&format!("http://{}", listener.local_addr().unwrap()), 2, bollard::API_DEFAULT_VERSION).unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+            let result = stop_probe(&docker, &cfg).await;
+            assert_eq!(result.is_ok(), matches!(mode, "ok" | "lost_ack" | "missing" | "stopped"), "{mode}: {result:?}");
+            assert_eq!(*writes.lock().unwrap(), usize::from(matches!(mode, "ok" | "lost_ack" | "still_running")), "{mode}");
+            server.abort();
         }
     }
 
@@ -810,15 +954,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uptime_none_without_docker() {
-        assert_eq!(uptime(None, "deadbeef").await, None);
+    async fn snapshot_error_without_docker() {
+        assert!(channel_snapshot(None).await.is_err());
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn uptime_none_for_missing_container() {
-        let d = connect().await.unwrap();
-        assert_eq!(uptime(Some(&d), "no-such-cid").await, None);
+    #[test]
+    fn snapshot_distinguishes_missing_unknown_and_running_without_uptime() {
+        use bollard::models::ContainerSummary;
+        let map = observations(vec![
+            ContainerSummary { names: Some(vec!["/vpn-live".into()]), state: Some("running".into()), status: Some("Up 3 minutes (healthy)".into()), ..Default::default() },
+            ContainerSummary { names: Some(vec!["/vpn-no-time".into()]), state: Some("running".into()), created: Some(1), ..Default::default() },
+            ContainerSummary { names: Some(vec!["/vpn-stopped".into()]), state: Some("exited".into()), ..Default::default() },
+            ContainerSummary { names: Some(vec!["/unrelated-vpn-x".into()]), state: Some("running".into()), ..Default::default() },
+        ]);
+        assert_eq!(map.len(), 3);
+        assert_eq!(observation(Some(&map), "live").uptime.as_deref(), Some("3分钟"));
+        assert_eq!(observation(Some(&map), "no-time").state, ContainerPresence::Running);
+        assert_eq!(observation(Some(&map), "no-time").uptime, None);
+        assert_eq!(observation(Some(&map), "missing").state, ContainerPresence::Absent);
+        assert_eq!(observation(Some(&map), "stopped").state, ContainerPresence::Absent);
+        assert_eq!(observation(None, "live").state, ContainerPresence::Unknown);
     }
 
     #[tokio::test]

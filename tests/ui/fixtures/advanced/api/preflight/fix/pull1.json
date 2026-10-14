@@ -1,0 +1,22 @@
+{
+  "__sequence__": [
+    {
+      "status": "running",
+      "progress": "准备拉取…",
+      "log_tail": [],
+      "error": null
+    },
+    {
+      "status": "running",
+      "progress": "正在下载，已完成一半",
+      "log_tail": [],
+      "error": null
+    },
+    {
+      "status": "done",
+      "progress": "完成",
+      "log_tail": [],
+      "error": null
+    }
+  ]
+}

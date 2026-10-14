@@ -1,0 +1,25 @@
+{
+  "versions": [
+    {
+      "tag": "7.6.7",
+      "arch": [
+        "arm64"
+      ],
+      "usable_here": true
+    },
+    {
+      "tag": "7.6.3",
+      "arch": [
+        "arm64"
+      ],
+      "usable_here": true
+    },
+    {
+      "tag": "7.6.3-amd64",
+      "arch": [
+        "amd64"
+      ],
+      "usable_here": false
+    }
+  ]
+}

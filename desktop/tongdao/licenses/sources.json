@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "licenses": [
+    {
+      "component": "mihomo",
+      "license_source": "https://raw.githubusercontent.com/MetaCubeX/mihomo/v1.19.27/LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "component": "lima",
+      "license_source": "https://raw.githubusercontent.com/lima-vm/lima/2d4314e945cda21ed777fe73a078619f23fc48df/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "component": "colima",
+      "license_source": "https://raw.githubusercontent.com/abiosoft/colima/v0.10.3/LICENSE",
+      "sha256": "e5ce0844732e29a77f349cc332fcb6ab75617393f9e565ac6509c7b681d95eea"
+    },
+    {
+      "component": "docker-cli",
+      "license_source": "https://raw.githubusercontent.com/docker/cli/v29.3.1/LICENSE",
+      "sha256": "2d81ea060825006fc8f3fe28aa5dc0ffeb80faf325b612c955229157b8c10dc0"
+    },
+    {
+      "component": "gvisor-tap-vsock",
+      "license_source": "https://raw.githubusercontent.com/containers/gvisor-tap-vsock/v0.8.9/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "component": "openssl",
+      "license_source": "https://www.openssl.org/source/",
+      "local_source": "openssl@3/LICENSE.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "mihomo_status": "running",
+  "mihomo_port": 47231,
+  "controller": "127.0.0.1:47232",
+  "ui_port": 47230,
+  "bound_ip": "127.0.0.1",
+  "gateway_health": "healthy",
+  "gateway_checked_at_ms": 1779999996000,
+  "proxy_port_reachable": true,
+  "healing": false,
+  "gave_up": false,
+  "vm_egress_dead": false,
+  "usernet": {
+    "checked_at": "2099-01-01T00:00:00Z",
+    "status": "observed",
+    "reason": null,
+    "network": "user-v2",
+    "pid": 4242,
+    "multiple_interfaces": false,
+    "runtime": {
+      "lima": "1.0.0",
+      "gvisor_tap_vsock": "0.8.9",
+      "default_dial_limit": 10,
+      "gvisor_replaced": false
+    },
+    "runtime_error": null,
+    "syn_sent": 1,
+    "at_default_limit": false,
+    "destinations": [],
+    "destinations_omitted": 0,
+    "duration_ms": 12,
+    "attribution": "按当前运行环境定位"
+  },
+  "egress_guard_checked_at": "2026-09-28T09:58:00Z",
+  "egress_guard_applied": true,
+  "self_heal_enabled": true,
+  "vm_profile": "tongdao",
+  "runtime": {
+    "phase": "ready",
+    "active_tasks": 0,
+    "start_attempt": 1,
+    "release_in_seconds": null,
+    "error": null,
+    "detail": ""
+  },
+  "host_integrations_available": true,
+  "probe_cache_available": true,
+  "routing_off": false,
+  "config_application": {
+    "available": true,
+    "scope": "managed_rules_proxies",
+    "source_revision": 12,
+    "desired_revision": 12,
+    "desired_generation": 12,
+    "applied_generation": 12,
+    "verified_at": 1779999996,
+    "last_error": null,
+    "pending": false
+  }
+}

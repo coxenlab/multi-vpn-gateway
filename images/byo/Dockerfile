@@ -1,37 +1,40 @@
-FROM debian:bookworm-slim
+ARG BASE_IMAGE=debian:bookworm-slim
+FROM ${BASE_IMAGE}
+ARG DEBIAN_MIRROR=http://deb.debian.org/debian
+ARG DEBIAN_SECURITY_MIRROR=http://deb.debian.org/debian-security
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    DISPLAY=:0 \
-    GEOMETRY=1280x800x24
+ENV DEBIAN_FRONTEND=noninteractive DISPLAY=:0 GEOMETRY=1280x800x24 container=docker
+# One vendor-neutral Linux desktop. Official package maintainer scripts run
+# under real systemd; no extracted vendor binaries or substitute service shims.
+RUN sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g; s|http://deb.debian.org/debian |${DEBIAN_MIRROR} |g; s|http://deb.debian.org/debian$|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::Retries=3 update \
+ && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+      systemd systemd-sysv dbus dbus-x11 xvfb fluxbox x11vnc novnc websockify \
+      microsocks iproute2 iptables iputils-ping net-tools dnsutils procps \
+      wget curl ca-certificates xterm pcmanfm libgtk-3-0 libwebkit2gtk-4.1-0 \
+      desktop-file-utils libglib2.0-bin python3 file sudo wmctrl x11-utils \
+      gnome-keyring libpam-gnome-keyring \
+ && if [ "$(dpkg --print-architecture)" = arm64 ]; then \
+      dpkg --add-architecture amd64; apt-get -o Acquire::Retries=3 update; \
+      apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        libgtk-3-0:amd64 libwebkit2gtk-4.1-0:amd64; fi \
+ && apt-get clean
 
-# 拆成多个小 RUN 层:不稳定的 apt 镜像/代理下,buildkit 缓存已成功的层,
-# 重试只重跑失败层、逐层收敛(单层大 apt 任一包耗尽重试即整层失败、且不缓存)。
-# 一次 update(索引随层文件系统下传给后续 install 层),最后统一清 lists。
-RUN apt-get -o Acquire::Retries=8 update
-# 桌面 + noVNC 栈
-RUN apt-get -o Acquire::Retries=8 install -y --no-install-recommends xvfb fluxbox x11vnc
-# noVNC 静态站 + WS 桥 + SOCKS5(bookworm 一等包)
-RUN apt-get -o Acquire::Retries=8 install -y --no-install-recommends novnc websockify microsocks
-# tun/网络工具 + ensure_novnc_bridge 自愈用的 pgrep(procps)/ss(iproute2)
-RUN apt-get -o Acquire::Retries=8 install -y --no-install-recommends \
-      iproute2 iptables iputils-ping net-tools dnsutils procps
-# 下载/安装客户端 + 终端 + 文件管理器 + GUI 客户端常见运行时依赖
-RUN apt-get -o Acquire::Retries=8 install -y --no-install-recommends \
-      wget curl ca-certificates xterm pcmanfm libgtk-3-0 libnss3 libxss1
-RUN rm -rf /var/lib/apt/lists/*
+RUN apt-get -o Acquire::Retries=3 install -y --no-install-recommends fonts-wqy-microhei \
+ && apt-get clean \
+ && systemctl mask dev-hugepages.mount sys-fs-fuse-connections.mount danted.service
 
-# 兼容 manager.ensure_novnc_bridge 的自愈路径(它硬编码 /usr/local/share/novnc)
-RUN mkdir -p /usr/local/share && ln -sf /usr/share/novnc /usr/local/share/novnc
-
-# 上传安装器落点(put_archive 的 dest_dir 须已存在)
-RUN mkdir -p /root/installers
-WORKDIR /root
-
+RUN useradd --create-home --uid 1000 --shell /bin/bash desktop \
+ && mkdir -p /usr/local/share /root/installers /etc/systemd/system/multi-user.target.wants \
+ && ln -sfn /usr/share/novnc /usr/local/share/novnc \
+ && truncate -s 0 /etc/machine-id
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# 8080 = noVNC web+ws(manager 映射到 127.0.0.1 随机高位端口)
-# 1080 = SOCKS5(仅 docker 内网,永不 host-map — 命门 #4)
+COPY tongdao-desktop tongdao-install /usr/local/bin/
+COPY units/ /etc/systemd/system/
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/tongdao-desktop /usr/local/bin/tongdao-install \
+ && for service in tongdao-display tongdao-desktop tongdao-vnc tongdao-websockify tongdao-socks; do \
+      ln -sfn ../${service}.service /etc/systemd/system/multi-user.target.wants/${service}.service; done
+WORKDIR /root
 EXPOSE 8080 1080
-
+STOPSIGNAL SIGRTMIN+3
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

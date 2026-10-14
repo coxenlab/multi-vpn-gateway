@@ -19,6 +19,7 @@ pub struct Forward {
     child: Option<Child>,
     viewers: HashMap<String, Instant>,
     legacy: bool,
+    release_after: Option<Instant>,
 }
 
 impl Forward {
@@ -93,6 +94,7 @@ pub async fn acquire(state: &AppState, cid: &str, viewer: Option<&str>) -> Resul
     let port = ensure_bounded(state, cid).await?;
     let mut forwards = state.novnc.forwards.lock().await;
     let forward = forwards.entry(cid.into()).or_default();
+    forward.release_after = None;
     if let Some(viewer) = viewer {
         forward.viewers.insert(viewer.into(), Instant::now() + Duration::from_secs(VIEWER_TTL_SECONDS));
     } else {
@@ -118,13 +120,14 @@ pub async fn renew(state: &AppState, cid: &str, viewer: &str) -> bool {
 
 pub async fn release(state: &AppState, cid: &str, viewer: &str) {
     let _guard = state.novnc.operation(cid).await;
-    let watched = {
-        let mut forwards = state.novnc.forwards.lock().await;
-        let Some(forward) = forwards.get_mut(cid) else { return; };
-        forward.viewers.remove(viewer);
-        forward.watched(Instant::now())
-    };
-    if !watched { drop_for_unlocked(state, cid).await; }
+    let mut forwards = state.novnc.forwards.lock().await;
+    let Some(forward) = forwards.get_mut(cid) else { return; };
+    let now = Instant::now();
+    // Only a real viewer leaving starts grace; duplicate releases cannot extend it.
+    let removed = forward.viewers.remove(viewer).is_some();
+    if !forward.watched(now) && removed && forward.release_after.is_none() {
+        forward.release_after = Some(now + Duration::from_secs(VIEWER_TTL_SECONDS));
+    }
 }
 
 async fn ensure_unlocked(state: &AppState, cid: &str) -> Result<i64> {
@@ -189,6 +192,8 @@ async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
         .filter(|port| *port != 0);
 
     drop_child(state, cid).await;
+    let record_path = crate::forward_owner::novnc_path(&state.cfg.data_dir, cid);
+    crate::forward_owner::reclaim(&record_path, &state.cfg.vm_profile, None).await?;
     let port = old_port.filter(|port| port_available(*port)).unwrap_or(alloc_host_port()?);
     let ssh_config = crate::vm::ssh_config_path(&state.cfg.vm_profile);
     if !ssh_config.exists() {
@@ -202,12 +207,14 @@ async fn try_ensure(state: &AppState, cid: &str) -> Result<u16> {
     );
     let started = std::time::Instant::now();
     let mut cmd = Command::new("ssh");
-    cmd.args(args)
+    cmd.args(&args)
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let child = cmd.spawn().map_err(|error| anyhow!("拉起 noVNC SSH 转发失败:{error}"))?;
+    crate::forward_owner::record(&record_path, child.id().ok_or_else(|| anyhow!("登录转发进程已退出"))?,
+        &args, &[port]).await?;
     state.novnc.forwards.lock().await.entry(cid.to_string()).or_default().child = Some(child);
     crate::ev!(info, "novnc", "forward_spawn", "noVNC SSH 转发进程已拉起", {
         "cid": cid, "port": port, "target": forward.guest.as_str()
@@ -277,8 +284,12 @@ pub async fn watchdog_tick(state: AppState, ensure_due: bool) {
     for cid in ids {
         let Some(_operation) = state.lifecycle.maintenance_access(&cid).await else { return; };
         let _ensure = state.novnc.operation(&cid).await;
-        let watched = state.novnc.forwards.lock().await.get_mut(&cid).is_some_and(|f| f.watched(Instant::now()));
-        if !watched { drop_for_unlocked(&state, &cid).await; continue; }
+        let (watched, retained) = {
+            let mut forwards = state.novnc.forwards.lock().await;
+            let now = Instant::now();
+            forwards.get_mut(&cid).map(|f| (f.watched(now), f.release_after.is_some_and(|until| until > now))).unwrap_or_default()
+        };
+        if !watched && !retained { drop_for_unlocked(&state, &cid).await; continue; }
         let channel = match crate::store::get_channel(&state.cfg.db_path(), &cid) {
             Ok(Some(channel)) => channel,
             Ok(None) => { drop_for_unlocked(&state, &cid).await; continue; }
@@ -290,6 +301,7 @@ pub async fn watchdog_tick(state: AppState, ensure_due: bool) {
             drop_for_unlocked(&state, &cid).await;
             continue;
         }
+        if !watched { continue; } // Keep the existing child during grace, without healing it.
         let exited = match take_exited(&state, &channel.id).await {
             Ok(status) => status,
             Err(error) => {
@@ -450,12 +462,24 @@ mod tests {
         assert!(renew(&state, "c1", second).await);
         assert_eq!(state.novnc.forwards.lock().await["c1"].child.as_ref().unwrap().id(), Some(pid));
         release(&state, "c1", second).await;
+        let deadline = state.novnc.forwards.lock().await["c1"].release_after;
+        release(&state, "c1", second).await;
+        assert_eq!(state.novnc.forwards.lock().await["c1"].release_after, deadline);
+        watchdog_tick(state.clone(), true).await;
+        assert_eq!(state.novnc.forwards.lock().await["c1"].child.as_ref().unwrap().id(), Some(pid));
+        assert!(!has_viewers(&state).await, "grace does not prevent runtime idle release");
+        assert_eq!(acquire(&state, "c1", Some(first)).await.unwrap(), i64::from(port));
+        assert!(state.novnc.forwards.lock().await["c1"].release_after.is_none());
+        assert_eq!(state.novnc.forwards.lock().await["c1"].child.as_ref().unwrap().id(), Some(pid));
+        release(&state, "c1", first).await;
+        state.novnc.forwards.lock().await.get_mut("c1").unwrap().release_after = Some(Instant::now());
+        watchdog_tick(state.clone(), false).await;
         assert!(state.novnc.forwards.lock().await.is_empty());
         assert!(!Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().await.unwrap().success());
 
         let child = Command::new("sleep").arg("60").kill_on_drop(true).spawn().unwrap();
         state.novnc.forwards.lock().await.insert("c1".into(), Forward {
-            child: Some(child), viewers: HashMap::from([(first.into(), Instant::now())]), legacy: false,
+            child: Some(child), viewers: HashMap::from([(first.into(), Instant::now())]), ..Default::default()
         });
         state.set_self_heal_enabled(false);
         assert!(!renew(&state, "c1", first).await, "expired viewer cannot silently revive");
