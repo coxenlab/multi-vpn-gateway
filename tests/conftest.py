@@ -153,7 +153,8 @@ def client(monkeypatch):
             for instance in instances.values():
                 if instance.id == identity: return instance
         raise docker.errors.NotFound('missing fixture container')
-    monkeypatch.setattr(manager, 'dc', SimpleNamespace(containers=SimpleNamespace(get=get)))
+    monkeypatch.setattr(manager, 'dc', SimpleNamespace(containers=SimpleNamespace(get=get),
+        volumes=SimpleNamespace(list=lambda **kw: [])))
     monkeypatch.setattr(manager, "novnc_port", lambda cid: 18080)        # 不碰真 docker:登录 url 用此端口
     monkeypatch.setattr(manager, "ensure_novnc_bridge", lambda cid: None)
     monkeypatch.setattr(manager, "probe", lambda ch: (True, 42))

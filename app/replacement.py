@@ -87,6 +87,17 @@ def _remove_volume(dc, name, owner=None):
     raise RuntimeError('数据卷清理未确认')
 
 
+def remove_channel_volumes(dc, cid):
+    """配置删除前清理有归属标记的替换卷；旧式无标签卷仍保留。"""
+    for volume in dc.volumes.list(filters={'label': f'{resources.CHANNEL}={cid}'}):
+        labels = volume.attrs.get('Labels') or {}
+        if labels.get(resources.CHANNEL) != cid or labels.get(resources.ROLE) != 'candidate': continue
+        owner = resources.Owner(cid, labels.get(resources.OPERATION, ''))
+        owner.validate()
+        if volume.name != owner.volume_name: raise RuntimeError('替换数据卷名称与归属不匹配')
+        _remove_volume(dc, volume.name, owner)
+
+
 def _advance(record, phase, **updates):
     payload = dict(record.payload, **updates)
     journal.advance(record, phase, payload)
@@ -411,7 +422,7 @@ def before_stop(cid):
 
 
 def discard(cid):
-    """用户删除通道时先清全部关联实例；命名卷按现有删除策略保留。"""
+    """用户删除通道时先清全部关联实例和有归属的替换卷。"""
     import manager
     dc = manager.dc; record = journal.get(cid)
     if record is None: return False
@@ -434,5 +445,6 @@ def discard(cid):
         _remove(dc, helper)
     for c in containers.values():
         _policy(c, {'Name': 'no'}); _remove(dc, c)
+    remove_channel_volumes(dc, cid)
     journal.deleted(record)
     return True

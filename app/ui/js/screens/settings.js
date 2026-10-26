@@ -4,7 +4,7 @@
 // /api/entry/tun、/api/entry/system-proxy 两个手动开关。开发版（不允许宿主集成）不接管网络。
 // 后台永远不装助手：「启用虚拟网卡」只由这里的按钮触发，会弹一次管理员密码框（DESIGN 5.8）。
 // 导出函数都是纯函数，顶层不碰 document / window。
-import { h, fill, card, lb, btn, tog, verdict, ic } from '../ui.js';
+import { h, fill, card, lb, btn, tog, verdict, ic, pop } from '../ui.js';
 import { openSheet } from '../sheet.js';
 import { api, isUnavailable, isAbort } from '../api.js';
 import { poll } from '../poll.js';
@@ -12,6 +12,8 @@ import { PHRASE, TAKEOVER_ACTION, RETRY_FAILED } from '../terms.js';
 import { takeoverTodo, domainsVia } from '../derive.js';
 import { day } from '../format.js';
 import { showError, showDone, notify, humanize, clean } from '../feedback.js';
+
+import { runningMemory, needsMemoryRestart, memoryRestart } from '../runtime-memory.js';
 
 const EVERY = 20000; // 和核心的接管循环同一间隔
 
@@ -288,7 +290,7 @@ export function mount(root, ctx) {
 
   function renderStart() {
     if (isUnavailable(app)) { paint('start', startSlot, 'none', () => []); return; }
-    paint('start', startSlot, JSON.stringify([app === undefined ? 'loading' : app, appBusy, dev()]), () => {
+    paint('start', startSlot, JSON.stringify([app === undefined ? 'loading' : app, appBusy, dev(), system?.memory_pressure, system?.runtime_restart_available]), () => {
       if (app === null) {
         return card([lb('启动'), h('div', { class: 'rows' }, sr('没能读取', '稍后再试一次', btn('重试', { cls: 'sm', onClick: loadApp })))]);
       }
@@ -297,10 +299,17 @@ export function mount(root, ctx) {
         checked: !!(app && app[key]), label: title, disabled: !ready || extra.disabled,
         onChange: v => setApp(key, v),
       }));
-      return card([lb('启动'), h('div', { class: 'rows' },
+      return [card([lb('启动'), h('div', { class: 'rows' },
         row('launch_at_login', '开机时自动打开', '', dev() ? { disabled: true, sub: '开发版不能设置' } : {}),
         row('auto_connect', '打开后自动连接通道', '需要登录的通道会提醒你'),
-        row('keep_running_on_close', '关闭窗口后继续运行', '留在菜单栏'))]);
+        row('keep_running_on_close', '关闭窗口后继续运行', '留在菜单栏'))]),
+        ...(app && Number.isInteger(app.vm_memory_gib) ? [card([lb('运行环境'), h('div', { class: 'rows' },
+          sr('内存', runningMemory(system) ? `现在运行：${runningMemory(system)} GiB` : '下次启动运行环境时生效',
+            pop(Array.from({ length: 15 }, (_, i) => ({ value: i + 2, label: `${i + 2} GiB${i === 0 ? '（默认）' : ''}` })), {
+              value: app.vm_memory_gib, disabled: !ready, label: '运行环境内存',
+              onChange: value => setApp('vm_memory_gib', Number(value)),
+            })),
+          needsMemoryRestart(app.vm_memory_gib, system) ? btn('重启运行环境以应用', { disabled: !ready, onClick: () => memoryRestart(system, { selected: app.vm_memory_gib, onDone: loadApp }) }) : null)])] : [])];
     });
   }
 

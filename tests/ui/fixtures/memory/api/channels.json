@@ -1,0 +1,42 @@
+[
+  {
+    "id": "demo-dc",
+    "name": "内存不足测试通道",
+    "vpn_type": "openvpn",
+    "server": "dc.example.test",
+    "ec_ver": null,
+    "login_method": "headless",
+    "username": "",
+    "vnc_password": null,
+    "mac": null,
+    "novnc_port": null,
+    "probe_url": "",
+    "status": "error",
+    "container_id": "c-dc00000000005",
+    "latency_ms": null,
+    "config": {
+      "filename": "dc.ovpn"
+    },
+    "routing_enabled": true,
+    "configured_status": "error",
+    "domains": [],
+    "ips": [
+      {
+        "id": 104,
+        "channel_id": "demo-dc",
+        "kind": "ip",
+        "pattern": "10.30.0.0/16",
+        "enabled": 1,
+        "note": "",
+        "locked": 0
+      }
+    ],
+    "volume_name": "vpndata-demo-dc",
+    "socks_proxy": "ch-demo-dc",
+    "socks_endpoint": "vpn-demo-dc:1080",
+    "uptime": null,
+    "stop_pending": false,
+    "replacement": null,
+    "blocked": true
+  }
+]

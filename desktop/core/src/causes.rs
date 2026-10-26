@@ -55,6 +55,15 @@ pub fn image_pull_failed_at(cid: &str, audits: &[Event]) -> Option<i64> {
     (failed && error.contains(PULL_FAILED)).then_some(last.ts_ms as i64)
 }
 
+pub fn memory_allocation_failed(cid: &str, audits: &[Event]) -> bool {
+    audits.iter().rev().find(|e| e.src == "audit" && PROVISION_ACTIONS.contains(&e.event.as_str())
+        && e.detail.get("target_id").and_then(Value::as_str) == Some(cid))
+        .is_some_and(|e| e.detail.get("result").and_then(Value::as_str) == Some("failed")
+            && e.detail.get("error").and_then(Value::as_str).is_some_and(|s| {
+                let s = s.to_ascii_lowercase(); s.contains("cannot allocate memory") || s.contains("enomem")
+            }))
+}
+
 /// 纯函数:按 DESIGN 5.6 的顺序判断。`diag` 是 [`crate::diag::diag_one`] 的结果,拿不到时为 None。
 pub fn judge(stopped: bool, serving: bool, pull_failed_at: Option<i64>, diag: Option<&Value>, now_ms: i64) -> Cause {
     if stopped {
@@ -65,6 +74,11 @@ pub fn judge(stopped: bool, serving: bool, pull_failed_at: Option<i64>, diag: Op
     }
     if let Some(at) = pull_failed_at {
         return Cause::of("image_pull_failed", "retry", Some(at));
+    }
+    if diag.is_some_and(|d| d.get("oom_killed").and_then(Value::as_bool) == Some(true)
+        || d.get("oom_kill_count").and_then(Value::as_u64).is_some_and(|n| n > 0)
+        || d.get("allocation_failed").and_then(Value::as_bool) == Some(true)) {
+        return Cause::of("memory_low", "restart_runtime_bigger", None);
     }
     if diag.and_then(|d| d.get("crash_loop")).and_then(Value::as_bool) == Some(true) {
         return Cause::of("crash_loop", "retry", None);
@@ -93,6 +107,9 @@ pub async fn cause(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
     if stopped || !serving { return Json(judge(stopped, serving, None, None, now_ms)).into_response(); }
     let filter = crate::events::Filter { src: Some("audit".into()), ..Default::default() };
     let (audits, _) = crate::events::snapshot(0, usize::MAX, &filter);
+    if memory_allocation_failed(&cid, &audits) {
+        return Json(judge(false, true, None, Some(&serde_json::json!({"allocation_failed":true})), now_ms)).into_response();
+    }
     let pull_failed_at = image_pull_failed_at(&cid, &audits);
     if pull_failed_at.is_some() { return Json(judge(false, true, pull_failed_at, None, now_ms)).into_response(); }
     let docker = st.docker();
@@ -115,6 +132,23 @@ pub async fn cause(State(st): State<AppState>, Path(cid): Path<String>) -> axum:
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn real_memory_signals_precede_crash_loop() {
+        for signal in [json!({"oom_killed":true}), json!({"oom_kill_count":1}), json!({"allocation_failed":true})] {
+            let mut d = signal; d["crash_loop"] = json!(true);
+            assert_eq!(judge(false, true, None, Some(&d), 0).code, Some("memory_low"));
+            assert_eq!(judge(true, true, None, Some(&d), 0).code, None);
+        }
+        assert_eq!(judge(false,true,None,Some(&json!({"oom_killed":false,"oom_kill_count":0,"memory_gib":2})),0).code,Some("unknown"));
+        for message in ["cannot allocate memory", "docker start: ENOMEM"] {
+            let mut events = vec![audit(1,"channel_start","c1","failed",Some(message))];
+            assert!(memory_allocation_failed("c1", &events));
+            assert!(!memory_allocation_failed("c2", &events));
+            events.push(audit(2,"channel_start","c1","ok",None));
+            assert!(!memory_allocation_failed("c1", &events));
+        }
+    }
 
     #[test]
     fn diagnostic_cache_expires_and_does_not_cross_channel_or_container_identity() {

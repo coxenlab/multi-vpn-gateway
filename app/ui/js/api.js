@@ -187,6 +187,7 @@ export function createApi({ fetch: fetchImpl, timeout = TIMEOUT, longTimeout = L
 
     // 运行环境、分流、诊断
     system: o => get('/api/system', o),
+    runtimeRestart: o => post('/api/runtime/restart', undefined, long(o)),
     runtimeStart: o => post('/api/runtime/start', undefined, long(o)),
     // 只在托管运行环境时才发启动（旧界面同名函数的语义）
     startRuntime: async o => {

@@ -311,6 +311,10 @@ fn stopped_from_listing(text: &str, profile: &str) -> Result<bool> {
 }
 
 fn start_args(profile: &str, enable_rosetta: bool) -> Vec<String> {
+    start_args_with_memory(profile, enable_rosetta, 6)
+}
+
+fn start_args_with_memory(profile: &str, enable_rosetta: bool, memory_gib: u8) -> Vec<String> {
     let mut args = vec!["start".to_string(), profile.to_string(), "--vm-type".to_string(), "vz".to_string()];
     if enable_rosetta {
         args.push("--vz-rosetta".to_string());
@@ -319,8 +323,9 @@ fn start_args(profile: &str, enable_rosetta: bool) -> Vec<String> {
         // 分流/控制/noVNC 已由 app 自持 loopback SSH 转发。禁用 Colima 将来宾通配
         // 监听复制到宿主通配地址的规则；Docker Unix socket、VM SSH、usernet 出站不受影响。
         // 当前 Lima 在 none 下仍保留来宾回环 TCP 的默认回环转发，不等于关闭全部监听。
-        "--port-forwarder", "none", "--activate=false", "--cpu", "4", "--memory", "6", "--disk", "60",
+        "--port-forwarder", "none", "--activate=false", "--cpu", "4", "--disk", "60",
     ].into_iter().map(String::from));
+    args.extend(["--memory".into(), memory_gib.to_string()]);
     if profile != "vpnmgr" {
         args.extend(["--mount", "none", "--ssh-config=false", "--template=false"].into_iter().map(String::from));
     }
@@ -377,11 +382,20 @@ pub async fn start_with_progress<F>(profile: &str, enable_rosetta: bool, on_prog
 where
     F: FnMut(String) + Send,
 {
+    start_with_memory(profile, enable_rosetta, 6, on_progress).await
+}
+
+/// 内存变更仅在原有启动链内生效，不停止／重启运行中的 VM。
+pub async fn start_with_memory<F>(profile: &str, enable_rosetta: bool, memory_gib: u8, on_progress: F) -> Result<()>
+where F: FnMut(String) + Send,
+{
+    anyhow::ensure!((2..=16).contains(&memory_gib), "运行环境内存须为 2–16 GiB 的整数");
     if !colima_present().await {
         return Err(anyhow!("未找到 colima(请先安装;后续版本会随 app 内置打包)"));
     }
     let mut command = colima_command(profile)?;
-    command.args(start_args(profile, enable_rosetta));
+    command.args(if memory_gib == 6 { start_args(profile, enable_rosetta) }
+        else { start_args_with_memory(profile, enable_rosetta, memory_gib) });
     run_start_command(command, on_progress).await?;
     ensure_guest_dns(profile).await
 }
@@ -1118,6 +1132,18 @@ en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 169.254.5.5 netmask 0xffff0000\n"
         assert!(without.contains(&"--activate=false".to_string()));
         for args in [with, without, start_args("vpnmgr-dev", false)] {
             assert!(args.windows(2).any(|w| w == ["--port-forwarder", "none"]));
+        }
+    }
+
+    #[test]
+    fn configured_memory_reaches_start_arguments_without_changing_isolation() {
+        for memory in [2, 6, 16] {
+            let args = start_args_with_memory("tongdao-memory-test", false, memory);
+            let values: Vec<_> = args.windows(2).filter(|pair| pair[0] == "--memory").map(|pair| pair[1].as_str()).collect();
+            assert_eq!(values, vec![memory.to_string()]);
+            assert!(args.iter().any(|arg| arg == "--activate=false"));
+            assert!(args.windows(2).any(|pair| pair == ["--mount", "none"]));
+            assert!(args.windows(2).any(|pair| pair == ["--port-forwarder", "none"]));
         }
     }
 

@@ -19,6 +19,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/api/system", get(routes::system))
+        .route("/api/runtime/restart", axum::routing::post(crate::runtime::restart_route))
         .route("/api/runtime/start", axum::routing::post(crate::runtime::start_route))
         .route("/api/system/heal-proxy", axum::routing::post(routes::heal_proxy))
         .route("/api/system/self-heal", axum::routing::post(api::self_heal_set))
@@ -138,6 +139,19 @@ mod tests {
             tunnel: crate::tunnel::handle(),
             novnc: crate::novnc::handle(),
             self_heal_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_restart_rejects_legacy_development_and_unmanaged() {
+        for (profile, dev, managed) in [("vpnmgr-test", false, true), ("tongdao-test", true, true), ("tongdao-test", false, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut state = state_with_db(dir.path());
+            let cfg = std::sync::Arc::make_mut(&mut state.cfg);
+            cfg.vm_profile = profile.into(); cfg.dev_mode = dev; cfg.managed_vm = managed;
+            let response = build_router(state).oneshot(Request::builder().method("POST")
+                .uri("/api/runtime/restart").body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
         }
     }
 
@@ -1577,19 +1591,23 @@ mod tests {
         };
         let put = |body: serde_json::Value| Request::put("/api/app-settings")
             .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
-        let defaults = serde_json::json!({"launch_at_login": false, "auto_connect": false, "keep_running_on_close": true, "resume_channels": []});
+        let defaults = serde_json::json!({"launch_at_login": false, "auto_connect": false, "keep_running_on_close": true, "resume_channels": [], "vm_memory_gib": 2});
         assert_eq!(call(Request::get("/api/app-settings").body(Body::empty()).unwrap()).await, (StatusCode::OK, defaults));
         // 只传部分字段:合并,返回全部。
         let (status, body) = call(put(serde_json::json!({"auto_connect": true}))).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, serde_json::json!({"launch_at_login": false, "auto_connect": true, "keep_running_on_close": true, "resume_channels": []}));
+        assert_eq!(body, serde_json::json!({"launch_at_login": false, "auto_connect": true, "keep_running_on_close": true, "resume_channels": [], "vm_memory_gib": 2}));
         let (_, body) = call(put(serde_json::json!({"resume_channels": ["c1"]}))).await;
         assert_eq!((body["auto_connect"].clone(), body["resume_channels"].clone()), (serde_json::json!(true), serde_json::json!(["c1"])));
         // 开发模式:改动开机时自动打开返回 403,设置不变。
         assert_eq!(call(put(serde_json::json!({"launch_at_login": true}))).await.0, StatusCode::FORBIDDEN);
         assert_eq!(call(put(serde_json::json!({"keep_running_on_close": 0}))).await.0, StatusCode::BAD_REQUEST);
         let (_, body) = call(Request::get("/api/app-settings").body(Body::empty()).unwrap()).await;
-        assert_eq!(body, serde_json::json!({"launch_at_login": false, "auto_connect": true, "keep_running_on_close": true, "resume_channels": ["c1"]}));
+        assert_eq!(body, serde_json::json!({"launch_at_login": false, "auto_connect": true, "keep_running_on_close": true, "resume_channels": ["c1"], "vm_memory_gib": 2}));
+        let (status, body) = call(put(serde_json::json!({"vm_memory_gib": 3}))).await;
+        assert_eq!((status, body["vm_memory_gib"].clone()), (StatusCode::OK, serde_json::json!(3)));
+        assert_eq!(call(put(serde_json::json!({"vm_memory_gib": 1}))).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(call(Request::get("/api/app-settings").body(Body::empty()).unwrap()).await.1["vm_memory_gib"],3);
     }
 
     #[tokio::test]

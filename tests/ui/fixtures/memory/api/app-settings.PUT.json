@@ -1,0 +1,7 @@
+{
+  "launch_at_login": false,
+  "auto_connect": false,
+  "keep_running_on_close": true,
+  "resume_channels": [],
+  "vm_memory_gib": 4
+}

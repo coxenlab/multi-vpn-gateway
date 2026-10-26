@@ -5,6 +5,8 @@ use crate::{store, AppState};
 use crate::api::err_detail;
 
 pub async fn system(State(st): State<AppState>) -> Json<Value> {
+    let memory = crate::runtime_memory::sample(&st).await;
+    let host_memory = crate::runtime_memory::host_memory_gib().await;
     let alive = crate::runtime::serving(&st) && st.mihomo.alive().await;
     let mihomo_port = st.cfg.mihomo_host_port.parse::<u64>().ok().filter(|n| *n != 0);
     let controller = st.cfg.mihomo_ctrl_port.as_ref().map(|p| format!("127.0.0.1:{p}"));
@@ -27,6 +29,9 @@ pub async fn system(State(st): State<AppState>) -> Json<Value> {
         "egress_guard_applied": h.egress_guard_applied,
         "self_heal_enabled": st.self_heal_enabled(),
         "vm_profile": st.cfg.vm_profile,
+        "memory_pressure": memory,
+        "host_memory_gib": host_memory,
+        "runtime_restart_available": crate::runtime::restart_allowed(&st.cfg),
         "runtime": if st.cfg.managed_vm { serde_json::to_value(st.lifecycle.runtime().snapshot()).ok() } else { None },
         "host_integrations_available": st.cfg.host_integrations_allowed(),
         "probe_cache_available": true,

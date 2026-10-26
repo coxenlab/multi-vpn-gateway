@@ -168,7 +168,7 @@ test('V-08：每个函数都接受 {signal}，已取消时不发请求', async (
     restore: ['c1', o], status: ['c1', o], verifyTarget: ['c1', 'https://oa.example/', o], channelHealth: ['c1', o], logs: ['c1', 200, o], login: ['c1', {}, o],
     renewLoginViewer: ['c1', 'v1', o], releaseLoginViewer: ['c1', 'v1', o], noteGet: ['c1', o], noteSet: ['c1', 'n', undefined, o],
     upload: ['c1', file, o], installStatus: ['c1', o], startupStatus: ['c1', o], addRules: ['c1', ['a.example'], undefined, o], delRule: ['c1', 1, o], toggleRule: ['c1', 1, true, o],
-    updateRule: ['c1', 1, {}, o], toggleRules: [[1], true, o], system: [o], runtimeStart: [o], startRuntime: [o], healProxy: [o],
+    updateRule: ['c1', 1, {}, o], toggleRules: [[1], true, o], system: [o], runtimeStart: [o], runtimeRestart: [o], startRuntime: [o], healProxy: [o],
     selfHeal: [true, o], routing: [o], setRouting: [true, o], diag: [o], preflight: [null, null, 'full', o],
     preflightFix: ['create_network', {}, o], preflightFixStatus: ['t1', o], containers: [o], containerLogs: ['n', 200, o],
     containerRemove: ['n', o], vpnTypes: [o], vpnVersions: ['easyconnect', o], images: [o], imageImport: [file, o],

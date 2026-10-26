@@ -1,0 +1,5 @@
+#!/bin/sh
+# Every terminal on the channel desktop runs as root: vendor installers and
+# clients often refuse other users. The window stays open after the command ends.
+exec sudo -n env DISPLAY="${DISPLAY:-:0}" LANG=C.UTF-8 HOME=/root \
+  xterm -fa 'WenQuanYi Micro Hei Mono' -fs 11 -hold "$@"

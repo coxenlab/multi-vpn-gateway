@@ -34,11 +34,13 @@ export const CAUSE = Object.freeze({
   runtime_down: '运行环境没起来',
   runtime_unknown: '状态待确认',
   image_pull_failed: '客户端下载失败',
+  memory_low: '运行环境内存不足',
   crash_loop: '客户端启动后崩溃',
   kicked: '账号在别处登录，被踢下线',
   unknown: '连不上，原因还不清楚',
 });
 export const ACTION = Object.freeze({
+  restart_runtime_bigger: '加大内存并重启',
   restart_runtime: '重新启动运行环境',
   retry: '重试',
   relogin: '重新登录',

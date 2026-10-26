@@ -909,9 +909,11 @@ pub fn route_sets_for(id: &crate::identity::Identity, rules: &[crate::store::Rul
         // 命门②:分桶前先 parse::<IpNet>——按解析结果的 v4/v6 分桶(替代裸 contains(':')),
         // 畸形串告警跳过,绝不下发 helper 变成宿主路由。
         match r.pattern.parse::<ipnet::IpNet>() {
-            Ok(ipnet::IpNet::V4(_)) => {
-                v4.insert(r.pattern.clone());
-            }
+            // 通道管家:让开通道正在连接的服务器地址,否则隧道经虚拟网卡绕回自己(见 server_guard)。
+            Ok(ipnet::IpNet::V4(net)) => match (!id.tun_config_frozen).then(|| crate::server_guard::carve(net)).flatten() {
+                Some(parts) => { v4.extend(parts.into_iter().map(|p| p.to_string())); }
+                None => { v4.insert(r.pattern.clone()); }
+            },
             Ok(ipnet::IpNet::V6(_)) => {
                 if id.tun_config_frozen { v6.insert(r.pattern.clone()); }
             }

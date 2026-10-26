@@ -4,6 +4,41 @@ import replacement_store as journal
 import store
 
 
+def test_deleted_channel_only_removes_owned_replacement_volumes_and_can_retry():
+    from types import SimpleNamespace
+    import docker.errors
+    import replacement
+    from replacement_docker import Owner
+    owner = Owner('c1', 'op1')
+    removed = []
+    volumes = {}
+    busy = [True]
+    class Volume:
+        def __init__(self, name, labels):
+            self.name = name
+            self.attrs = {'Labels': labels}
+        def remove(self):
+            removed.append(self.name)
+            del volumes[self.name]
+    for name, labels in [(owner.volume_name, owner.labels('candidate')),
+                         ('vpndata-c1', {}),
+                         (Owner('other', 'op1').volume_name, Owner('other', 'op1').labels('candidate'))]:
+        volumes[name] = Volume(name, labels)
+    def get(name):
+        if name not in volumes: raise docker.errors.NotFound('missing')
+        return volumes[name]
+    dc = SimpleNamespace(volumes=SimpleNamespace(list=lambda **kw: list(volumes.values()), get=get),
+                         containers=SimpleNamespace(list=lambda **kw: [object()] if busy[0] else []))
+    with pytest.raises(RuntimeError, match='仍被使用'):
+        replacement.remove_channel_volumes(dc, 'c1')
+    assert not removed
+    busy[0] = False
+    replacement.remove_channel_volumes(dc, 'c1')
+    replacement.remove_channel_volumes(dc, 'c1')
+    assert removed == [owner.volume_name]
+    assert set(volumes) == {'vpndata-c1', Owner('other', 'op1').volume_name}
+
+
 def test_queued_settings_wait_for_explicit_start_and_survive_preparation_failure(make_channel, monkeypatch):
     import replacement, manager
     store.add_channel(make_channel('c1', server='old.example'))

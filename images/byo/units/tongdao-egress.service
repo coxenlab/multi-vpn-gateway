@@ -1,0 +1,6 @@
+[Unit]
+Description=Channel traffic through the VPN tunnel
+Before=tongdao-socks.service
+[Service]
+ExecStart=/usr/local/bin/tongdao-egress
+Restart=always

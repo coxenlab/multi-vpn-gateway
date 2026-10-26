@@ -561,6 +561,7 @@ def stop(cid):
 def delete(cid):
     if not replacement.discard(cid):
         manager.remove(cid)
+        replacement.remove_channel_volumes(manager.dc, cid)
         store.del_channel(cid)
     manager.rebuild()
     return _operation_done()

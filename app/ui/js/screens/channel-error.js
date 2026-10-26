@@ -17,6 +17,8 @@ import { restoreBar } from './channel-edit.js';
 import { realLines } from './channel-logs.js';
 import { configProblem } from './add.js';
 
+import { memoryRestart, memoryText } from '../runtime-memory.js';
+
 // 能换配置文件的类型，和选文件时的扩展名提示
 export const FILE_TYPES = Object.freeze({ openvpn: '.ovpn,.conf', wireguard: '.conf' });
 const VERSION_TYPES = new Set(['easyconnect']);
@@ -123,6 +125,7 @@ export function mount(root, ctx) {
     }
     const out = [];
     const add = (text, busyText, kind, onClick) => out.push(btn(busy === kind ? busyText : text, { cls: out.length ? '' : 'pri', disabled: !!busy, onClick }));
+    if (c.action === 'restart_runtime_bigger') add(ACTION.restart_runtime_bigger, '', 'memory', () => memoryRestart(system, { bigger: true }));
     if (c.action === 'restart_runtime') add(ACTION.restart_runtime, '正在启动', 'runtime', restartRuntime);
     if (c.action === 'relogin') add(ACTION.relogin, '', 'relogin', () => ctx.navigate(`#/channels/${encodeURIComponent(id)}?tab=login`));
     if (FILE_TYPES[ch.vpn_type] && fileOk) {
@@ -143,6 +146,7 @@ export function mount(root, ctx) {
     else if (failure) { title = failure.title; text = failure.text; }
     else if (!cause) { title = '连不上'; text = '正在查找原因。'; }
     else { title = causeText(c.code); text = [EXPLAIN[c.code] || EXPLAIN.unknown, TYPE_HINT[ch.vpn_type]].filter(Boolean).join(''); }
+    if (!unknown && !failure && c.code === 'memory_low') text = memoryText(system);
     const acts = unknown || cause || failure ? actionButtons(c) : [];
     fill(verdictSlot, verdict(unknown ? 'wait' : 'bad', { panel: true, title, text, action: acts.length ? h('div', { class: 'cs-acts' }, acts) : null }));
   }

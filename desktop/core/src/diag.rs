@@ -118,6 +118,8 @@ pub async fn diag_one(docker: &Docker, ch: &crate::store::ChannelPublic) -> Valu
         "restart_count": restart_count,
         "uptime_secs": uptime_secs,
         "exit_code": exit_code,
+        "oom_killed": state_obj.and_then(|s| s.oom_killed),
+        "oom_kill_count": Value::Null,
         "crash_loop": crash_loop,
         "tunnel_up": Value::Null,
         "tunnel_iface": Value::Null,
@@ -130,6 +132,9 @@ pub async fn diag_one(docker: &Docker, ch: &crate::store::ChannelPublic) -> Valu
     }
     // safe: json! 宏上面构造的一定是 object
     let o = v.as_object_mut().unwrap();
+    let events = crate::docker::exec_capture(docker, &name,
+        vec!["sh", "-c", "cat /sys/fs/cgroup/memory.events"]).await.ok();
+    o.insert("oom_kill_count".into(), json!(events.as_deref().and_then(|s| crate::runtime_memory::counter(s, "oom_kill"))));
     let runtime = crate::registry::get(&ch.vpn_type).map(|s| s.runtime).unwrap_or_default();
     match ch.vpn_type.as_str() {
         "easyconnect" => {

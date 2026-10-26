@@ -27,11 +27,13 @@ pub struct AppSettings {
     pub auto_connect: bool,
     pub keep_running_on_close: bool,
     pub resume_channels: Vec<String>,
+    /// 固定启动内存；VZ balloon 尚不能可靠归还宿主内存，不做在线压缩。
+    pub vm_memory_gib: u8,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { launch_at_login: false, auto_connect: false, keep_running_on_close: true, resume_channels: Vec::new() }
+        Self { launch_at_login: false, auto_connect: false, keep_running_on_close: true, resume_channels: Vec::new(), vm_memory_gib: 2 }
     }
 }
 
@@ -41,7 +43,9 @@ pub fn file_path(data_dir: &Path) -> PathBuf {
 
 /// 读回设置;文件不在或读不懂时用默认值。
 pub fn load(path: &Path) -> AppSettings {
-    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    let mut settings: AppSettings = std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    if !(2..=16).contains(&settings.vm_memory_gib) { settings.vm_memory_gib = 2; }
+    settings
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> anyhow::Result<()> {
@@ -65,6 +69,10 @@ pub fn merge(current: &AppSettings, patch: &Value) -> Result<AppSettings, String
         next.resume_channels = value.as_array()
             .and_then(|ids| ids.iter().map(|id| id.as_str().map(str::to_string)).collect::<Option<Vec<_>>>())
             .ok_or("resume_channels 须为字符串数组")?;
+    }
+    if let Some(value) = patch.get("vm_memory_gib") {
+        next.vm_memory_gib = value.as_u64().filter(|n| (2..=16).contains(n))
+            .ok_or("运行环境内存须为 2–16 GiB 的整数")? as u8;
     }
     Ok(next)
 }
@@ -169,6 +177,7 @@ pub async fn put(State(st): State<AppState>, Json(b): Json<Value>) -> axum::resp
     let switches = |s: &AppSettings| json!({
         "launch_at_login": s.launch_at_login, "auto_connect": s.auto_connect,
         "keep_running_on_close": s.keep_running_on_close,
+        "vm_memory_gib": s.vm_memory_gib,
     });
     let allowed = login_item_allowed(st.cfg.identity(), st.cfg.host_integrations_allowed());
     match update(&st.cfg.data_dir, allowed, &home, st.cfg.identity().bundle_id, &b).await {
@@ -202,7 +211,7 @@ mod tests {
     fn defaults_and_unreadable_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = file_path(dir.path());
-        let defaults = json!({"launch_at_login": false, "auto_connect": false, "keep_running_on_close": true, "resume_channels": []});
+        let defaults = json!({"launch_at_login": false, "auto_connect": false, "keep_running_on_close": true, "resume_channels": [], "vm_memory_gib": 2});
         assert_eq!(serde_json::to_value(load(&path)).unwrap(), defaults);
         std::fs::write(&path, b"{").unwrap();
         assert_eq!(load(&path), AppSettings::default());
@@ -223,6 +232,24 @@ mod tests {
         assert!(merge(&current, &json!({"keep_running_on_close": "false"})).is_err());
         assert!(merge(&current, &json!({"resume_channels": ["c1", 2]})).is_err());
         assert!(merge(&current, &json!([])).is_err());
+    }
+
+    #[test]
+    fn memory_setting_validates_and_survives_other_updates() {
+        let dir = tempfile::tempdir().unwrap(); let path = file_path(dir.path());
+        let settings = merge(&AppSettings::default(), &json!({"vm_memory_gib": 3})).unwrap();
+        save(&path, &settings).unwrap();
+        assert_eq!(load(&path).vm_memory_gib, 3);
+        assert_eq!(merge(&settings, &json!({"auto_connect": true})).unwrap().vm_memory_gib, 3);
+        for value in [2, 16] {
+            assert_eq!(merge(&settings, &json!({"vm_memory_gib":value})).unwrap().vm_memory_gib, value);
+        }
+        for value in [json!(1),json!(17),json!(3.5),json!("4"),json!(null)] {
+            assert!(merge(&settings, &json!({"vm_memory_gib":value})).is_err());
+        }
+        std::fs::write(&path, br#"{"vm_memory_gib":1,"auto_connect":true}"#).unwrap();
+        assert_eq!(load(&path).vm_memory_gib,2);
+        assert!(load(&path).auto_connect);
     }
 
     #[test]

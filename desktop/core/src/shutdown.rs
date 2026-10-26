@@ -16,24 +16,24 @@ const CONTAINER_STOP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 停全部运行中的通道容器(并发),状态落库 stopped——DB 与实际一致,
 /// 下次启动通道按「已停止」呈现,由用户按需逐个启动(hagb/oss 启动 = 重建)。
-async fn stop_all_channels(state: &AppState, cfg: &Config) {
+pub(crate) async fn stop_all_channels(state: &AppState, cfg: &Config) -> bool {
     let db = cfg.db_path();
     let channels = match store::list_channels(&db) {
         Ok(list) => list,
         Err(e) => {
             crate::ev!(warn, "shutdown", "list_channels_failed", "退出清理:读取通道列表失败",
                 { "error": e.to_string() });
-            return;
+            return false;
         }
     };
     let Some(docker) = state.docker() else {
         crate::ev!(warn, "shutdown", "docker_unavailable", "退出清理:docker 不可达,跳过停容器",
             { "skipped": channels.len() as i64 });
-        return;
+        return false;
     };
     let running: Vec<_> = channels.into_iter().filter(|c| c.status != "stopped").collect();
     if running.is_empty() {
-        return;
+        return true;
     }
     let tasks = running.iter().map(|ch| {
         let docker = docker.clone();
@@ -61,6 +61,7 @@ async fn stop_all_channels(state: &AppState, cfg: &Config) {
     let stopped = join_all(tasks).await.into_iter().filter(|ok| *ok).count();
     crate::ev!(info, "shutdown", "containers_stopped", "退出清理:通道容器已停止",
         { "stopped": stopped as i64, "total": running.len() as i64 });
+    stopped == running.len()
 }
 
 /// 纯函数:退出时在用的通道——状态为 running/logged_in、且没有停止意图。

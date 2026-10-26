@@ -1,12 +1,95 @@
 #!/usr/bin/python3
 """Install an official local package inside one channel. No vendor dispatch."""
-import fcntl, os, pathlib, subprocess, sys, shutil, json, time
+import fcntl, os, pathlib, subprocess, sys, shutil, json, tempfile, time
+
+APPS = pathlib.Path('/home/desktop/.local/share/tongdao/apps')
+LAUNCHER_DIRS = (pathlib.Path('/usr/share/applications'), pathlib.Path('/usr/local/share/applications'))
+SCRIPT_TIMEOUT = 30 * 60
 
 def run(args):
     subprocess.run(args, check=True, env=dict(os.environ, DEBIAN_FRONTEND='noninteractive'))
 
 def output(args):
     return subprocess.check_output(args, text=True).strip()
+
+def launchers():
+    found = {}
+    for directory in LAUNCHER_DIRS:
+        for file in directory.glob('*.desktop'):
+            if file.is_file():
+                found[file] = file.stat().st_mtime_ns
+    return found
+
+def register_and_launch(files):
+    APPS.mkdir(parents=True, exist_ok=True)
+    # This directory contains only generated launchers for the selected package.
+    # An old client's window must not make a newly uploaded client look ready.
+    for old in APPS.glob('*.desktop'):
+        old.unlink()
+    for file in files:
+        shutil.copy2(file, APPS / file.name)
+    run(['chown', '-R', 'desktop:desktop', '/home/desktop/.local'])
+    if not files:
+        print('安装完成，但安装包没有提供桌面入口；请按厂商说明手动启动。', flush=True)
+        sys.exit(20)
+    run(['systemctl', 'restart', 'tongdao-desktop.service'])
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            startup = json.loads(pathlib.Path('/run/tongdao-desktop/startup.json').read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(.5)
+            continue
+        if startup['phase'] == 'ready':
+            print('官方安装完成，客户端窗口已打开；请登录后验证内网。', flush=True)
+            return
+        if startup['phase'] == 'failed':
+            print('安装已完成，但启动失败：' + startup['message'], flush=True)
+            sys.exit(21)
+        time.sleep(.5)
+    print('安装已完成，但等待客户端窗口超时；请查看启动日志', flush=True)
+    sys.exit(21)
+
+# Vendor .run installers usually refuse non-root users and may ask questions.
+# Run them as root in a terminal on the login window, so prompts stay visible.
+TERMINAL_SCRIPT = r'''
+cd "$1" || exit 1
+{ "$2"; echo $? > rc; } 2>&1 | tee install.log
+code=$(cat rc 2>/dev/null || echo 1)
+if [ "$code" = 0 ]; then
+    echo; echo '安装程序已结束，正在启动客户端…'; sleep 2
+else
+    echo; echo "安装程序退出码 $code。按回车关闭此窗口。"; read -r _
+fi
+'''
+
+def install_script(package):
+    before = launchers()
+    work = pathlib.Path(tempfile.mkdtemp(prefix='tongdao-install-', dir='/var/tmp'))
+    try:
+        print('安装程序已在登录窗口的终端里运行；如有提示请在那里回答。', flush=True)
+        environment = dict(os.environ, DISPLAY=':0', HOME='/root', LANG='C.UTF-8')
+        terminal = subprocess.Popen(['xterm', '-T', '安装 ' + package.name, '-fa', 'WenQuanYi Micro Hei Mono',
+            '-fs', '11', '-geometry', '110x32', '-e', '/bin/bash', '-c', TERMINAL_SCRIPT, 'tongdao-install',
+            str(work), str(package)], env=environment, cwd=str(work))
+        try:
+            terminal.wait(timeout=SCRIPT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            terminal.kill()
+            raise ValueError('安装程序 30 分钟内没有结束，已关闭安装窗口；结果未确认')
+        log = (work / 'install.log').read_text(errors='replace') if (work / 'install.log').exists() else ''
+        if log:
+            print(log[-16384:], flush=True)
+        if not (work / 'rc').exists():
+            raise ValueError('安装窗口已关闭，没有拿到安装程序的结束状态')
+        code = (work / 'rc').read_text().strip()
+        if code != '0':
+            raise ValueError('安装程序退出码 ' + code)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    after = launchers()
+    changed = sorted(file for file, mtime in after.items() if before.get(file) != mtime)
+    register_and_launch(changed)
 
 try:
     lock = open('/run/lock/tongdao-install.lock', 'w')
@@ -35,41 +118,12 @@ try:
         if state != 'install ok installed':
             raise ValueError('系统未确认安装完成: '+state)
         files = output(['dpkg-query', '-L', name]).splitlines()
-        apps = pathlib.Path('/home/desktop/.local/share/tongdao/apps');apps.mkdir(parents=True, exist_ok=True)
-        # This directory contains only generated launchers for the selected package.
-        # An old client's window must not make a newly uploaded client look ready.
-        for old in apps.glob('*.desktop'):
-            old.unlink()
-        entries = []
-        for entry in files:
-            file = pathlib.Path(entry)
-            if entry.startswith('/usr/share/applications/') and file.suffix == '.desktop' and file.is_file():
-                shutil.copy2(file, apps / file.name)
-                entries.append(file.name)
-        run(['chown', '-R', 'desktop:desktop', '/home/desktop/.local'])
-        if not entries:
-            print('安装完成，但安装包没有提供桌面入口；请按厂商说明手动启动。', flush=True)
-            sys.exit(20)
-        run(['systemctl', 'restart', 'tongdao-desktop.service'])
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            try:
-                startup = json.loads(pathlib.Path('/run/tongdao-desktop/startup.json').read_text())
-            except (FileNotFoundError, json.JSONDecodeError):
-                time.sleep(.5)
-                continue
-            if startup['phase'] == 'ready':
-                print('官方安装完成，客户端窗口已打开；请登录后验证内网。', flush=True)
-                break
-            if startup['phase'] == 'failed':
-                print('安装已完成，但启动失败：' + startup['message'], flush=True)
-                sys.exit(21)
-            time.sleep(.5)
-        else:
-            print('安装已完成，但等待客户端窗口超时；请查看启动日志', flush=True)
-            sys.exit(21)
-    elif magic.startswith(b'#!') or (magic.startswith(b'\x7fELF') and magic[8:10] == b'AI'):
-        # Interactive installers keep their own prompts and original executable.
+        register_and_launch([pathlib.Path(entry) for entry in files
+            if entry.startswith('/usr/share/applications/') and entry.endswith('.desktop') and pathlib.Path(entry).is_file()])
+    elif magic.startswith(b'#!'):
+        install_script(package)
+    elif magic.startswith(b'\x7fELF') and magic[8:10] == b'AI':
+        # An AppImage runs as the desktop user without installing anything.
         destination = pathlib.Path('/home/desktop/Downloads') / package.name
         shutil.copy2(package, destination)
         run(['chown', 'desktop:desktop', str(destination)])

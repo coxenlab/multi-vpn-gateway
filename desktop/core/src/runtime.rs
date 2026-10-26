@@ -12,6 +12,8 @@ pub async fn track_request(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // 重启自己取得独占停止许可，不能把自身算作阻止停止的在途操作。
+    if request.uri().path() == "/api/runtime/restart" { return next.run(request).await; }
     let read_only = matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS);
     if read_only && request.uri().path() != "/api/preflight" { return next.run(request).await; }
     let activity = if read_only {
@@ -151,7 +153,66 @@ pub async fn start_route(axum::extract::State(state): axum::extract::State<AppSt
     }
 }
 
+pub fn restart_allowed(cfg: &crate::config::Config) -> bool {
+    cfg.managed_vm && !cfg.dev_mode && std::ptr::eq(cfg.identity(), &crate::identity::TONGDAO)
+}
+
+static RESTART: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub async fn restart_route(axum::extract::State(state): axum::extract::State<AppState>) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+    if !restart_allowed(&state.cfg) {
+        return crate::api::err_detail(StatusCode::FORBIDDEN, "只有通道管家的托管运行环境可以重启");
+    }
+    let Ok(guard) = RESTART.try_lock() else {
+        return crate::api::err_detail(StatusCode::CONFLICT, "运行环境正在重启");
+    };
+    // 断开页面也完成已确认的重启；全程不退出、不 park TUN 或系统代理。
+    match tokio::spawn(async move {
+        let _guard = guard;
+        let stopped = state.clone();
+        let resume = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let saved = resume.clone();
+        state.lifecycle.runtime().stop_for_restart(move || async move {
+            let result: Result<()> = async {
+                let db = stopped.cfg.db_path();
+                let channels = crate::store::list_channels(&db)?;
+                let ids = crate::shutdown::in_use_ids(&channels,
+                    |id| crate::stop_intents::pending(&db, id).unwrap_or(true));
+                crate::app_settings::set_resume_channels(&stopped.cfg.data_dir, ids.clone()).await?;
+                *saved.lock().unwrap() = ids;
+                anyhow::ensure!(crate::shutdown::stop_all_channels(&stopped, &stopped.cfg).await,
+                    "部分通道停止尚未确认，已取消重启，请稍后重试");
+                crate::novnc::drop_all(&stopped).await?;
+                crate::tunnel::kill_confirmed(&stopped).await?;
+                crate::health::stop_docker_transport(&stopped).await?;
+                let result = vm::stop(&stopped.cfg.vm_profile).await;
+                anyhow::ensure!(vm::stopped_confirmed(&stopped.cfg.vm_profile).await?,
+                    "运行环境停止尚未确认: {:?}", result);
+                stopped.set_docker(None);
+                Ok(())
+            }.await;
+            result.map_err(|e| e.to_string())
+        }).await.map_err(anyhow::Error::msg)?;
+        let _activity = state.lifecycle.runtime().activity().await.map_err(anyhow::Error::msg)?;
+        ensure(&state).await?;
+        let ids = resume.lock().unwrap().clone();
+        let mut failed = Vec::new();
+        for id in ids {
+            let response = crate::api::start(axum::extract::State(state.clone()), axum::extract::Path(id.clone())).await;
+            if !response.status().is_success() { failed.push(id); }
+        }
+        anyhow::ensure!(failed.is_empty(), "运行环境已重启，部分通道重连失败: {}", failed.join(", "));
+        Ok::<_, anyhow::Error>(())
+    }).await {
+        Ok(Ok(())) => axum::Json(serde_json::json!({"ok":true})).into_response(),
+        Ok(Err(error)) => crate::api::err_detail(StatusCode::SERVICE_UNAVAILABLE, &error.to_string()),
+        Err(_) => crate::api::err500("重启未完成，请查看当前运行状态"),
+    }
+}
+
 async fn start(state: &AppState) -> Result<()> {
+    crate::runtime_memory::invalidate(&state.cfg.vm_profile).await;
     // A new runtime attempt cannot inherit a recently sampled result from the previous instance.
     if let Ok(mut health) = state.health.lock() { health.gateway_checked_at_ms = None; }
     let cfg = &state.cfg;
@@ -177,7 +238,10 @@ async fn start(state: &AppState) -> Result<()> {
             }
         }
         progress("正在启动运行环境，首次准备可能需要下载组件…");
-        vm::start_with_progress(&cfg.vm_profile, rosetta, |detail| {
+        let memory_gib = if std::ptr::eq(cfg.identity(), &crate::identity::TONGDAO) {
+            crate::app_settings::load(&crate::app_settings::file_path(&cfg.data_dir)).vm_memory_gib
+        } else { 6 };
+        vm::start_with_memory(&cfg.vm_profile, rosetta, memory_gib, |detail| {
             if let Some(message) = crate::startup_feedback::vm_detail(&detail) { progress(&message); }
             crate::ev!(debug, "runtime", "vm_start_progress", "运行环境启动进度", {"detail":detail});
         }).await?;

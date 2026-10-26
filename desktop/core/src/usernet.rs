@@ -130,6 +130,56 @@ fn connections(text: &str) -> (usize, Vec<Destination>, usize) {
     (total, destinations, omitted)
 }
 
+struct Located { pid: u32, pid_file: PathBuf, network: String, multiple_interfaces: bool }
+
+/// 定位本 profile 关联的 usernet 进程并核对它确实是该 pid 文件对应的 `limactl usernet`。
+async fn locate(home: &Path, profile: &str) -> Result<Located> {
+    ensure!(valid_name(profile), "invalid_profile");
+    let lima = lima_dir(home, profile);
+    let cfg = small_file(&lima.join(format!("colima-{profile}/lima.yaml"))).await?;
+    let networks = small_file(&lima.join("_config/networks.yaml")).await?;
+    let (network, multiple_interfaces) = network_for(&cfg, &networks)?;
+    let pid_file = lima.join("_networks").join(&network).join(format!("usernet_{network}.pid"));
+    let pid = small_file(&pid_file).await?.trim().parse::<u32>().map_err(|_| anyhow!("invalid_usernet_pid"))?;
+    ensure!(pid > 1, "invalid_usernet_pid");
+    let (_, args) = command("/bin/ps", &["-p", &pid.to_string(), "-o", "command="]).await?;
+    ensure!(process_matches(&args, &pid_file), "usernet_pid_mismatch");
+    Ok(Located { pid, pid_file, network, multiple_interfaces })
+}
+
+/// 纯:lsof -F 输出里 TCP 已建立 / 正在建立、以及有对端的 UDP 套接字的 IPv4 对端地址。
+fn remote_ipv4(text: &str) -> Vec<std::net::Ipv4Addr> {
+    let mut found = std::collections::BTreeSet::new();
+    let (mut remote, mut protocol, mut state) = (None, String::new(), String::new());
+    let mut flush = |remote: &mut Option<std::net::Ipv4Addr>, protocol: &mut String, state: &mut String| {
+        if let Some(ip) = remote.take() {
+            if protocol == "UDP" || matches!(state.as_str(), "ESTABLISHED" | "SYN_SENT") { found.insert(ip); }
+        }
+        protocol.clear(); state.clear();
+    };
+    for line in text.lines() {
+        if line.starts_with('f') { flush(&mut remote, &mut protocol, &mut state); }
+        else if let Some(value) = line.strip_prefix('P') { protocol = value.to_string(); }
+        else if let Some(value) = line.strip_prefix("TST=") { state = value.to_string(); }
+        else if let Some(name) = line.strip_prefix('n') {
+            remote = name.split_once("->").and_then(|(_, r)| r.parse::<std::net::SocketAddrV4>().ok()).map(|a| *a.ip());
+        }
+    }
+    flush(&mut remote, &mut protocol, &mut state);
+    found.into_iter().collect()
+}
+
+/// 只读:本 profile 的 usernet 进程当前对外连接的 IPv4 对端(供 [`crate::server_guard`] 让开服务器地址)。
+pub async fn remote_endpoints(home: &Path, profile: &str) -> Result<Vec<std::net::Ipv4Addr>> {
+    let located = locate(home, profile).await?;
+    let pid_s = located.pid.to_string();
+    let (ok, sockets) = command("/usr/sbin/lsof", &["-nP", "-a", "-p", &pid_s, "-i4", "-FfnPT"]).await?;
+    ensure!(ok || sockets.is_empty(), "socket_query_failed");
+    let (_, after) = command("/bin/ps", &["-p", &pid_s, "-o", "command="]).await?;
+    ensure!(process_matches(&after, &located.pid_file), "usernet_process_changed");
+    Ok(remote_ipv4(&sockets))
+}
+
 impl Sampler {
     /// 节流同时覆盖睡醒/连续故障；API 只读缓存，不触发采样。
     pub async fn sample_if_due(&mut self, profile: &str) -> Option<Snapshot> {
@@ -152,18 +202,10 @@ impl Sampler {
     }
 
     async fn collect(&mut self, home: &Path, profile: &str, result: &mut Snapshot) -> Result<()> {
-        ensure!(valid_name(profile), "invalid_profile");
-        let lima = lima_dir(home, profile);
-        let cfg = small_file(&lima.join(format!("colima-{profile}/lima.yaml"))).await?;
-        let networks = small_file(&lima.join("_config/networks.yaml")).await?;
-        let (network, multiple_interfaces) = network_for(&cfg, &networks)?;
-        let pid_file = lima.join("_networks").join(&network).join(format!("usernet_{network}.pid"));
-        result.network = Some(network); result.multiple_interfaces = multiple_interfaces;
-        let pid = small_file(&pid_file).await?.trim().parse::<u32>().map_err(|_| anyhow!("invalid_usernet_pid"))?;
-        ensure!(pid > 1, "invalid_usernet_pid");
+        let located = locate(home, profile).await?;
+        let (pid, pid_file) = (located.pid, located.pid_file);
+        result.network = Some(located.network); result.multiple_interfaces = located.multiple_interfaces;
         let pid_s = pid.to_string();
-        let (_, args) = command("/bin/ps", &["-p", &pid_s, "-o", "command="]).await?;
-        ensure!(process_matches(&args, &pid_file), "usernet_pid_mismatch");
         result.pid = Some(pid);
         match self.runtime_info(pid).await {
             Ok(info) => result.runtime = Some(info),
@@ -208,6 +250,19 @@ impl Sampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_ipv4_keeps_live_tcp_and_connected_udp_peers() {
+        let text = "p1\nf10\nPTCP\nn192.168.5.2:5000->44.0.188.78:443\nTST=ESTABLISHED\n\
+f11\nPTCP\nn*:22\nTST=LISTEN\n\
+f12\nPUDP\nn192.168.5.2:6000->1.2.3.4:51820\n\
+f13\nPTCP\nn192.168.5.2:5001->5.6.7.8:443\nTST=CLOSE_WAIT\n\
+f14\nPTCP\nn192.168.5.2:5002->9.9.9.9:443\nTST=SYN_SENT\n\
+f15\nPUDP\nn*:53\n";
+        assert_eq!(remote_ipv4(text), vec!["1.2.3.4".parse::<std::net::Ipv4Addr>().unwrap(),
+            "9.9.9.9".parse().unwrap(), "44.0.188.78".parse().unwrap()]);
+        assert!(remote_ipv4("").is_empty());
+    }
 
     #[test]
     fn selects_only_profile_network_and_rejects_ambiguous_or_unrelated_pid() {

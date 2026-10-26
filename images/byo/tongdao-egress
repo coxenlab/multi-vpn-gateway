@@ -1,0 +1,60 @@
+#!/bin/sh
+# Pin channel traffic to the VPN tunnel.
+# Traffic entering through the channel's SOCKS port only exists to reach the VPN
+# side, so while a tunnel interface is up, everything the SOCKS user sends leaves
+# through it, whatever routes the vendor client installed. Some clients get those
+# routes wrong (one adds its gateway route before the tunnel is up, the kernel
+# rejects it, and the client never retries). The client's own traffic, including
+# the connection to its gateway, still follows the main table.
+# Without a tunnel the rule is removed and SOCKS traffic behaves as before.
+set -u
+TABLE=1080
+PRIORITY=1080
+SOCKS_UID=$(id -u tongdao-socks)
+
+tunnel() {
+    # First interface, in index order, that is a tun/tap or a layer-3 device
+    # (tun, WireGuard) that is up and has an IPv4 address.
+    for name in $(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1); do
+        dev=/sys/class/net/$name
+        [ "$name" = lo ] && continue
+        [ -e "$dev/tun_flags" ] || [ "$(cat "$dev/type" 2>/dev/null)" = 65534 ] || continue
+        [ $(( $(cat "$dev/flags") & 1 )) -eq 1 ] || continue
+        [ -n "$(ip -4 -o addr show dev "$name")" ] || continue
+        echo "$name"
+        return
+    done
+}
+
+local_routes() {
+    # Directly connected networks except the tunnel, so replies to the SOCKS
+    # clients on the container network still leave through eth0.
+    ip -4 route show table main scope link | grep -v " dev $1 " || true
+}
+
+applied=
+while :; do
+    dev=$(tunnel)
+    if [ -n "$dev" ]; then
+        wanted="$dev
+$(local_routes "$dev")"
+    else
+        wanted=
+    fi
+    if [ "$wanted" != "$applied" ]; then
+        ip rule del priority $PRIORITY 2>/dev/null
+        ip route flush table $TABLE 2>/dev/null
+        if [ -n "$dev" ]; then
+            local_routes "$dev" | while read -r route; do
+                ip route replace $route table $TABLE
+            done
+            ip route replace default dev "$dev" table $TABLE
+            ip rule add uidrange "$SOCKS_UID-$SOCKS_UID" lookup $TABLE priority $PRIORITY
+            echo "channel traffic now leaves through $dev"
+        elif [ -n "$applied" ]; then
+            echo "tunnel gone; channel traffic follows the main routes"
+        fi
+        applied=$wanted
+    fi
+    sleep 1
+done

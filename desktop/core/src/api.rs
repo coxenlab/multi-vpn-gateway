@@ -1404,6 +1404,9 @@ async fn delete_inner(st: AppState, cid: String) -> axum::response::Response {
             return err_detail(StatusCode::INTERNAL_SERVER_ERROR, &format!("remove: {e}"));
         }
         crate::novnc::drop_for(&st, &cid).await;
+        if let Err(e) = crate::replacement::remove_channel_volumes(&docker, &cid).await {
+            return err500(&format!("通道容器已删除，数据卷清理待重试: {e}"));
+        }
         if let Err(e) = store::del_channel(&db, &cid) {
             let mut detail = audit_detail("failed");
             detail["error"] = json!(e.to_string());

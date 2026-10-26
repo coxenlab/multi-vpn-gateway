@@ -777,6 +777,14 @@ pub fn spawn(state: AppState) {
                 Ok(None) => {}
                 Err(e) => { crate::ev!(warn, "tunnel", "tunnel_check_failed", "SSH 转发进程状态检查失败", { "error": e.to_string() }); }
             }
+            // 让开服务器地址是基础防护,不受暂停自动修复开关影响;只读采样,变化时才对账路由。
+            if let Some(activity) = state.lifecycle.runtime().maintenance() {
+                let cfg = state.cfg.clone();
+                tokio::spawn(async move {
+                    let _activity = activity;
+                    crate::server_guard::observe(&cfg).await;
+                });
+            }
             // 暂停时仍回收无人观看/过期的 noVNC 入口，只由内部开关挡住恢复动作。
             let ensure_due = self_heal_resumed || woke || tick_count.is_multiple_of(3);
             if let Some(activity) = state.lifecycle.runtime().maintenance() {

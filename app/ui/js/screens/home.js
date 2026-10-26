@@ -10,6 +10,8 @@ import { area } from '../chart.js';
 import { showError, showDone, notify } from '../feedback.js';
 import { poll } from '../poll.js';
 
+import { memoryRestart, memoryText } from '../runtime-memory.js';
+
 const enc = encodeURIComponent;
 const ruleOn = r => !!r && r.enabled !== false && r.enabled !== 0;
 const nameOf = ch => (ch && ch.name) || '未命名通道';
@@ -19,6 +21,7 @@ const nameOf = ch => (ch && ch.name) || '未命名通道';
 // 出错原因的动作 → 按钮。restart_runtime / retry 直接执行，relogin / view_logs 跳到通道详情
 function causeAction(action, id) {
   const label = actionText(action) || actionText('view_logs');
+  if (action === 'restart_runtime_bigger') return { label, run: 'memory' };
   if (action === 'restart_runtime') return { label, run: 'runtime' };
   if (action === 'retry') return { label, run: 'start', id };
   if (action === 'relogin') return { label, go: `#/channels/${enc(id)}?tab=login` };
@@ -40,6 +43,7 @@ function takeoverAction(todo, takeover) {
 export function needs({ channels = [], health = {}, system = null, causes = {}, takeover = null } = {}) {
   const head = [], bad = [], wait = [], unverified = [], tail = [];
   const chip = chipState(system);
+  if (system?.memory_pressure?.oom_kills > 0) head.push({ key: 'memory-low', tone: 'bad', title: '运行环境内存不足', text: memoryText(system), action: system.runtime_restart_available ? { label: '加大内存并重启', run: 'memory' } : null });
   if (system?.config_application?.pending === true) {
     head.push({ key: 'config-pending', tone: 'wait', title: '规则还没同步', text: '已保存，还没同步到入口', action: { label: '重试', run: 'config' } });
   }
@@ -66,6 +70,7 @@ export function needs({ channels = [], health = {}, system = null, causes = {}, 
         text: '暂时读不到运行状态，请稍后查看', action: { label: '查看', go: `#/channels/${enc(ch.id)}` } });
     } else if (state === 'error') {
       const c = causes[ch.id];
+      if (c?.code === 'memory_low' && system?.memory_pressure?.oom_kills > 0) continue;
       const known = c && !isUnavailable(c) && typeof c === 'object';
       // 标题已经说了「连不上」，原因不清楚时副标题不再重复
       const reason = known && c.code && c.code !== 'unknown' ? causeText(c.code) : '原因还不清楚';
@@ -244,6 +249,7 @@ export function mount(root, ctx) {
 
   async function runAction(a, el) {
     if (a.go) { navigate(a.go); return; }
+    if (a.run === 'memory') { memoryRestart(system(), { bigger: true }); return; }
     el.disabled = true;
     try {
       let r;

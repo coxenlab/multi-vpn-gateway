@@ -189,6 +189,27 @@ impl Coordinator {
         });
     }
 
+    /// 用户确认的重启：只在没有在途资源操作时独占停止阶段；取消 HTTP 不取消已接受的停止。
+    pub async fn stop_for_restart<F, Fut>(self: &Arc<Self>, stop: F) -> Outcome
+    where F: FnOnce() -> Fut + Send + 'static, Fut: Future<Output = Outcome> + Send + 'static {
+        let mut receiver = {
+            let mut state = self.state.lock().unwrap();
+            if state.closing || state.active != 0 || state.flight.is_some() {
+                return Err("运行环境有操作正在进行，请稍后重试".into());
+            }
+            state.phase = Phase::Releasing;
+            state.deadline = None;
+            state.error = None;
+            state.detail = "正在停止通道并重启运行环境…".into();
+            let (sender, receiver) = watch::channel(None);
+            state.flight = Some(receiver.clone());
+            self.publish(&mut state);
+            self.launch(sender, stop, Phase::Dormant);
+            receiver
+        };
+        wait_flight(&mut receiver).await
+    }
+
     /// 每轮重新核对业务是否空闲；核对期间有操作进入/退出则丢弃本轮结果。
     /// 返回 true 仅表示本调用启动的释放已完成，false 表示尚未达到释放条件。
     pub async fn release_if_idle<C, CF, R, RF>(self: &Arc<Self>, grace: Duration, can_release: C, release: R) -> Result<bool, String>
@@ -277,6 +298,25 @@ mod tests {
     fn coordinator() -> Arc<Coordinator> { Arc::new(Coordinator::default()) }
     async fn ready(c: &Arc<Coordinator>) { c.ensure(|| async { Ok(()) }).await.unwrap(); }
     async fn settle() { for _ in 0..20 { tokio::task::yield_now().await; } }
+
+    #[tokio::test]
+    async fn explicit_restart_excludes_work_and_survives_request_cancellation() {
+        let c = coordinator(); ready(&c).await;
+        let activity = c.activity().await.unwrap();
+        assert!(c.stop_for_restart(|| async { panic!("active work must block stop") }).await.is_err());
+        drop(activity);
+        let gate = Arc::new(Semaphore::new(0));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn({ let c = c.clone(); let gate = gate.clone(); async move {
+            c.stop_for_restart(move || async move { tx.send(()).unwrap(); gate.acquire().await.unwrap().forget(); Ok(()) }).await
+        }});
+        rx.await.unwrap();
+        assert!(c.maintenance().is_none());
+        assert!(c.stop_for_restart(|| async { Ok(()) }).await.is_err());
+        task.abort(); gate.add_permits(1); settle().await;
+        assert_eq!(c.snapshot().phase, Phase::Dormant);
+        ready(&c).await; assert_eq!(c.snapshot().phase, Phase::Ready);
+    }
 
     #[tokio::test]
     async fn progress_age_observes_changes_and_resets_on_explicit_retry() {

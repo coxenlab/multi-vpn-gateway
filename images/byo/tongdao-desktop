@@ -30,7 +30,7 @@ def windows():
             process = Path('/proc', parts[2], 'comm').read_text().strip()
         except OSError:
             continue
-        if process not in ('fluxbox', 'pcmanfm', 'xmessage'):
+        if process not in ('fluxbox', 'pcmanfm', 'gxmessage', 'xterm'):
             visible.add(parts[0])
     return visible
 
@@ -46,7 +46,18 @@ def diagnose(log):
     return '未检测到客户端窗口，请查看启动日志；安装包可能需要其他系统环境或手动启动。'
 
 
+def mark_login_session():
+    # A real desktop login sets the audit login uid; ours starts from systemd, so it is unset.
+    # Some clients resolve the logged-in user from it and crash when it is missing.
+    # An unset value may be set once without privileges; children inherit it.
+    try:
+        Path('/proc/self/loginuid').write_text(str(os.getuid()))
+    except OSError:
+        pass
+
+
 def main():
+    mark_login_session()
     status('starting', '正在启动客户端窗口…')
     for _ in range(100):
         if Path('/tmp/.X11-unix/X0').exists():
@@ -77,7 +88,7 @@ def main():
             time.sleep(.5)
     message = diagnose(log_path.read_text(errors='replace')[-16384:])
     status('failed', message)
-    subprocess.Popen(['xmessage', '-center', '-buttons', 'OK:0', '客户端窗口启动失败\n' + message])
+    subprocess.Popen(['gxmessage', '-center', '-buttons', 'OK:0', '客户端窗口启动失败\n' + message])
     return desktop.wait()
 
 

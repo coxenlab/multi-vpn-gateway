@@ -67,7 +67,7 @@ export function pushPoint(points, v, max = 120) {
 export function chipState(system) {
   if (!system || typeof system !== 'object') return null;
   const phase = system.runtime && system.runtime.phase;
-  if (phase === 'starting') return 'starting';
+  if (phase === 'starting' || (phase === 'releasing' && system.runtime.detail?.includes('重启'))) return 'starting';
   if (phase === 'dormant') return 'dormant';
   if (phase && phase !== 'ready' && phase !== 'waiting') return 'runtime';
   if (system.config_application?.pending === true) return 'pending';

@@ -114,6 +114,24 @@ async fn remove_volume(docker: &Docker, name: &str, owner: Option<&Owner>) -> Re
     ensure!(matches!(docker.inspect_volume(name).await, Err(e) if crate::docker::is_not_found(&e)), "数据卷清理未确认");
     Ok(())
 }
+
+/// 清理该通道所有有归属标记的替换卷；旧式无标签卷沿用保留策略。
+/// 配置删除前调用，失败时保留通道／deleting 记录供重试。
+pub async fn remove_channel_volumes(docker: &Docker, cid: &str) -> Result<()> {
+    let volumes = docker.list_volumes(Some(bollard::volume::ListVolumesOptions {
+        filters: HashMap::from([("label".to_string(), vec![format!("io.vpnmgr.channel={cid}")])]),
+    })).await?;
+    for volume in volumes.volumes.unwrap_or_default() {
+        if volume.labels.get("io.vpnmgr.channel").map(String::as_str) != Some(cid)
+            || volume.labels.get("io.vpnmgr.role").map(String::as_str) != Some("candidate") { continue; }
+        let owner = Owner { channel: cid.into(), operation: volume.labels.get("io.vpnmgr.replacement")
+            .cloned().ok_or_else(|| anyhow!("替换数据卷缺少操作归属"))? };
+        owner.validate()?;
+        ensure!(volume.name == owner.volume_name(), "替换数据卷名称与归属不匹配");
+        remove_volume(docker, &volume.name, Some(&owner)).await?;
+    }
+    Ok(())
+}
 fn advance(st: &AppState, key: &str, record: &Record, phase: &str, updates: Value) -> Result<Record> {
     let mut payload = record.payload.clone();
     payload.as_object_mut().ok_or_else(|| anyhow!("替换记录无效"))?.extend(updates.as_object().ok_or_else(|| anyhow!("替换记录更新无效"))?.clone());
@@ -497,7 +515,7 @@ pub async fn before_stop(st:&AppState,cid:&str)->Result<()> {
     recover(st,cid).await
 }
 
-/// 用户删除通道时确认关联实例全部移除；命名卷与既有删除策略一致，保留。
+/// 用户删除通道时确认关联实例与有归属的替换卷全部移除。
 pub async fn discard(st:&AppState,cid:&str)->Result<bool> {
     let docker=st.docker().ok_or_else(||anyhow!("docker unavailable"))?;
     let db=st.cfg.db_path();let key=store::master_key(&st.cfg.data_dir)?;
@@ -527,13 +545,58 @@ pub async fn discard(st:&AppState,cid:&str)->Result<bool> {
         set_policy(&docker,id(info)?,policy(RestartPolicyNameEnum::NO)).await?;
         remove(&docker,info).await?;
     }
+    remove_channel_volumes(&docker,cid).await?;
     journal::deleted(&db,&record)?;
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::awaiting_login;
+    use super::*;
+
+    #[tokio::test]
+    async fn channel_volume_cleanup_confirms_removal_and_retries_without_deleting_other_data() {
+        use axum::{extract::State, http::{Request, StatusCode}, body::Body, response::IntoResponse, Json, Router};
+        let owner = Owner { channel: "c1".into(), operation: "op1".into() };
+        let name = owner.volume_name();
+        type Flags = std::sync::Arc<std::sync::Mutex<(bool,bool,Vec<String>)>>;
+        let flags = std::sync::Arc::new(std::sync::Mutex::new((true, true, Vec::<String>::new())));
+        let target = name.clone();
+        let docker_api = Router::new().fallback(move |State(flags): State<Flags>, req: Request<Body>| {
+            let name = target.clone();
+            async move {
+                let mut state = flags.lock().unwrap();
+                let volume = |cid: &str, name: &str| json!({"Name":name,"Driver":"local","Mountpoint":"/fixture","Scope":"local","Options":{},
+                    "Labels":{"io.vpnmgr.channel":cid,"io.vpnmgr.role":"candidate","io.vpnmgr.replacement":"op1"}});
+                let path = req.uri().path();
+                if path.ends_with("/volumes") {
+                    let mut entries = vec![volume("other","vpndata-other-next-op1"), json!({"Name":"vpndata-c1","Driver":"local","Mountpoint":"/fixture","Labels":{},"Options":{},"Scope":"local"})];
+                    if state.0 { entries.push(volume("c1",&name)); }
+                    return Json(json!({"Volumes":entries})).into_response();
+                }
+                if path.ends_with("/containers/json") { return Json(json!([])).into_response(); }
+                assert!(path.ends_with(&format!("/volumes/{name}")), "unexpected Docker path: {path}");
+                if req.method() == axum::http::Method::DELETE {
+                    state.2.push(name.clone());
+                    if state.1 { return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message":"injected failure"}))).into_response(); }
+                    state.0 = false;
+                    return StatusCode::NO_CONTENT.into_response();
+                }
+                if state.0 { Json(volume("c1",&name)).into_response() }
+                else { (StatusCode::NOT_FOUND, Json(json!({"message":"missing"}))).into_response() }
+            }
+        }).with_state(flags.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener,docker_api).await.unwrap() });
+        let docker = Docker::connect_with_http(&format!("http://{address}"),2,bollard::API_DEFAULT_VERSION).unwrap();
+        assert!(remove_channel_volumes(&docker,"c1").await.is_err());
+        flags.lock().unwrap().1 = false;
+        remove_channel_volumes(&docker,"c1").await.unwrap();
+        remove_channel_volumes(&docker,"c1").await.unwrap();
+        assert_eq!(flags.lock().unwrap().2,vec![name.clone(),name]);
+        server.abort();
+    }
 
     #[test]
     fn cleanup_retry_coalesces_and_waits_sixty_seconds_after_failure() {

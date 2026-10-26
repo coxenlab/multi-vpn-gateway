@@ -187,6 +187,8 @@ export function mount(sheet, ctx) {
     } else {
       kids.push(btn('在后台继续', { onClick: () => { toBackground(); ctx.close(); } }));
       if (at === 2 && !headless() && id) kids.push(btn('去登录', { cls: 'pri', onClick: go(`#/channels/${cid}?tab=login`) }));
+      // 安装程序可能在登录窗口的终端里提问；离开后安装在后台继续，结果用提示条说
+      if (at === 1 && installAttempt && id) kids.push(btn('打开登录窗口', { onClick: go(`#/channels/${cid}?tab=login`) }));
     }
     return kids;
   }
@@ -286,7 +288,7 @@ export function mount(sheet, ctx) {
     }
     if (draft.vpn_type === 'custom' && role === 'package' && !automaticInstallDone && !manualInstall) {
       requireInstallAttempt(installAttempt, installState);
-      steps[1].sub = '正在安装并确认客户端窗口';
+      steps[1].sub = '正在安装；安装程序如有提问，会在登录窗口里等你回答';
       render();
       while (installOutcome(installState) === 'waiting') {
         await new Promise(resolve => setTimeout(resolve, 1000));
